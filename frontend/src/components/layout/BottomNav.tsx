@@ -32,7 +32,7 @@ function BottomNav() {
         </NavLink>
 
         <NavLink
-          to="/challenges"
+          to="/areas"
           className={({ isActive }) =>
             `flex flex-col items-center px-6 py-2 rounded-xl transition-all ${
               isActive
@@ -55,7 +55,7 @@ function BottomNav() {
               d="M13 10V3L4 14h7v7l9-11h-7z"
             />
           </svg>
-          <span className="text-xs mt-1 font-medium">Challenges</span>
+          <span className="text-xs mt-1 font-medium">Areas</span>
         </NavLink>
 
         <NavLink

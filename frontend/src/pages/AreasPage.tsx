@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import Header from "../components/layout/Header";
+import { useNavigate } from "react-router-dom";
 
 type Area = {
   id: number;
@@ -10,6 +11,7 @@ function AreasPage() {
   const [areas, setAreas] = useState<Area[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     async function fetchAreas() {
@@ -88,6 +90,9 @@ function AreasPage() {
             //   <ChallengeListItem key={challenge.id} challenge={challenge} />
             <li
               key={area.id}
+              onClick={() => {
+                navigate(`/areas/${area.id}`);
+              }}
               className="bg-white rounded-xl p-4 shadow-sm hover:shadow transition-shadow cursor-pointer"
             >
               <div className="flex items-center gap-3">
