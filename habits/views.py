@@ -1,8 +1,13 @@
 from django.http import JsonResponse
-from .models import Area
+from .models import Area, Habit
 
 def index(request):
     return JsonResponse({"message": "Hello from Django!"})
+
+def habits(request):
+    habits = Habit.objects.all().order_by('-date_added')
+    data = list(habits.values('id', 'name', 'notes'))
+    return JsonResponse(data, safe=False)
 
 def areas(request):
     areas = Area.objects.all().order_by('name')

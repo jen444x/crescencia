@@ -1,0 +1,14 @@
+services:
+  db: # name of your service — you'll refer to it as "db"
+    image: postgres:16 # pinned version, pulled from Docker Hub
+    environment:
+      POSTGRES_USER: crescencia # Postgres creates this user on first boot
+      POSTGRES_PASSWORD: devpassword # dev-only password (see note below)
+      POSTGRES_DB: crescencia # auto-creates a database with this name
+    ports:
+      - "5432:5432" # "yourMac:container" — lets Django reach in
+    volumes:
+      - pgdata:/var/lib/postgresql/data # persists data outside the container
+
+volumes:
+  pgdata: # declares the named volume used above
