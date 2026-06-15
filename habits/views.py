@@ -1,12 +1,20 @@
 from django.http import JsonResponse
-from .models import Area, Habit
+from .models import Area, Plan
 
 def index(request):
     return JsonResponse({"message": "Hello from Django!"})
 
-def habits(request):
-    habits = Habit.objects.all().order_by('-date_added')
-    data = list(habits.values('id', 'name', 'notes'))
+def plan(request):
+    plans = Plan.objects.prefetch_related("habitplan_set__habit")
+
+    data = [{
+        "id": plan.id,
+        "time": plan.start_time, 
+        "habits": [
+            {"name": habit_plan.habit.name, "id":habit_plan.habit.id} for habit_plan in plan.habitplan_set.all()
+        ]   
+    } for plan in plans]
+
     return JsonResponse(data, safe=False)
 
 def areas(request):

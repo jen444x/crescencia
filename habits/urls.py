@@ -6,7 +6,7 @@ app_name = 'habits'
 urlpatterns = [
     # Home page
     path("", views.index, name="index"),
-    path("habits/", views.habits, name="habits"),
+    path("plan/", views.plan, name="plan"),
     path("areas/", views.areas, name="areas"),
     path("areas/<int:area_id>/", views.area, name="area"),
 ]

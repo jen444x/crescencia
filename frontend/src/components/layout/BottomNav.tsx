@@ -5,7 +5,7 @@ function BottomNav() {
     <nav className="fixed bottom-0 left-0 right-0 bg-gradient-to-r from-calm-600 to-calm-500 px-6 pt-3 pb-6 shadow-lg">
       <div className="flex justify-around items-center">
         <NavLink
-          to="/dashboard"
+          to="/habits"
           className={({ isActive }) =>
             `flex flex-col items-center px-6 py-2 rounded-xl transition-all ${
               isActive
