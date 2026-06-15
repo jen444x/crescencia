@@ -5,15 +5,61 @@ def index(request):
     return JsonResponse({"message": "Hello from Django!"})
 
 def plan(request):
-    plans = Plan.objects.order_by("start_time").prefetch_related("habitplan_set__habit")
+    plans = Plan.objects.prefetch_related(
+        "habitplan_set__habit__habitchain_set__chain__habitchain_set__habit"
+    )
+    data = []
+    for plan in plans:
+        # print(plan)
+        # print()
+        # get all habits at this time
+        habits = []
+        habit_plans = plan.habitplan_set.all()
+        # print(habit_plans)
+        # print()
+        for habit_plan in habit_plans:
+            # check if it has other habits in chain
+            habit = habit_plan.habit
+            # print(habit)
+            # print()
+            habit_chain = habit.habitchain_set
+            habit_chain = habit_chain.first() # first bc theres only 1
+    
+            if habit_chain:   # check if it relationship exists
+                if habit_chain.order > 1:
+                    continue
+                chain = habit_chain.chain
+                # get habits in this chain
+                chain_habits = chain.habitchain_set.all()
+                # print(chain_habits)
+                # prep each habit
+                for chain_habit in chain_habits:
+                
+                    habitt = chain_habit.habit
+                    habits.append({
+                        "name": habitt.name,
+                        "id": habitt.id,
+                        "chain": habit_chain.id,
+                        "order": chain_habit.order
+                    })
+            else:
+                habits.append({
+                    "name": habit.name,     # note: the outer habit, not habitt
+                    "id": habit.id,
+                    "chain": None
+                })
 
-    data = [{
-        "id": plan.id,
-        "time": plan.start_time, 
-        "habits": [
-            {"name": habit_plan.habit.name, "id":habit_plan.habit.id} for habit_plan in plan.habitplan_set.all()
-        ]   
-    } for plan in plans]
+                
+        # add habits to plan
+        plan_data = {
+            "id": plan.id,
+            "time": plan.start_time,
+            "habits": habits
+        }
+        # print(plan_data)
+        # print()
+        data.append(plan_data)
+
 
     missed_habits = {
         "id": None,

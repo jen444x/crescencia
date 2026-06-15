@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import Header from "../components/layout/Header";
 import { useNavigate } from "react-router-dom";
 
@@ -10,7 +10,15 @@ type Plan = {
 type Habit = {
   id: number;
   name: string;
+  chain?: number | null;
+  order?: number;
 };
+
+// A plan's habits, grouped for rendering: standalone habits stay on their own,
+// habits sharing a chain id collapse into one ordered chain.
+type PlanItem =
+  | { kind: "single"; habit: Habit }
+  | { kind: "chain"; chainId: number; steps: Habit[] };
 
 // "08:00:00" -> "8:00 AM"; null/empty -> "Anytime"
 function formatTime(time: string | null) {
@@ -22,11 +30,77 @@ function formatTime(time: string | null) {
   return `${hour12}:${minute} ${period}`;
 }
 
+function groupHabits(habits: Habit[]): PlanItem[] {
+  const items: PlanItem[] = [];
+  const chainPos = new Map<number, number>(); // chain id -> index in items
+
+  for (const habit of habits) {
+    if (habit.chain == null) {
+      items.push({ kind: "single", habit });
+      continue;
+    }
+    const pos = chainPos.get(habit.chain);
+    if (pos === undefined) {
+      chainPos.set(habit.chain, items.length);
+      items.push({ kind: "chain", chainId: habit.chain, steps: [habit] });
+    } else {
+      (items[pos] as Extract<PlanItem, { kind: "chain" }>).steps.push(habit);
+    }
+  }
+
+  // Make sure each chain reads 1 -> 2 -> 3 regardless of backend order.
+  for (const item of items) {
+    if (item.kind === "chain") {
+      item.steps.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    }
+  }
+
+  return items;
+}
+
+function PlusIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4 text-calm-500 shrink-0"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M12 5v14M5 12h14"
+      />
+    </svg>
+  );
+}
+
+function HabitCard({
+  habit,
+  leading,
+}: {
+  habit: Habit;
+  leading?: ReactNode;
+}) {
+  const navigate = useNavigate();
+  return (
+    <div
+      onClick={() => navigate(`/habits/${habit.id}`)}
+      className="group flex items-center gap-3 bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow cursor-pointer"
+    >
+      {leading}
+      <h3 className="flex-1 font-medium text-calm-900">{habit.name}</h3>
+      <PlusIcon />
+    </div>
+  );
+}
+
 function PlansPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const navigate = useNavigate();
 
   useEffect(() => {
     async function fetchPlans() {
@@ -110,32 +184,40 @@ function PlansPage() {
 
             {/* Habits scheduled at this time */}
             <ul className="space-y-2">
-              {plan.habits.map((habit) => (
-                <li
-                  key={habit.id}
-                  onClick={() => navigate(`/habits/${habit.id}`)}
-                  className="group flex items-center gap-3 bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow cursor-pointer"
-                >
-                  <span className="h-2 w-2 rounded-full bg-calm-400 shrink-0" />
-                  <h3 className="flex-1 font-medium text-calm-900">
-                    {habit.name}
-                  </h3>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-4 w-4 text-calm-500 group-hover:text-calm-500 transition-colors"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M12 5v14M5 12h14"
+              {groupHabits(plan.habits).map((item) =>
+                item.kind === "single" ? (
+                  <li key={`h-${item.habit.id}`}>
+                    <HabitCard
+                      habit={item.habit}
+                      leading={
+                        <span className="h-2 w-2 rounded-full bg-calm-400 shrink-0" />
+                      }
                     />
-                  </svg>
-                </li>
-              ))}
+                  </li>
+                ) : (
+                  <li key={`c-${item.chainId}`}>
+                    {item.steps.map((step, i) => {
+                      const isLast = i === item.steps.length - 1;
+                      return (
+                        <div key={step.id} className="flex gap-3">
+                          {/* Step number + connecting line */}
+                          <div className="flex flex-col items-center">
+                            <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-calm-600 text-[11px] font-medium text-white">
+                              {i + 1}
+                            </span>
+                            {!isLast && (
+                              <span className="w-px grow bg-calm-300" />
+                            )}
+                          </div>
+                          <div className={`flex-1 ${isLast ? "" : "pb-2"}`}>
+                            <HabitCard habit={step} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </li>
+                ),
+              )}
             </ul>
           </section>
         ))}
