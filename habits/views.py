@@ -1,11 +1,11 @@
 from django.http import JsonResponse
-from .models import Area, Plan
+from .models import Area, Habit, Plan
 
 def index(request):
     return JsonResponse({"message": "Hello from Django!"})
 
 def plan(request):
-    plans = Plan.objects.prefetch_related("habitplan_set__habit")
+    plans = Plan.objects.order_by("start_time").prefetch_related("habitplan_set__habit")
 
     data = [{
         "id": plan.id,
@@ -14,6 +14,15 @@ def plan(request):
             {"name": habit_plan.habit.name, "id":habit_plan.habit.id} for habit_plan in plan.habitplan_set.all()
         ]   
     } for plan in plans]
+
+    missed_habits = {
+        "id": None,
+        "time": None, 
+        "habits": [{"name": h.name, "id": h.id} for h in Habit.objects.filter(habitplan__isnull=True)]
+
+    }
+    # habits with no plans
+    data.append(missed_habits)
 
     return JsonResponse(data, safe=False)
 

@@ -40,6 +40,9 @@ class HabitChain(models.Model):
     habit = models.ForeignKey(Habit, on_delete=models.CASCADE)
     order = models.PositiveIntegerField()
 
+    def __str__(self):
+        return f"{self.chain.id}.{self.order} - {self.habit}"
+
 class Plan(models.Model):
     start_date = models.DateField(auto_now_add=True)
     start_time = models.TimeField(blank=True, null=True)

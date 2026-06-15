@@ -33,7 +33,7 @@ function PlansPage() {
       setIsLoading(true);
 
       try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/plan`, {
+        const res = await fetch(`${import.meta.env.VITE_API_URL}/plan/`, {
           method: "GET",
           headers: {},
         });
@@ -122,7 +122,7 @@ function PlansPage() {
                   </h3>
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    className="h-4 w-4 text-calm-300 group-hover:text-calm-500 transition-colors"
+                    className="h-4 w-4 text-calm-500 group-hover:text-calm-500 transition-colors"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -131,7 +131,7 @@ function PlansPage() {
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       strokeWidth={2}
-                      d="M9 5l7 7-7 7"
+                      d="M12 5v14M5 12h14"
                     />
                   </svg>
                 </li>
