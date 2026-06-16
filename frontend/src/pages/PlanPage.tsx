@@ -403,7 +403,7 @@ function HabitCard({
       {handle}
       <div className="min-w-0 flex-1">
         <h3
-          className={`font-medium ${
+          className={`break-words font-medium ${
             done
               ? "text-calm-400 line-through"
               : skipped
@@ -595,7 +595,9 @@ function RowLayout({
           {connectBelow && <span className="w-px grow bg-calm-300" />}
         </div>
       )}
-      <div className="flex-1 pb-1.5">
+      {/* min-w-0 lets this column shrink below the note's width so the note can
+          truncate instead of pushing the card (and its ✓ button) off-screen. */}
+      <div className="min-w-0 flex-1 pb-1.5">
         <SwipeableCard
           habit={habit}
           onStatus={onStatus}
@@ -683,7 +685,7 @@ function CompletedRow({
       onClick={() => navigate(`/habits/${habit.id}`)}
       className="flex cursor-pointer items-center gap-3 rounded-lg px-4 py-2 hover:bg-white"
     >
-      <span className="flex-1 truncate text-sm text-calm-400 line-through">
+      <span className="min-w-0 flex-1 truncate text-sm text-calm-400 line-through">
         {habit.name}
       </span>
       {/* Jot a reflection even after it's done ("felt great after"). */}
@@ -1158,6 +1160,28 @@ function NoteSheet({
   const [text, setText] = useState(habit.notes ?? "");
   const taRef = useRef<HTMLTextAreaElement>(null);
 
+  // Keep the sheet sitting *above* the on-screen keyboard. Mobile browsers shrink
+  // the visual viewport when the keyboard opens but leave `fixed` elements pinned
+  // to the taller layout viewport, which buries a bottom sheet behind the
+  // keyboard. We mirror the visual viewport's height/offset onto the overlay so
+  // the note field stays in view — no manual scrolling.
+  const [viewport, setViewport] = useState(() => {
+    const vv = window.visualViewport;
+    return vv ? { height: vv.height, offsetTop: vv.offsetTop } : null;
+  });
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () =>
+      setViewport({ height: vv.height, offsetTop: vv.offsetTop });
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
+
   // Focus the field on open and close on Escape.
   useEffect(() => {
     taRef.current?.focus();
@@ -1176,7 +1200,13 @@ function NoteSheet({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
+    <div
+      className="fixed inset-x-0 z-50 flex items-end justify-center sm:items-center"
+      style={{
+        top: viewport?.offsetTop ?? 0,
+        height: viewport?.height ?? "100dvh",
+      }}
+    >
       <div
         className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
         onClick={onClose}
@@ -1186,7 +1216,7 @@ function NoteSheet({
         role="dialog"
         aria-modal="true"
         aria-label={`Note for ${habit.name}`}
-        className="animate-sheet-in relative w-full max-w-md rounded-t-3xl bg-white p-6 pb-8 shadow-xl sm:rounded-3xl"
+        className="animate-sheet-in relative max-h-full w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 pb-8 shadow-xl sm:rounded-3xl"
       >
         {/* Grabber — a small affordance that this sheet came up from the bottom. */}
         <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-calm-200 sm:hidden" />
