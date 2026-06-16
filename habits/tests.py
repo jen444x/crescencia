@@ -238,3 +238,88 @@ class SkipDayTests(TestCase):
 
     def test_rejects_bad_date(self):
         self.assertEqual(self._skip(date="nope").status_code, 400)
+
+
+class NotesTests(TestCase):
+    """A per-day note lives on that day's HabitLog and is settable on its own,
+    without marking the habit done."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.habit = Habit.objects.create(name="Stretch")
+        self.plan = Plan.objects.create()
+        Schedule.objects.create(habit=self.habit, plan=self.plan, order=1)
+        self.log_url = reverse("habits:log_habit", args=[self.habit.id])
+
+    def _plan_note(self):
+        groups = json.loads(self.client.get(reverse("habits:plan")).content)
+        for group in groups:
+            for habit in group["habits"]:
+                if habit["id"] == self.habit.id:
+                    return habit["notes"]
+        return None
+
+    def _post(self, **body):
+        return self.client.post(self.log_url, data=body, content_type="application/json")
+
+    def test_plan_reports_the_note(self):
+        self.assertEqual(self._plan_note(), "")  # no log yet
+        HabitLog.objects.create(habit=self.habit, date=self.today, notes="before bed")
+        self.assertEqual(self._plan_note(), "before bed")
+
+    def test_note_settable_without_status(self):
+        response = self._post(notes="buy milk")
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.content)
+        self.assertEqual(body["notes"], "buy milk")
+        self.assertEqual(body["status"], "PENDING")  # a note didn't complete it
+        log = HabitLog.objects.get(habit=self.habit, date=self.today)
+        self.assertEqual((log.notes, log.status), ("buy milk", "PENDING"))
+
+    def test_changing_status_later_keeps_the_note(self):
+        self._post(notes="keep me")
+        self._post(status="COMPLETED")
+        log = HabitLog.objects.get(habit=self.habit, date=self.today)
+        self.assertEqual((log.notes, log.status), ("keep me", "COMPLETED"))
+
+    def test_empty_body_rejected(self):
+        self.assertEqual(self._post().status_code, 400)
+
+    def test_non_string_note_rejected(self):
+        self.assertEqual(self._post(notes=5).status_code, 400)
+
+
+class ClearDayTests(TestCase):
+    """Undo a day: drop its skips and time shifts, keep completions and notes."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.url = reverse("habits:clear_day")
+        self.a = Habit.objects.create(name="A")
+        self.b = Habit.objects.create(name="B")
+        self.plan = Plan.objects.create(start_time=time(9, 0))
+
+    def _clear(self, **body):
+        return self.client.post(self.url, data=body, content_type="application/json")
+
+    def test_drops_skips_and_shifts_keeps_completion(self):
+        HabitLog.objects.create(habit=self.a, date=self.today, status=HabitLog.Status.COMPLETED)
+        HabitLog.objects.create(habit=self.b, date=self.today, status=HabitLog.Status.SKIPPED)
+        PlanDay.objects.create(plan=self.plan, date=self.today, start_time=time(9, 45))
+
+        response = self._clear()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(HabitLog.objects.filter(habit=self.a, status="COMPLETED").exists())
+        self.assertFalse(HabitLog.objects.filter(habit=self.b).exists())  # skip removed
+        self.assertFalse(PlanDay.objects.filter(date=self.today).exists())  # shift removed
+
+    def test_keeps_a_note_but_resets_its_status(self):
+        HabitLog.objects.create(
+            habit=self.a, date=self.today, status=HabitLog.Status.SKIPPED, notes="away"
+        )
+        self._clear()
+        log = HabitLog.objects.get(habit=self.a, date=self.today)
+        self.assertEqual((log.status, log.notes), ("PENDING", "away"))
+
+    def test_rejects_bad_date(self):
+        self.assertEqual(self._clear(date="nope").status_code, 400)

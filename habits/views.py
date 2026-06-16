@@ -72,12 +72,14 @@ def plan(request):
     # in habit_payload rather than storing it (see MISSED_STATUS).
     is_past_day = target_date < timezone.localdate()
 
-    # That day's status for each habit, so the UI shows the right state
-    # (pending / completed / skipped). Habits with no log for the day default
-    # to PENDING below.
-    status_by_habit = dict(
-        HabitLog.objects.filter(date=target_date).values_list("habit_id", "status")
-    )
+    # That day's status + per-day note for each habit. Habits with no log for the
+    # day default to PENDING / empty note below.
+    logs_by_habit = {
+        hid: (status, notes)
+        for hid, status, notes in HabitLog.objects.filter(date=target_date).values_list(
+            "habit_id", "status", "notes"
+        )
+    }
 
     # Per-day time overrides for this day (from a "running late" shift). A plan
     # with no override here just uses its normal recurring time. Lets a
@@ -88,7 +90,7 @@ def plan(request):
     )
 
     def habit_payload(habit, schedule_id=None, chain=None, order=None):
-        status = status_by_habit.get(habit.id, HabitLog.Status.PENDING)
+        status, notes = logs_by_habit.get(habit.id, (HabitLog.Status.PENDING, ""))
         # A past day's still-pending habit reads as missed (derived, never stored).
         if is_past_day and status == HabitLog.Status.PENDING:
             status = MISSED_STATUS
@@ -100,6 +102,7 @@ def plan(request):
             "order": order,
             "status": status,
             "done_today": status == HabitLog.Status.COMPLETED,
+            "notes": notes,   # that day's HabitLog.notes ("" if none)
         }
 
     # One query for the plans + their schedules + habits, with schedules sorted
@@ -158,13 +161,13 @@ def plan(request):
 @csrf_exempt
 @require_POST
 def log_habit(request, habit_id):
-    """Set a habit's status for a given day (defaults to today).
+    """Set a habit's status and/or notes for a given day (defaults to today).
 
-    Body: {"status": ..., "date"?: "YYYY-MM-DD"}. The Plan page buttons send one
-    of three statuses:
-      - COMPLETED  -> complete it
-      - PENDING    -> undo (back to the morning's not-done state)
-      - SKIPPED    -> skip it for the day
+    Body: {"status"?: ..., "notes"?: "...", "date"?: "YYYY-MM-DD"} — send at least
+    one of `status` / `notes`.
+      - status: COMPLETED (complete) | PENDING (undo) | SKIPPED (skip).
+      - notes: free text for the day; settable WITHOUT a status, so jotting a note
+        doesn't mark the habit done. Send "" to clear it.
     """
     habit = get_object_or_404(Habit, id=habit_id)
 
@@ -173,12 +176,20 @@ def log_habit(request, habit_id):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
 
-    requested_status = body.get("status")
-    if requested_status not in HabitLog.Status.values:
+    has_status = "status" in body
+    has_notes = "notes" in body
+    if not has_status and not has_notes:
+        return JsonResponse(
+            {"error": "Send a 'status' and/or 'notes'."}, status=400
+        )
+
+    if has_status and body["status"] not in HabitLog.Status.values:
         return JsonResponse(
             {"error": f"'status' must be one of {HabitLog.Status.values}."},
             status=400,
         )
+    if has_notes and not isinstance(body["notes"], str):
+        return JsonResponse({"error": "'notes' must be a string."}, status=400)
 
     # Which day this log is for. Defaults to today, so the existing toggle keeps
     # working unchanged; the day-browser passes "date" to log against the day
@@ -190,13 +201,16 @@ def log_habit(request, habit_id):
     # One log per habit per day; create it the first time it's touched.
     log, _ = HabitLog.objects.get_or_create(habit=habit, date=target_date)
 
-    log.status = requested_status
-    # Only a completion has a meaningful "time done"; clear it otherwise.
-    log.time = (
-        timezone.localtime().time()
-        if requested_status == HabitLog.Status.COMPLETED
-        else None
-    )
+    if has_status:
+        log.status = body["status"]
+        # Only a completion has a meaningful "time done"; clear it otherwise.
+        log.time = (
+            timezone.localtime().time()
+            if log.status == HabitLog.Status.COMPLETED
+            else None
+        )
+    if has_notes:
+        log.notes = body["notes"].strip()
     log.save()
 
     # Return the saved state so the UI can reconcile against the truth.
@@ -205,6 +219,7 @@ def log_habit(request, habit_id):
         "date": log.date,
         "status": log.status,
         "done_today": log.status == HabitLog.Status.COMPLETED,
+        "notes": log.notes,
     })
 
 
@@ -251,6 +266,48 @@ def skip_day(request):
         "date": target_date,
         "skipped": skipped,
         "kept_completed": len(habit_ids) - skipped,
+    })
+
+
+@csrf_exempt
+@require_POST
+def clear_day(request):
+    """Undo a day's per-day adjustments, back to its default — for "undo a skip"
+    or a mis-fired "running late" shift.
+
+    Body: {"date"?: "YYYY-MM-DD"} (defaults today). Removes:
+      - that day's time shifts (its PlanDay overrides), and
+      - skips / pendings (HabitLogs that aren't COMPLETED).
+    Completions are kept (your wins stay), and any notes are kept — a note-bearing
+    log is reset to PENDING but holds onto its text; only empty, non-completed
+    logs are deleted outright (PENDING + no note == the default no-row state).
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+
+    non_completed = HabitLog.objects.filter(date=target_date).exclude(
+        status=HabitLog.Status.COMPLETED
+    )
+
+    with transaction.atomic():
+        shifts_cleared = PlanDay.objects.filter(date=target_date).delete()[0]
+        # Keep notes: a note-bearing skip/pending goes back to PENDING but holds
+        # its text; everything else with nothing to keep is removed.
+        notes_kept = non_completed.exclude(notes="").update(
+            status=HabitLog.Status.PENDING, time=None
+        )
+        logs_removed = non_completed.filter(notes="").delete()[0]
+
+    return JsonResponse({
+        "date": target_date,
+        "shifts_cleared": shifts_cleared,
+        "logs_cleared": notes_kept + logs_removed,
     })
 
 
