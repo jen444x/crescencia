@@ -190,6 +190,97 @@ def reorder_schedules(request):
     return JsonResponse({"updated": updated})
 
 
+def _habit_detail(habit):
+    """The shape returned after creating or editing a habit."""
+    return {
+        "id": habit.id,
+        "name": habit.name,
+        "notes": habit.notes,
+        "area": habit.area_id,
+        "date_added": habit.date_added,
+    }
+
+
+def _area_error(area_id):
+    """None if area_id is usable (a real area id, or None), else a 400 response."""
+    if area_id is None:
+        return None
+    if isinstance(area_id, bool) or not isinstance(area_id, int) \
+            or not Area.objects.filter(id=area_id).exists():
+        return JsonResponse({"error": f"Unknown area id: {area_id}."}, status=400)
+    return None
+
+
+@csrf_exempt
+@require_POST
+def create_habit(request):
+    """Create a habit. Body: {"name", "notes"?, "area"?}.
+
+    A new habit starts unscheduled (no plan/time), so it appears in the
+    "unscheduled" group of /plan/ until it's placed on the timeline.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return JsonResponse({"error": "'name' is required."}, status=400)
+    name = name.strip()
+    if len(name) > 200:
+        return JsonResponse({"error": "'name' must be at most 200 characters."}, status=400)
+
+    notes = body.get("notes", "")
+    if not isinstance(notes, str):
+        return JsonResponse({"error": "'notes' must be a string."}, status=400)
+
+    area_id = body.get("area")
+    area_error = _area_error(area_id)
+    if area_error:
+        return area_error
+
+    habit = Habit.objects.create(name=name, notes=notes.strip(), area_id=area_id)
+    return JsonResponse(_habit_detail(habit), status=201)
+
+
+@csrf_exempt
+@require_POST
+def edit_habit(request, habit_id):
+    """Update a habit's name / notes / area. Partial: only the fields present in
+    the body are changed."""
+    habit = get_object_or_404(Habit, id=habit_id)
+
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    if "name" in body:
+        name = body["name"]
+        if not isinstance(name, str) or not name.strip():
+            return JsonResponse({"error": "'name' cannot be blank."}, status=400)
+        name = name.strip()
+        if len(name) > 200:
+            return JsonResponse({"error": "'name' must be at most 200 characters."}, status=400)
+        habit.name = name
+
+    if "notes" in body:
+        notes = body["notes"]
+        if not isinstance(notes, str):
+            return JsonResponse({"error": "'notes' must be a string."}, status=400)
+        habit.notes = notes.strip()
+
+    if "area" in body:
+        area_error = _area_error(body["area"])
+        if area_error:
+            return area_error
+        habit.area_id = body["area"]
+
+    habit.save()
+    return JsonResponse(_habit_detail(habit))
+
+
 def logs(request):
     todays_logs = HabitLog.objects.filter(date=timezone.localdate()).order_by("time")
     data = [

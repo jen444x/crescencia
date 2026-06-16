@@ -1,6 +1,21 @@
 import { useState, useEffect, type ReactNode } from "react";
 import Header from "../components/layout/Header";
 import { useNavigate } from "react-router-dom";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 type Plan = {
   id: number;
@@ -9,6 +24,9 @@ type Plan = {
 };
 type Habit = {
   id: number;
+  // The Schedule row that holds this habit's position (order + chain).
+  // It's what we send to /schedules/reorder/ when the habit is dragged.
+  schedule_id?: number | null;
   name: string;
   chain?: number | null;
   order?: number;
@@ -70,6 +88,25 @@ function setHabitDone(plans: Plan[], habitId: number, done: boolean): Plan[] {
     ...plan,
     habits: plan.habits.map((habit) =>
       habit.id === habitId ? { ...habit, done_today: done } : habit,
+    ),
+  }));
+}
+
+// Return a NEW plans array with one chain's steps renumbered to match
+// `orderedIds` (their order after a drag). Orders become 1-based and
+// contiguous. Pure + immutable, like setHabitDone above.
+function applyChainOrder(
+  plans: Plan[],
+  chainId: number,
+  orderedIds: number[],
+): Plan[] {
+  const orderById = new Map(orderedIds.map((id, i) => [id, i + 1]));
+  return plans.map((plan) => ({
+    ...plan,
+    habits: plan.habits.map((habit) =>
+      habit.chain === chainId && orderById.has(habit.id)
+        ? { ...habit, order: orderById.get(habit.id) }
+        : habit,
     ),
   }));
 }
@@ -143,6 +180,106 @@ function HabitCard({
   );
 }
 
+// One chain rendered as a drag-to-reorder list. Grab a step's number badge
+// to drag it up or down; on drop we renumber the chain and persist.
+function SortableChain({
+  steps,
+  onReorder,
+  onToggle,
+}: {
+  steps: Habit[];
+  onReorder: (orderedSteps: Habit[]) => void;
+  onToggle: (habitId: number, nextDone: boolean) => void;
+}) {
+  // Require a 6px drag before a pointer-down counts as a drag, so a plain
+  // tap still works as a click (toggle / open detail).
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+  const ids = steps.map((step) => step.id);
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const from = steps.findIndex((step) => step.id === Number(active.id));
+    const to = steps.findIndex((step) => step.id === Number(over.id));
+    onReorder(arrayMove(steps, from, to));
+  }
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+        {steps.map((step, i) => (
+          <SortableStep
+            key={step.id}
+            step={step}
+            index={i}
+            isLast={i === steps.length - 1}
+            onToggle={onToggle}
+          />
+        ))}
+      </SortableContext>
+    </DndContext>
+  );
+}
+
+// A single chain step. The number badge is the drag handle; the card is the
+// habit itself.
+function SortableStep({
+  step,
+  index,
+  isLast,
+  onToggle,
+}: {
+  step: Habit;
+  index: number;
+  isLast: boolean;
+  onToggle: (habitId: number, nextDone: boolean) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: step.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className="flex gap-3">
+      {/* Number badge doubles as the drag handle. */}
+      <div className="flex flex-col items-center">
+        <button
+          type="button"
+          aria-label="Drag to reorder"
+          className="z-10 flex h-5 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-full bg-calm-600 text-[11px] font-medium text-white active:cursor-grabbing"
+          {...attributes}
+          {...listeners}
+        >
+          {index + 1}
+        </button>
+        {!isLast && <span className="w-px grow bg-calm-300" />}
+      </div>
+      <div className={`flex-1 ${isLast ? "" : "pb-2"}`}>
+        <HabitCard
+          habit={step}
+          done={!!step.done_today}
+          onToggle={() => onToggle(step.id, !step.done_today)}
+        />
+      </div>
+    </div>
+  );
+}
+
 function PlansPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
@@ -169,6 +306,42 @@ function PlansPage() {
     } catch {
       // Undo the optimistic flip.
       setPlans((prev) => setHabitDone(prev, habitId, !nextDone));
+    }
+  }
+
+  // Persist a chain's new step order after a drag. `orderedSteps` is the
+  // chain's habits in their new order. Optimistic, with a snapshot we
+  // restore if the save fails.
+  async function reorderSteps(orderedSteps: Habit[]) {
+    if (orderedSteps.length === 0) return;
+    const chainId = orderedSteps[0].chain;
+    const snapshot = plans;
+
+    if (chainId != null) {
+      const orderedIds = orderedSteps.map((step) => step.id);
+      setPlans((prev) => applyChainOrder(prev, chainId, orderedIds));
+    }
+
+    // Backend keys on schedule_id (NOT habit id) and wants the whole
+    // affected list with fresh 1..N orders. We leave `chain` unchanged
+    // for an in-chain reorder.
+    const items = orderedSteps.map((step, i) => ({
+      id: step.schedule_id,
+      order: i + 1,
+    }));
+
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/schedules/reorder/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+    } catch {
+      setPlans(snapshot);
     }
   }
 
@@ -270,31 +443,11 @@ function PlansPage() {
                   </li>
                 ) : (
                   <li key={`c-${item.chainId}`}>
-                    {item.steps.map((step, i) => {
-                      const isLast = i === item.steps.length - 1;
-                      return (
-                        <div key={step.id} className="flex gap-3">
-                          {/* Step number + connecting line */}
-                          <div className="flex flex-col items-center">
-                            <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-calm-600 text-[11px] font-medium text-white">
-                              {i + 1}
-                            </span>
-                            {!isLast && (
-                              <span className="w-px grow bg-calm-300" />
-                            )}
-                          </div>
-                          <div className={`flex-1 ${isLast ? "" : "pb-2"}`}>
-                            <HabitCard
-                              habit={step}
-                              done={!!step.done_today}
-                              onToggle={() =>
-                                toggleHabit(step.id, !step.done_today)
-                              }
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
+                    <SortableChain
+                      steps={item.steps}
+                      onReorder={reorderSteps}
+                      onToggle={toggleHabit}
+                    />
                   </li>
                 ),
               )}
