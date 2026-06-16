@@ -371,6 +371,26 @@ function NoteIcon() {
   );
 }
 
+// A U-turn arrow for "un-skip": send a skipped/missed habit back to today's list.
+function RestoreIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"
+      />
+    </svg>
+  );
+}
+
 function HabitCard({
   habit,
   onStatus,
@@ -452,25 +472,46 @@ function HabitCard({
         <NoteIcon />
       </button>
 
-      {/* Complete toggle. data-no-swipe + stopPropagation so tapping it neither
-          starts a swipe nor opens the detail page. */}
-      <button
-        type="button"
-        data-no-swipe
-        aria-label={done ? "Mark as not done today" : "Mark as done today"}
-        aria-pressed={done}
-        onClick={(e) => {
-          e.stopPropagation();
-          onStatus(habit.id, done ? "PENDING" : "COMPLETED");
-        }}
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
-          done
-            ? "border-calm-600 bg-calm-600 text-white"
-            : "border-calm-300 text-transparent hover:border-calm-500"
-        }`}
-      >
-        <CheckIcon />
-      </button>
+      {/* Skipped/missed habits are "parked": the right button restores them to
+          today's list (PENDING) so they can be acted on again. Active habits get
+          the usual complete toggle. Both are data-no-swipe + stopPropagation so a
+          tap neither starts a swipe nor opens the detail page. */}
+      {skipped || missed ? (
+        <button
+          type="button"
+          data-no-swipe
+          aria-label="Move back to today"
+          onClick={(e) => {
+            e.stopPropagation();
+            onStatus(habit.id, "PENDING");
+          }}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
+            skipped
+              ? "border-stone-300 text-stone-400 hover:border-stone-500 hover:text-stone-600"
+              : "border-rose-300 text-rose-400 hover:border-rose-500 hover:text-rose-600"
+          }`}
+        >
+          <RestoreIcon />
+        </button>
+      ) : (
+        <button
+          type="button"
+          data-no-swipe
+          aria-label={done ? "Mark as not done today" : "Mark as done today"}
+          aria-pressed={done}
+          onClick={(e) => {
+            e.stopPropagation();
+            onStatus(habit.id, done ? "PENDING" : "COMPLETED");
+          }}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
+            done
+              ? "border-calm-600 bg-calm-600 text-white"
+              : "border-calm-300 text-transparent hover:border-calm-500"
+          }`}
+        >
+          <CheckIcon />
+        </button>
+      )}
     </div>
   );
 }
