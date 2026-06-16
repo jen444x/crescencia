@@ -1030,7 +1030,7 @@ function PlansPage() {
   } else {
     body = (
       <div
-        className={`space-y-8 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
+        className={`space-y-6 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
       >
         {visiblePlans.map((plan) => {
           const key = plan.id ?? "anytime";
@@ -1046,7 +1046,7 @@ function PlansPage() {
               className="scroll-mt-6"
             >
               {/* Time label with a divider line; the current block gets a "Now" badge */}
-              <div className="flex items-center gap-3 mb-3">
+              <div className="flex items-center gap-3 mb-2">
                 <span
                   className={`text-xs font-medium uppercase tracking-wide ${
                     isNow ? "text-calm-700" : "text-calm-600"
