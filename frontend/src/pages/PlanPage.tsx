@@ -1,4 +1,9 @@
-import { useState, useEffect, type ReactNode } from "react";
+import {
+  useState,
+  useEffect,
+  type ReactNode,
+  type CSSProperties,
+} from "react";
 import Header from "../components/layout/Header";
 import { useNavigate } from "react-router-dom";
 import {
@@ -18,7 +23,9 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 type Plan = {
-  id: number;
+  // null for the "Anytime" group (habits with no schedule) — that group
+  // can't be reordered.
+  id: number | null;
   time: string | null;
   habits: Habit[];
 };
@@ -31,16 +38,9 @@ type Habit = {
   chain?: number | null;
   order?: number;
   // Has this habit been completed today? Comes from the backend so the
-  // toggle shows the right state after a page refresh. Optional for now
-  // (defaults to "not done") until your /plan/ endpoint sends it.
+  // toggle shows the right state after a page refresh.
   done_today?: boolean;
 };
-
-// A plan's habits, grouped for rendering: standalone habits stay on their own,
-// habits sharing a chain id collapse into one ordered chain.
-type PlanItem =
-  | { kind: "single"; habit: Habit }
-  | { kind: "chain"; chainId: number; steps: Habit[] };
 
 // "08:00:00" -> "8:00 AM"; null/empty -> "Anytime"
 function formatTime(time: string | null) {
@@ -52,32 +52,31 @@ function formatTime(time: string | null) {
   return `${hour12}:${minute} ${period}`;
 }
 
-function groupHabits(habits: Habit[]): PlanItem[] {
-  const items: PlanItem[] = [];
-  const chainPos = new Map<number, number>(); // chain id -> index in items
+// A row to render for one habit. `stepNumber` is its position within a chain
+// (1, 2, 3...) or null if it's a standalone habit. `connectBelow` draws the
+// little connector line down to the next step when they're in the same chain.
+type Row = {
+  habit: Habit;
+  stepNumber: number | null;
+  connectBelow: boolean;
+};
 
-  for (const habit of habits) {
-    if (habit.chain == null) {
-      items.push({ kind: "single", habit });
-      continue;
+// Walk a plan's habits (already in display order) and tag each one with its
+// chain step number + whether it links to the next row.
+function buildRows(habits: Habit[]): Row[] {
+  const counts = new Map<number, number>(); // chain id -> steps seen so far
+  return habits.map((habit, i) => {
+    let stepNumber: number | null = null;
+    if (habit.chain != null) {
+      const n = (counts.get(habit.chain) ?? 0) + 1;
+      counts.set(habit.chain, n);
+      stepNumber = n;
     }
-    const pos = chainPos.get(habit.chain);
-    if (pos === undefined) {
-      chainPos.set(habit.chain, items.length);
-      items.push({ kind: "chain", chainId: habit.chain, steps: [habit] });
-    } else {
-      (items[pos] as Extract<PlanItem, { kind: "chain" }>).steps.push(habit);
-    }
-  }
-
-  // Make sure each chain reads 1 -> 2 -> 3 regardless of backend order.
-  for (const item of items) {
-    if (item.kind === "chain") {
-      item.steps.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    }
-  }
-
-  return items;
+    const next = habits[i + 1];
+    const connectBelow =
+      habit.chain != null && next != null && next.chain === habit.chain;
+    return { habit, stepNumber, connectBelow };
+  });
 }
 
 // Return a NEW plans array with one habit's completion flipped.
@@ -92,23 +91,21 @@ function setHabitDone(plans: Plan[], habitId: number, done: boolean): Plan[] {
   }));
 }
 
-// Return a NEW plans array with one chain's steps renumbered to match
-// `orderedIds` (their order after a drag). Orders become 1-based and
-// contiguous. Pure + immutable, like setHabitDone above.
-function applyChainOrder(
+// Return a NEW plans array with one plan's habits set to `orderedHabits`,
+// renumbered 1..N. Pure + immutable, like setHabitDone above.
+function applyPlanOrder(
   plans: Plan[],
-  chainId: number,
-  orderedIds: number[],
+  planId: number,
+  orderedHabits: Habit[],
 ): Plan[] {
-  const orderById = new Map(orderedIds.map((id, i) => [id, i + 1]));
-  return plans.map((plan) => ({
-    ...plan,
-    habits: plan.habits.map((habit) =>
-      habit.chain === chainId && orderById.has(habit.id)
-        ? { ...habit, order: orderById.get(habit.id) }
-        : habit,
-    ),
-  }));
+  return plans.map((plan) =>
+    plan.id === planId
+      ? {
+          ...plan,
+          habits: orderedHabits.map((habit, i) => ({ ...habit, order: i + 1 })),
+        }
+      : plan,
+  );
 }
 
 function CheckIcon() {
@@ -130,16 +127,35 @@ function CheckIcon() {
   );
 }
 
+function GripIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+    >
+      <circle cx="9" cy="6" r="1.6" />
+      <circle cx="15" cy="6" r="1.6" />
+      <circle cx="9" cy="12" r="1.6" />
+      <circle cx="15" cy="12" r="1.6" />
+      <circle cx="9" cy="18" r="1.6" />
+      <circle cx="15" cy="18" r="1.6" />
+    </svg>
+  );
+}
+
 function HabitCard({
   habit,
   done,
   onToggle,
-  leading,
+  handle,
 }: {
   habit: Habit;
   done: boolean;
   onToggle: () => void;
-  leading?: ReactNode;
+  // Optional drag handle (a grip), rendered at the left inside the card.
+  handle?: ReactNode;
 }) {
   const navigate = useNavigate();
   return (
@@ -149,7 +165,7 @@ function HabitCard({
         done ? "bg-calm-50" : "bg-white"
       }`}
     >
-      {leading}
+      {handle}
       <h3
         className={`flex-1 font-medium ${
           done ? "text-calm-400 line-through" : "text-calm-900"
@@ -180,64 +196,59 @@ function HabitCard({
   );
 }
 
-// One chain rendered as a drag-to-reorder list. Grab a step's number badge
-// to drag it up or down; on drop we renumber the chain and persist.
-function SortableChain({
-  steps,
-  onReorder,
+// Shared layout. Chain steps get a numbered badge + connector line in a left
+// rail (a label only — dragging happens via the grip inside the card).
+// Standalone habits have no rail, so their card spans the full width.
+function RowLayout({
+  habit,
+  stepNumber,
+  connectBelow,
   onToggle,
+  handle,
+  nodeRef,
+  style,
 }: {
-  steps: Habit[];
-  onReorder: (orderedSteps: Habit[]) => void;
+  habit: Habit;
+  stepNumber: number | null;
+  connectBelow: boolean;
   onToggle: (habitId: number, nextDone: boolean) => void;
+  handle?: ReactNode;
+  nodeRef?: (node: HTMLElement | null) => void;
+  style?: CSSProperties;
 }) {
-  // Require a 6px drag before a pointer-down counts as a drag, so a plain
-  // tap still works as a click (toggle / open detail).
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-  );
-  const ids = steps.map((step) => step.id);
-
-  function handleDragEnd(event: DragEndEvent) {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const from = steps.findIndex((step) => step.id === Number(active.id));
-    const to = steps.findIndex((step) => step.id === Number(over.id));
-    onReorder(arrayMove(steps, from, to));
-  }
-
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragEnd={handleDragEnd}
-    >
-      <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-        {steps.map((step, i) => (
-          <SortableStep
-            key={step.id}
-            step={step}
-            index={i}
-            isLast={i === steps.length - 1}
-            onToggle={onToggle}
-          />
-        ))}
-      </SortableContext>
-    </DndContext>
+    <div ref={nodeRef} style={style} className="flex gap-3">
+      {stepNumber != null && (
+        <div className="flex flex-col items-center">
+          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-calm-600 text-[11px] font-medium text-white">
+            {stepNumber}
+          </span>
+          {connectBelow && <span className="w-px grow bg-calm-300" />}
+        </div>
+      )}
+      <div className="flex-1 pb-2">
+        <HabitCard
+          habit={habit}
+          done={!!habit.done_today}
+          onToggle={() => onToggle(habit.id, !habit.done_today)}
+          handle={handle}
+        />
+      </div>
+    </div>
   );
 }
 
-// A single chain step. The number badge is the drag handle; the card is the
-// habit itself.
-function SortableStep({
-  step,
-  index,
-  isLast,
+// A draggable habit row. The drag handle is a grip INSIDE the card; chain steps
+// also show their number in the left rail (label only).
+function SortableRow({
+  habit,
+  stepNumber,
+  connectBelow,
   onToggle,
 }: {
-  step: Habit;
-  index: number;
-  isLast: boolean;
+  habit: Habit;
+  stepNumber: number | null;
+  connectBelow: boolean;
   onToggle: (habitId: number, nextDone: boolean) => void;
 }) {
   const {
@@ -247,36 +258,125 @@ function SortableStep({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: step.id });
-  const style = {
+  } = useSortable({ id: habit.id });
+  const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
   };
 
+  const handle = (
+    <button
+      type="button"
+      aria-label="Drag to reorder"
+      {...attributes}
+      {...listeners}
+      // Don't let a tap on the grip open the habit's detail page.
+      onClick={(e) => e.stopPropagation()}
+      className="shrink-0 cursor-grab touch-none text-calm-300 hover:text-calm-500 active:cursor-grabbing"
+    >
+      <GripIcon />
+    </button>
+  );
+
   return (
-    <div ref={setNodeRef} style={style} className="flex gap-3">
-      {/* Number badge doubles as the drag handle. */}
-      <div className="flex flex-col items-center">
-        <button
-          type="button"
-          aria-label="Drag to reorder"
-          className="z-10 flex h-5 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-full bg-calm-600 text-[11px] font-medium text-white active:cursor-grabbing"
-          {...attributes}
-          {...listeners}
-        >
-          {index + 1}
-        </button>
-        {!isLast && <span className="w-px grow bg-calm-300" />}
-      </div>
-      <div className={`flex-1 ${isLast ? "" : "pb-2"}`}>
-        <HabitCard
-          habit={step}
-          done={!!step.done_today}
-          onToggle={() => onToggle(step.id, !step.done_today)}
-        />
-      </div>
-    </div>
+    <RowLayout
+      habit={habit}
+      stepNumber={stepNumber}
+      connectBelow={connectBelow}
+      onToggle={onToggle}
+      handle={handle}
+      nodeRef={setNodeRef}
+      style={style}
+    />
+  );
+}
+
+// A non-draggable habit row (the "Anytime" group, which has no schedules).
+function StaticRow({
+  habit,
+  onToggle,
+}: {
+  habit: Habit;
+  onToggle: (habitId: number, nextDone: boolean) => void;
+}) {
+  return (
+    <RowLayout
+      habit={habit}
+      stepNumber={null}
+      connectBelow={false}
+      onToggle={onToggle}
+    />
+  );
+}
+
+// All of one plan's habits as a single drag-to-reorder list. Grab a habit's
+// handle to move it; on drop we renumber the plan and persist.
+function PlanBoard({
+  plan,
+  onToggle,
+  onReorder,
+}: {
+  plan: Plan;
+  onToggle: (habitId: number, nextDone: boolean) => void;
+  onReorder: (planId: number, orderedHabits: Habit[]) => void;
+}) {
+  // Require a 6px drag before a pointer-down counts as a drag, so a plain tap
+  // still works as a click (toggle / open detail).
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+
+  const planId = plan.id;
+  const habits = plan.habits;
+
+  // The "Anytime" group has no schedule rows, so it can't be reordered.
+  if (planId == null) {
+    return (
+      <ul>
+        {habits.map((habit) => (
+          <li key={habit.id}>
+            <StaticRow habit={habit} onToggle={onToggle} />
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  const rows = buildRows(habits);
+  const ids = habits.map((habit) => habit.id);
+
+  function handleDragEnd(event: DragEndEvent) {
+    if (planId == null) return;
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const from = habits.findIndex((h) => h.id === Number(active.id));
+    const to = habits.findIndex((h) => h.id === Number(over.id));
+    if (from < 0 || to < 0) return;
+    onReorder(planId, arrayMove(habits, from, to));
+  }
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+        <ul>
+          {rows.map((row) => (
+            <li key={row.habit.id}>
+              <SortableRow
+                habit={row.habit}
+                stepNumber={row.stepNumber}
+                connectBelow={row.connectBelow}
+                onToggle={onToggle}
+              />
+            </li>
+          ))}
+        </ul>
+      </SortableContext>
+    </DndContext>
   );
 }
 
@@ -309,25 +409,20 @@ function PlansPage() {
     }
   }
 
-  // Persist a chain's new step order after a drag. `orderedSteps` is the
-  // chain's habits in their new order. Optimistic, with a snapshot we
-  // restore if the save fails.
-  async function reorderSteps(orderedSteps: Habit[]) {
-    if (orderedSteps.length === 0) return;
-    const chainId = orderedSteps[0].chain;
+  // Persist a plan's new habit order after a drag. `orderedHabits` is the
+  // plan's habits in their new order. Optimistic, with a snapshot we restore
+  // if the save fails.
+  async function reorderPlan(planId: number, orderedHabits: Habit[]) {
+    if (orderedHabits.length === 0) return;
     const snapshot = plans;
+    setPlans((prev) => applyPlanOrder(prev, planId, orderedHabits));
 
-    if (chainId != null) {
-      const orderedIds = orderedSteps.map((step) => step.id);
-      setPlans((prev) => applyChainOrder(prev, chainId, orderedIds));
-    }
-
-    // Backend keys on schedule_id (NOT habit id) and wants the whole
-    // affected list with fresh 1..N orders. We leave `chain` unchanged
-    // for an in-chain reorder.
-    const items = orderedSteps.map((step, i) => ({
-      id: step.schedule_id,
+    // Backend keys on schedule_id (NOT habit id) and wants the whole list
+    // with fresh 1..N orders. We keep each habit's chain as-is.
+    const items = orderedHabits.map((habit, i) => ({
+      id: habit.schedule_id,
       order: i + 1,
+      chain: habit.chain ?? null,
     }));
 
     try {
@@ -416,7 +511,7 @@ function PlansPage() {
       <Header title="Plan" body="" />
       <div className="max-w-md mx-auto space-y-8">
         {plans.map((plan) => (
-          <section key={plan.id}>
+          <section key={plan.id ?? "anytime"}>
             {/* Time label with a divider line */}
             <div className="flex items-center gap-3 mb-3">
               <span className="text-xs font-medium uppercase tracking-wide text-calm-600">
@@ -425,33 +520,12 @@ function PlansPage() {
               <div className="flex-1 h-px bg-calm-200" />
             </div>
 
-            {/* Habits scheduled at this time */}
-            <ul className="space-y-2">
-              {groupHabits(plan.habits).map((item) =>
-                item.kind === "single" ? (
-                  <li key={`h-${item.habit.id}`}>
-                    <HabitCard
-                      habit={item.habit}
-                      done={!!item.habit.done_today}
-                      onToggle={() =>
-                        toggleHabit(item.habit.id, !item.habit.done_today)
-                      }
-                      leading={
-                        <span className="h-2 w-2 rounded-full bg-calm-400 shrink-0" />
-                      }
-                    />
-                  </li>
-                ) : (
-                  <li key={`c-${item.chainId}`}>
-                    <SortableChain
-                      steps={item.steps}
-                      onReorder={reorderSteps}
-                      onToggle={toggleHabit}
-                    />
-                  </li>
-                ),
-              )}
-            </ul>
+            {/* Habits scheduled at this time (drag the handle to reorder) */}
+            <PlanBoard
+              plan={plan}
+              onToggle={toggleHabit}
+              onReorder={reorderPlan}
+            />
           </section>
         ))}
       </div>
