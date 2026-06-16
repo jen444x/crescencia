@@ -12,6 +12,7 @@ urlpatterns = [
     path("habits/<int:habit_id>/", views.habit, name="habit"),
     path("habits/<int:habit_id>/edit/", views.edit_habit, name="edit_habit"),
     path("habits/<int:habit_id>/log/", views.log_habit, name="log_habit"),
+    path("days/skip/", views.skip_day, name="skip_day"),
     path("schedules/reorder/", views.reorder_schedules, name="reorder_schedules"),
     path("plans/shift/", views.shift_plans, name="shift_plans"),
     path("areas/", views.areas, name="areas"),

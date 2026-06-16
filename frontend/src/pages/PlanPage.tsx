@@ -307,6 +307,26 @@ function ChevronIcon({ open }: { open: boolean }) {
   );
 }
 
+function ClockIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <circle cx="12" cy="12" r="9" strokeWidth={2} />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M12 7v5l3 2"
+      />
+    </svg>
+  );
+}
+
 function HabitCard({
   habit,
   onStatus,
@@ -829,6 +849,109 @@ function DateNav({
   );
 }
 
+// The ⏱ "running late" control on a time block. Pushing this cycle later moves
+// it AND everything after it that day (the backend cascades + clamps); it's a
+// per-day override, so the recurring routine is untouched. Deliberately separate
+// from drag-reorder, which moves just one habit without changing times.
+function ShiftControl({
+  planId,
+  onShift,
+}: {
+  planId: number;
+  onShift: (planId: number, minutes: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [custom, setCustom] = useState(15);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close the popover on an outside click or Escape.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  function apply(minutes: number) {
+    if (!minutes) return;
+    onShift(planId, minutes);
+    setOpen(false);
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="Running late — shift this cycle and everything after it"
+        aria-expanded={open}
+        className="flex h-6 w-6 items-center justify-center rounded-full text-calm-500 transition-colors hover:bg-calm-100 hover:text-calm-700"
+      >
+        <ClockIcon />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-7 z-30 w-60 rounded-xl border border-calm-200 bg-white p-3 text-left shadow-lg">
+          <p className="text-xs font-semibold text-calm-700">Running late?</p>
+          <p className="mb-2 text-[11px] leading-snug text-stone-400">
+            Moves this cycle and everything after it — today only.
+          </p>
+
+          <div className="flex gap-1.5">
+            {[15, 30, 45].map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => apply(m)}
+                className="flex-1 rounded-lg bg-calm-100 py-1.5 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-200"
+              >
+                +{m}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-2 flex items-center gap-1.5">
+            <input
+              type="number"
+              min={1}
+              value={custom}
+              onChange={(e) =>
+                setCustom(Math.max(1, parseInt(e.target.value, 10) || 0))
+              }
+              aria-label="Custom minutes"
+              className="w-12 rounded-lg border border-calm-200 px-2 py-1 text-xs text-calm-700"
+            />
+            <span className="text-[11px] text-stone-400">min</span>
+            <button
+              type="button"
+              onClick={() => apply(-custom)}
+              className="flex-1 rounded-lg border border-calm-200 py-1 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+            >
+              Earlier
+            </button>
+            <button
+              type="button"
+              onClick={() => apply(custom)}
+              className="flex-1 rounded-lg border border-calm-200 py-1 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+            >
+              Later
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Floating "back to top" button. The page auto-scrolls down to the current time
 // block on load, so this is a one-tap way back up to earlier habits. Sits on the
 // left (the "+" FAB is on the right) and only appears once you've scrolled down.
@@ -878,6 +1001,9 @@ function PlansPage() {
   // the new day and its statuses come from that day's logs.
   const [viewedDate, setViewedDate] = useState(() => startOfDay(new Date()));
   const isViewingToday = isSameDay(viewedDate, new Date());
+
+  // Bump to force a re-fetch of the current day (e.g. after a "running late" shift).
+  const [reloadToken, setReloadToken] = useState(0);
 
   // The time block happening right now — used to badge it "Now" and to scroll
   // the page there on first load.
@@ -975,7 +1101,32 @@ function PlansPage() {
       }
     }
     fetchPlans();
-  }, [viewedDate]);
+    // Re-runs when the viewed day changes, or reloadToken is bumped (e.g. after
+    // a "running late" shift) to pull the day's new effective times.
+  }, [viewedDate, reloadToken]);
+
+  // "Running late": push a cycle (and everything after it that day) to a later
+  // time — negative minutes pulls it earlier. The backend stores a per-day
+  // override, never touching the recurring routine. We re-fetch afterward
+  // because /plan/ returns the day's new effective times, already re-sorted.
+  async function shiftFromPlan(planId: number, minutes: number) {
+    const today = isSameDay(viewedDate, new Date());
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/plans/shift/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          today
+            ? { from_plan: planId, minutes }
+            : { from_plan: planId, minutes, date: toYMD(viewedDate) },
+        ),
+      });
+      if (!res.ok) throw new Error("Request failed");
+      setReloadToken((token) => token + 1); // re-fetch the day's new times
+    } catch {
+      // The shift didn't apply; nothing changed in the UI to roll back.
+    }
+  }
 
   // After the first load, open the page at the time block happening now, so the
   // user doesn't scroll past the whole morning to reach their current habits.
@@ -1060,6 +1211,10 @@ function PlansPage() {
                   </span>
                 )}
                 <div className="flex-1 h-px bg-calm-200" />
+                {/* "Running late" shift — only on real timed cycles */}
+                {plan.id != null && plan.time && (
+                  <ShiftControl planId={plan.id} onShift={shiftFromPlan} />
+                )}
               </div>
 
               {/* Habits at this time. Drag the grip to reorder, swipe a card

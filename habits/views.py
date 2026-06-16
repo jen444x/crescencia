@@ -210,6 +210,52 @@ def log_habit(request, habit_id):
 
 @csrf_exempt
 @require_POST
+def skip_day(request):
+    """Skip every habit for a whole day in one shot (e.g. you're out of town).
+
+    Body: {"date"?: "YYYY-MM-DD"} (defaults today). Marks every habit that
+    existed on that day SKIPPED — but leaves ones already COMPLETED alone, so a
+    blanket skip never erases a win. One log per habit per day, so re-running it
+    changes nothing new (idempotent).
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+
+    # Only habits that existed on that day (same rule /plan/ uses).
+    habit_ids = list(
+        Habit.objects.filter(date_added__date__lte=target_date).values_list("id", flat=True)
+    )
+    todays_logs = HabitLog.objects.filter(date=target_date, habit_id__in=habit_ids)
+
+    with transaction.atomic():
+        # Flip the ones already logged-but-not-completed to SKIPPED...
+        updated = todays_logs.exclude(status=HabitLog.Status.COMPLETED).update(
+            status=HabitLog.Status.SKIPPED, time=None
+        )
+        # ...and add a SKIPPED log for habits that had none yet. (Habits already
+        # COMPLETED keep their existing log, so they're preserved untouched.)
+        logged_ids = set(todays_logs.values_list("habit_id", flat=True))
+        created = HabitLog.objects.bulk_create([
+            HabitLog(habit_id=hid, date=target_date, status=HabitLog.Status.SKIPPED)
+            for hid in habit_ids if hid not in logged_ids
+        ])
+
+    skipped = updated + len(created)
+    return JsonResponse({
+        "date": target_date,
+        "skipped": skipped,
+        "kept_completed": len(habit_ids) - skipped,
+    })
+
+
+@csrf_exempt
+@require_POST
 def reorder_schedules(request):
     """Apply a new arrangement to a set of schedules in one shot.
 

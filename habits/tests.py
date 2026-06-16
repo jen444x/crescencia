@@ -188,3 +188,53 @@ class ShiftPlansTests(TestCase):
         self.assertEqual(self._shift(from_plan=999999, minutes=10).status_code, 400)
         self.assertEqual(self._shift(from_plan=self.mid.id, minutes="lots").status_code, 400)
         self.assertEqual(self._shift(minutes=10).status_code, 400)  # missing from_plan
+
+
+class SkipDayTests(TestCase):
+    """Skip every habit for a whole day in one tap (e.g. out of town), without
+    erasing anything you'd already completed."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.url = reverse("habits:skip_day")
+        self.a = Habit.objects.create(name="A")
+        self.b = Habit.objects.create(name="B")
+        self.c = Habit.objects.create(name="C")
+
+    def _skip(self, **body):
+        return self.client.post(self.url, data=body, content_type="application/json")
+
+    def _status(self, habit, date=None):
+        return HabitLog.objects.get(habit=habit, date=date or self.today).status
+
+    def test_skips_every_habit_today(self):
+        response = self._skip()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content)["skipped"], 3)
+        for habit in (self.a, self.b, self.c):
+            self.assertEqual(self._status(habit), "SKIPPED")
+
+    def test_keeps_completions(self):
+        HabitLog.objects.create(
+            habit=self.a, date=self.today, status=HabitLog.Status.COMPLETED
+        )
+        body = json.loads(self._skip().content)
+        self.assertEqual(body["skipped"], 2)
+        self.assertEqual(body["kept_completed"], 1)
+        self.assertEqual(self._status(self.a), "COMPLETED")  # win preserved
+        self.assertEqual(self._status(self.b), "SKIPPED")
+
+    def test_idempotent_no_duplicate_logs(self):
+        self._skip()
+        self._skip()
+        self.assertEqual(HabitLog.objects.filter(date=self.today).count(), 3)
+
+    def test_only_skips_habits_that_existed_that_day(self):
+        # All three were created today, so two days ago none existed.
+        two_days_ago = (self.today - timedelta(days=2)).isoformat()
+        body = json.loads(self._skip(date=two_days_ago).content)
+        self.assertEqual(body["skipped"], 0)
+        self.assertEqual(HabitLog.objects.count(), 0)
+
+    def test_rejects_bad_date(self):
+        self.assertEqual(self._skip(date="nope").status_code, 400)
