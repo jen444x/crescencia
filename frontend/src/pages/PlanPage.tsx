@@ -161,7 +161,7 @@ function PlansPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            status: nextDone ? "COMPLETED" : "UNTRACKED",
+            status: nextDone ? "COMPLETED" : "PENDING",
           }),
         },
       );

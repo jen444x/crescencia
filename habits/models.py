@@ -61,12 +61,25 @@ class HabitLog(models.Model):
         SKIPPED = 'SKIPPED', 'Skipped'
         # UNTRACKED = 'UNTRACKED', 'Untracked' # Optional, used for unanswered days'
 
-    # includes habit and time 
+    # includes habit and time
     habit = models.ForeignKey(Habit, on_delete=models.SET_NULL, null=True)
     date = models.DateField()
     time = models.TimeField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     notes = models.TextField(blank=True)
+
+    class Meta:
+        # A habit has exactly one log per day, so completing/skipping it just
+        # updates that row instead of ever creating a duplicate.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["habit", "date"],
+                name="one_log_per_habit_per_day",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.date} - {self.habit} ({self.status})"
 
 
 class HabitTier(models.Model):

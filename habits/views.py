@@ -1,5 +1,4 @@
 import json
-from datetime import date
 
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
@@ -15,32 +14,36 @@ def index(request):
 
 
 def plan(request):
-    today = date.today()
+    today = timezone.localdate()
 
-    # Habit ids completed today, so the UI shows the right checkmarks
-    # after a page refresh.
-    completed_today = set(
-        HabitLog.objects.filter(
-            date=today, status=HabitLog.Status.COMPLETED
-        ).values_list("habit_id", flat=True)
+    # Today's status for each habit, so the UI shows the right state
+    # (pending / completed / skipped) after a page refresh. Habits with no
+    # log yet default to PENDING below.
+    status_by_habit = dict(
+        HabitLog.objects.filter(date=today).values_list("habit_id", "status")
     )
+
+    def habit_payload(habit, chain=None, order=None):
+        status = status_by_habit.get(habit.id, HabitLog.Status.PENDING)
+        return {
+            "id": habit.id,
+            "name": habit.name,
+            "chain": chain,   # cycle id, or None if standalone
+            "order": order,
+            "status": status,
+            "done_today": status == HabitLog.Status.COMPLETED,
+        }
 
     data = []
     # One query for the plans + their schedules + habits.
     plans = Plan.objects.prefetch_related("schedule_set__habit")
     for plan in plans:
-        habits = []
-        # Each Schedule row now carries its own habit, chain (cycle), and
-        # order, so we just emit each one. The frontend groups the chains.
-        for schedule in plan.schedule_set.all():
-            habit = schedule.habit
-            habits.append({
-                "id": habit.id,
-                "name": habit.name,
-                "chain": schedule.chain_id,   # cycle id, or None if standalone
-                "order": schedule.order,
-                "done_today": habit.id in completed_today,
-            })
+        # Each Schedule row carries its own habit, chain (cycle), and order,
+        # so we just emit each one. The frontend groups the chains.
+        habits = [
+            habit_payload(schedule.habit, chain=schedule.chain_id, order=schedule.order)
+            for schedule in plan.schedule_set.all()
+        ]
         data.append({
             "id": plan.id,
             "time": plan.start_time,
@@ -52,15 +55,7 @@ def plan(request):
     data.append({
         "id": None,
         "time": None,
-        "habits": [
-            {
-                "id": h.id,
-                "name": h.name,
-                "chain": None,
-                "done_today": h.id in completed_today,
-            }
-            for h in unscheduled
-        ],
+        "habits": [habit_payload(h) for h in unscheduled],
     })
 
     return JsonResponse(data, safe=False)
@@ -69,36 +64,50 @@ def plan(request):
 @csrf_exempt
 @require_POST
 def log_habit(request, habit_id):
-    """Mark a habit done / not-done for today (the Plan page toggle calls this)."""
+    """Set a habit's status for today.
+
+    The Plan page buttons send one of three statuses:
+      - COMPLETED  -> complete it
+      - PENDING    -> undo (back to the morning's not-done state)
+      - SKIPPED    -> skip it for today
+    """
     habit = get_object_or_404(Habit, id=habit_id)
 
     try:
         body = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
-        body = {}
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
     requested_status = body.get("status")
+    if requested_status not in HabitLog.Status.values:
+        return JsonResponse(
+            {"error": f"'status' must be one of {HabitLog.Status.values}."},
+            status=400,
+        )
 
-    # One log per habit per day; create it the first time it's toggled.
-    log, _ = HabitLog.objects.get_or_create(habit=habit, date=date.today())
+    # One log per habit per day; create it the first time it's touched.
+    log, _ = HabitLog.objects.get_or_create(habit=habit, date=timezone.localdate())
 
-    if requested_status == HabitLog.Status.COMPLETED:
-        log.status = HabitLog.Status.COMPLETED
-        log.time = timezone.localtime().time()   # when it was actually done
-    else:
-        # Anything else (e.g. unchecking) resets it to not-done.
-        log.status = HabitLog.Status.PENDING
-        log.time = None
+    log.status = requested_status
+    # Only a completion has a meaningful "time done"; clear it otherwise.
+    log.time = (
+        timezone.localtime().time()
+        if requested_status == HabitLog.Status.COMPLETED
+        else None
+    )
     log.save()
 
+    # Return the saved state so the UI can reconcile against the truth.
     return JsonResponse({
-        "habit": habit.id,
+        "habit_id": habit.id,
+        "date": log.date,
         "status": log.status,
         "done_today": log.status == HabitLog.Status.COMPLETED,
     })
 
 
 def logs(request):
-    todays_logs = HabitLog.objects.filter(date=date.today()).order_by("time")
+    todays_logs = HabitLog.objects.filter(date=timezone.localdate()).order_by("time")
     data = [
         {
             "id": log.id,
