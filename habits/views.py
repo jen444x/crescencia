@@ -1,6 +1,7 @@
 import json
 
 from django.db import transaction
+from django.db.models import F, Prefetch
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -37,8 +38,15 @@ def plan(request):
         }
 
     data = []
-    # One query for the plans + their schedules + habits.
-    plans = Plan.objects.prefetch_related("schedule_set__habit")
+    # One query for the plans + their schedules + habits, with schedules sorted
+    # by their saved position so /plan/ reflects reordering. Habits with no
+    # explicit order (nulls) go last; id breaks ties so the list is stable.
+    ordered_schedules = Schedule.objects.select_related("habit").order_by(
+        F("order").asc(nulls_last=True), "id"
+    )
+    plans = Plan.objects.prefetch_related(
+        Prefetch("schedule_set", queryset=ordered_schedules)
+    )
     for plan in plans:
         # Each Schedule row carries its own habit, chain (cycle), and order,
         # so we just emit each one. The frontend groups the chains.
