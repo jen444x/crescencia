@@ -9,6 +9,7 @@ urlpatterns = [
     path("plan/", views.plan, name="plan"),
     path("logs/", views.logs, name="logs"),
     path("habits/<int:habit_id>/log/", views.log_habit, name="log_habit"),
+    path("schedules/reorder/", views.reorder_schedules, name="reorder_schedules"),
     path("areas/", views.areas, name="areas"),
     path("areas/<int:area_id>/", views.area, name="area"),
 ]

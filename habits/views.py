@@ -1,12 +1,13 @@
 import json
 
+from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Habit, Plan, Schedule, HabitLog
+from .models import Area, Chain, Habit, Plan, Schedule, HabitLog
 
 
 def index(request):
@@ -23,10 +24,11 @@ def plan(request):
         HabitLog.objects.filter(date=today).values_list("habit_id", "status")
     )
 
-    def habit_payload(habit, chain=None, order=None):
+    def habit_payload(habit, schedule_id=None, chain=None, order=None):
         status = status_by_habit.get(habit.id, HabitLog.Status.PENDING)
         return {
             "id": habit.id,
+            "schedule_id": schedule_id,   # the row to target when reordering
             "name": habit.name,
             "chain": chain,   # cycle id, or None if standalone
             "order": order,
@@ -41,7 +43,12 @@ def plan(request):
         # Each Schedule row carries its own habit, chain (cycle), and order,
         # so we just emit each one. The frontend groups the chains.
         habits = [
-            habit_payload(schedule.habit, chain=schedule.chain_id, order=schedule.order)
+            habit_payload(
+                schedule.habit,
+                schedule_id=schedule.id,
+                chain=schedule.chain_id,
+                order=schedule.order,
+            )
             for schedule in plan.schedule_set.all()
         ]
         data.append({
@@ -104,6 +111,83 @@ def log_habit(request, habit_id):
         "status": log.status,
         "done_today": log.status == HabitLog.Status.COMPLETED,
     })
+
+
+@csrf_exempt
+@require_POST
+def reorder_schedules(request):
+    """Apply a new arrangement to a set of schedules in one shot.
+
+    After a drag-and-drop the Plan page sends every affected row with its new
+    position (and its new cycle, if it was moved between chains):
+
+        {"items": [
+            {"id": 10, "order": 1},               # just moved within the list
+            {"id": 11, "order": 2, "chain": 3},   # also moved into cycle 3
+            {"id": 12, "order": 3, "chain": null} # pulled out to standalone
+        ]}
+
+    `chain` is optional: it's only changed when the key is present (null means
+    "no cycle"). Sending the whole list — instead of "move row X up one" — keeps
+    this idempotent and avoids shuffling neighbours one index at a time.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        return JsonResponse({"error": "'items' must be a non-empty list."}, status=400)
+
+    # Validate everything before touching the DB, so a bad item can never leave
+    # a half-applied order behind.
+    cleaned = []
+    for item in items:
+        if not isinstance(item, dict):
+            return JsonResponse({"error": "Each item must be an object."}, status=400)
+        sid, order = item.get("id"), item.get("order")
+        # bool is a subclass of int, so reject it explicitly.
+        if not isinstance(sid, int) or isinstance(sid, bool) \
+                or not isinstance(order, int) or isinstance(order, bool):
+            return JsonResponse(
+                {"error": "Each item needs an integer 'id' and 'order'."}, status=400
+            )
+        entry = {"id": sid, "order": order}
+        if "chain" in item:
+            entry["chain"] = item["chain"]   # None or a chain id
+        cleaned.append(entry)
+
+    schedules = Schedule.objects.in_bulk([e["id"] for e in cleaned])
+    missing = [e["id"] for e in cleaned if e["id"] not in schedules]
+    if missing:
+        return JsonResponse({"error": f"Unknown schedule ids: {missing}."}, status=400)
+
+    # Validate any chain ids referenced before applying.
+    chain_ids = {e["chain"] for e in cleaned if e.get("chain") is not None}
+    if chain_ids:
+        known = set(Chain.objects.filter(id__in=chain_ids).values_list("id", flat=True))
+        unknown = sorted(chain_ids - known)
+        if unknown:
+            return JsonResponse({"error": f"Unknown chain ids: {unknown}."}, status=400)
+
+    fields = {"order"}
+    for e in cleaned:
+        schedule = schedules[e["id"]]
+        schedule.order = e["order"]
+        if "chain" in e:
+            schedule.chain_id = e["chain"]
+            fields.add("chain")
+
+    # One UPDATE for the whole batch, all-or-nothing.
+    with transaction.atomic():
+        Schedule.objects.bulk_update(schedules.values(), list(fields))
+
+    updated = [
+        {"id": s.id, "order": s.order, "chain": s.chain_id}
+        for s in sorted(schedules.values(), key=lambda s: s.order)
+    ]
+    return JsonResponse({"updated": updated})
 
 
 def logs(request):
