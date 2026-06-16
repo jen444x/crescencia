@@ -5,6 +5,7 @@ from django.db.models import F, Prefetch
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
@@ -15,14 +16,45 @@ def index(request):
     return JsonResponse({"message": "Hello from Django!"})
 
 
-def plan(request):
-    today = timezone.localdate()
+def _resolve_date(value):
+    """Turn an optional 'YYYY-MM-DD' string into a date.
 
-    # Today's status for each habit, so the UI shows the right state
-    # (pending / completed / skipped) after a page refresh. Habits with no
-    # log yet default to PENDING below.
+    Returns ``(date, None)`` for a usable value, or ``(None, error_response)``
+    so callers can ``if err: return err``. ``value`` of ``None`` means "today",
+    so endpoints that omit the field keep their old today-only behaviour.
+    """
+    if value is None:
+        return timezone.localdate(), None
+    if not isinstance(value, str):
+        return None, JsonResponse(
+            {"error": "'date' must be a 'YYYY-MM-DD' string."}, status=400
+        )
+    try:
+        parsed = parse_date(value)   # None if the format is wrong
+    except ValueError:
+        parsed = None                # right format, impossible date (e.g. 2026-02-30)
+    if parsed is None:
+        return None, JsonResponse(
+            {"error": f"'date' must be a valid 'YYYY-MM-DD' date, got {value!r}."},
+            status=400,
+        )
+    return parsed, None
+
+
+def plan(request):
+    # Which day to show. Defaults to today; the day-browser passes
+    # ?date=YYYY-MM-DD to view any other day. The plan/schedule layout is the
+    # same every day — only each habit's status (its HabitLog for that day)
+    # changes, so we just swap which date we look the statuses up for.
+    target_date, date_error = _resolve_date(request.GET.get("date"))
+    if date_error:
+        return date_error
+
+    # That day's status for each habit, so the UI shows the right state
+    # (pending / completed / skipped). Habits with no log for the day default
+    # to PENDING below.
     status_by_habit = dict(
-        HabitLog.objects.filter(date=today).values_list("habit_id", "status")
+        HabitLog.objects.filter(date=target_date).values_list("habit_id", "status")
     )
 
     def habit_payload(habit, schedule_id=None, chain=None, order=None):
@@ -79,12 +111,13 @@ def plan(request):
 @csrf_exempt
 @require_POST
 def log_habit(request, habit_id):
-    """Set a habit's status for today.
+    """Set a habit's status for a given day (defaults to today).
 
-    The Plan page buttons send one of three statuses:
+    Body: {"status": ..., "date"?: "YYYY-MM-DD"}. The Plan page buttons send one
+    of three statuses:
       - COMPLETED  -> complete it
       - PENDING    -> undo (back to the morning's not-done state)
-      - SKIPPED    -> skip it for today
+      - SKIPPED    -> skip it for the day
     """
     habit = get_object_or_404(Habit, id=habit_id)
 
@@ -100,8 +133,15 @@ def log_habit(request, habit_id):
             status=400,
         )
 
+    # Which day this log is for. Defaults to today, so the existing toggle keeps
+    # working unchanged; the day-browser passes "date" to log against the day
+    # it's showing (e.g. ticking off something you forgot yesterday).
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+
     # One log per habit per day; create it the first time it's touched.
-    log, _ = HabitLog.objects.get_or_create(habit=habit, date=timezone.localdate())
+    log, _ = HabitLog.objects.get_or_create(habit=habit, date=target_date)
 
     log.status = requested_status
     # Only a completion has a meaningful "time done"; clear it otherwise.

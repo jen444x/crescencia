@@ -1,8 +1,10 @@
 import {
   useState,
   useEffect,
+  useRef,
   type ReactNode,
   type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import Header from "../components/layout/Header";
 import { useNavigate } from "react-router-dom";
@@ -22,6 +24,10 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
+// The three states a habit can be in for a given day. Matches the backend's
+// HabitLog.Status values.
+type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED";
+
 type Plan = {
   // null for the "Anytime" group (habits with no schedule) — that group
   // can't be reordered.
@@ -37,10 +43,19 @@ type Habit = {
   name: string;
   chain?: number | null;
   order?: number;
-  // Has this habit been completed today? Comes from the backend so the
-  // toggle shows the right state after a page refresh.
+  // Today's status from the backend. `done_today` is the convenience boolean
+  // (status === "COMPLETED"); we keep both since the API sends both.
+  status?: HabitStatus;
   done_today?: boolean;
 };
+
+// Read a habit's state, tolerating an older payload that only had done_today.
+function isDone(habit: Habit) {
+  return habit.status ? habit.status === "COMPLETED" : !!habit.done_today;
+}
+function isSkipped(habit: Habit) {
+  return habit.status === "SKIPPED";
+}
 
 // "08:00:00" -> "8:00 AM"; null/empty -> "Anytime"
 function formatTime(time: string | null) {
@@ -79,20 +94,25 @@ function buildRows(habits: Habit[]): Row[] {
   });
 }
 
-// Return a NEW plans array with one habit's completion flipped.
-// Pure + immutable: we build new objects instead of mutating the old ones,
-// so React reliably notices the change and re-renders.
-function setHabitDone(plans: Plan[], habitId: number, done: boolean): Plan[] {
+// Return a NEW plans array with one habit's status set (and done_today kept in
+// sync). Pure + immutable, so React reliably re-renders.
+function applyStatus(
+  plans: Plan[],
+  habitId: number,
+  status: HabitStatus,
+): Plan[] {
   return plans.map((plan) => ({
     ...plan,
     habits: plan.habits.map((habit) =>
-      habit.id === habitId ? { ...habit, done_today: done } : habit,
+      habit.id === habitId
+        ? { ...habit, status, done_today: status === "COMPLETED" }
+        : habit,
     ),
   }));
 }
 
 // Return a NEW plans array with one plan's habits set to `orderedHabits`,
-// renumbered 1..N. Pure + immutable, like setHabitDone above.
+// renumbered 1..N. Pure + immutable, like applyStatus above.
 function applyPlanOrder(
   plans: Plan[],
   planId: number,
@@ -147,42 +167,51 @@ function GripIcon() {
 
 function HabitCard({
   habit,
-  done,
-  onToggle,
+  onStatus,
   handle,
 }: {
   habit: Habit;
-  done: boolean;
-  onToggle: () => void;
+  onStatus: (habitId: number, status: HabitStatus) => void;
   // Optional drag handle (a grip), rendered at the left inside the card.
   handle?: ReactNode;
 }) {
-  const navigate = useNavigate();
+  const done = isDone(habit);
+  const skipped = isSkipped(habit);
   return (
     <div
-      onClick={() => navigate(`/habits/${habit.id}`)}
       className={`group flex items-center gap-3 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
-        done ? "bg-calm-50" : "bg-white"
+        done ? "bg-calm-50" : skipped ? "bg-stone-50" : "bg-white"
       }`}
     >
       {handle}
       <h3
         className={`flex-1 font-medium ${
-          done ? "text-calm-400 line-through" : "text-calm-900"
+          done
+            ? "text-calm-400 line-through"
+            : skipped
+              ? "text-stone-400"
+              : "text-calm-900"
         }`}
       >
         {habit.name}
       </h3>
 
-      {/* Complete toggle. We stopPropagation so tapping it doesn't ALSO
-          fire the card's navigate() and open the detail page. */}
+      {skipped && (
+        <span className="shrink-0 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-500">
+          Skipped
+        </span>
+      )}
+
+      {/* Complete toggle. data-no-swipe + stopPropagation so tapping it neither
+          starts a swipe nor opens the detail page. */}
       <button
         type="button"
+        data-no-swipe
         aria-label={done ? "Mark as not done today" : "Mark as done today"}
         aria-pressed={done}
         onClick={(e) => {
           e.stopPropagation();
-          onToggle();
+          onStatus(habit.id, done ? "PENDING" : "COMPLETED");
         }}
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
           done
@@ -196,6 +225,90 @@ function HabitCard({
   );
 }
 
+// Wraps a habit card with a horizontal swipe gesture:
+//   swipe left  -> SKIPPED
+//   swipe right -> PENDING (reset / un-skip)
+// A plain tap opens the habit. We hand-roll this with pointer events so it
+// coexists with the drag handle (grip) and the complete button, both of which
+// are marked data-no-swipe and ignored here.
+const SWIPE_TRIGGER = 70; // px past which a release fires the action
+const SWIPE_MAX = 110; // px the card is allowed to follow your finger
+
+function SwipeableCard({
+  habit,
+  onStatus,
+  handle,
+}: {
+  habit: Habit;
+  onStatus: (habitId: number, status: HabitStatus) => void;
+  handle?: ReactNode;
+}) {
+  const navigate = useNavigate();
+  const [dx, setDx] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const startX = useRef<number | null>(null);
+  const moved = useRef(false);
+
+  function onPointerDown(e: ReactPointerEvent) {
+    // Ignore presses that begin on the grip or the complete toggle.
+    if ((e.target as HTMLElement).closest("[data-no-swipe]")) return;
+    startX.current = e.clientX;
+    moved.current = false;
+    setDragging(true);
+  }
+  function onPointerMove(e: ReactPointerEvent) {
+    if (startX.current == null) return;
+    const delta = e.clientX - startX.current;
+    if (Math.abs(delta) > 6) moved.current = true;
+    setDx(Math.max(-SWIPE_MAX, Math.min(SWIPE_MAX, delta)));
+  }
+  function onPointerEnd() {
+    if (startX.current == null) return;
+    if (dx <= -SWIPE_TRIGGER) onStatus(habit.id, "SKIPPED");
+    else if (dx >= SWIPE_TRIGGER) onStatus(habit.id, "PENDING");
+    startX.current = null;
+    setDragging(false);
+    setDx(0); // animate back to rest
+  }
+  function onClick() {
+    // A swipe shouldn't also count as a tap.
+    if (moved.current) {
+      moved.current = false;
+      return;
+    }
+    navigate(`/habits/${habit.id}`);
+  }
+
+  return (
+    <div
+      className={`relative overflow-hidden rounded-xl transition-colors ${
+        dx < -8 ? "bg-amber-100" : dx > 8 ? "bg-calm-100" : ""
+      }`}
+    >
+      {/* Action hints revealed behind the card as it slides. */}
+      <div className="pointer-events-none absolute inset-0 flex items-center justify-between px-5 text-xs font-semibold uppercase tracking-wide">
+        <span className={dx > 8 ? "text-calm-600" : "opacity-0"}>Reset</span>
+        <span className={dx < -8 ? "text-amber-700" : "opacity-0"}>Skip</span>
+      </div>
+
+      <div
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerEnd}
+        onPointerCancel={onPointerEnd}
+        onClick={onClick}
+        style={{
+          transform: `translateX(${dx}px)`,
+          transition: dragging ? undefined : "transform 150ms ease",
+          touchAction: "pan-y", // let vertical scroll through; we take horizontal
+        }}
+      >
+        <HabitCard habit={habit} onStatus={onStatus} handle={handle} />
+      </div>
+    </div>
+  );
+}
+
 // Shared layout. Chain steps get a numbered badge + connector line in a left
 // rail (a label only — dragging happens via the grip inside the card).
 // Standalone habits have no rail, so their card spans the full width.
@@ -203,7 +316,7 @@ function RowLayout({
   habit,
   stepNumber,
   connectBelow,
-  onToggle,
+  onStatus,
   handle,
   nodeRef,
   style,
@@ -211,7 +324,7 @@ function RowLayout({
   habit: Habit;
   stepNumber: number | null;
   connectBelow: boolean;
-  onToggle: (habitId: number, nextDone: boolean) => void;
+  onStatus: (habitId: number, status: HabitStatus) => void;
   handle?: ReactNode;
   nodeRef?: (node: HTMLElement | null) => void;
   style?: CSSProperties;
@@ -227,12 +340,7 @@ function RowLayout({
         </div>
       )}
       <div className="flex-1 pb-2">
-        <HabitCard
-          habit={habit}
-          done={!!habit.done_today}
-          onToggle={() => onToggle(habit.id, !habit.done_today)}
-          handle={handle}
-        />
+        <SwipeableCard habit={habit} onStatus={onStatus} handle={handle} />
       </div>
     </div>
   );
@@ -244,12 +352,12 @@ function SortableRow({
   habit,
   stepNumber,
   connectBelow,
-  onToggle,
+  onStatus,
 }: {
   habit: Habit;
   stepNumber: number | null;
   connectBelow: boolean;
-  onToggle: (habitId: number, nextDone: boolean) => void;
+  onStatus: (habitId: number, status: HabitStatus) => void;
 }) {
   const {
     attributes,
@@ -268,6 +376,7 @@ function SortableRow({
   const handle = (
     <button
       type="button"
+      data-no-swipe
       aria-label="Drag to reorder"
       {...attributes}
       {...listeners}
@@ -284,7 +393,7 @@ function SortableRow({
       habit={habit}
       stepNumber={stepNumber}
       connectBelow={connectBelow}
-      onToggle={onToggle}
+      onStatus={onStatus}
       handle={handle}
       nodeRef={setNodeRef}
       style={style}
@@ -295,17 +404,17 @@ function SortableRow({
 // A non-draggable habit row (the "Anytime" group, which has no schedules).
 function StaticRow({
   habit,
-  onToggle,
+  onStatus,
 }: {
   habit: Habit;
-  onToggle: (habitId: number, nextDone: boolean) => void;
+  onStatus: (habitId: number, status: HabitStatus) => void;
 }) {
   return (
     <RowLayout
       habit={habit}
       stepNumber={null}
       connectBelow={false}
-      onToggle={onToggle}
+      onStatus={onStatus}
     />
   );
 }
@@ -314,11 +423,11 @@ function StaticRow({
 // handle to move it; on drop we renumber the plan and persist.
 function PlanBoard({
   plan,
-  onToggle,
+  onStatus,
   onReorder,
 }: {
   plan: Plan;
-  onToggle: (habitId: number, nextDone: boolean) => void;
+  onStatus: (habitId: number, status: HabitStatus) => void;
   onReorder: (planId: number, orderedHabits: Habit[]) => void;
 }) {
   // Require a 6px drag before a pointer-down counts as a drag, so a plain tap
@@ -336,7 +445,7 @@ function PlanBoard({
       <ul>
         {habits.map((habit) => (
           <li key={habit.id}>
-            <StaticRow habit={habit} onToggle={onToggle} />
+            <StaticRow habit={habit} onStatus={onStatus} />
           </li>
         ))}
       </ul>
@@ -370,7 +479,7 @@ function PlanBoard({
                 habit={row.habit}
                 stepNumber={row.stepNumber}
                 connectBelow={row.connectBelow}
-                onToggle={onToggle}
+                onStatus={onStatus}
               />
             </li>
           ))}
@@ -385,11 +494,12 @@ function PlansPage() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  // Toggle a habit's "done today" state. We flip the UI FIRST (optimistic
-  // update) so it feels instant, then tell the backend. If the request
-  // fails we roll the UI back, so it never lies about what's actually saved.
-  async function toggleHabit(habitId: number, nextDone: boolean) {
-    setPlans((prev) => setHabitDone(prev, habitId, nextDone));
+  // Set a habit's status for today (complete / skip / reset). We update the UI
+  // FIRST (optimistic) so it feels instant, then tell the backend. If the
+  // request fails we restore the snapshot, so the UI never lies.
+  async function setHabitStatus(habitId: number, status: HabitStatus) {
+    const snapshot = plans;
+    setPlans((prev) => applyStatus(prev, habitId, status));
 
     try {
       const res = await fetch(
@@ -397,15 +507,12 @@ function PlansPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status: nextDone ? "COMPLETED" : "PENDING",
-          }),
+          body: JSON.stringify({ status }),
         },
       );
       if (!res.ok) throw new Error("Request failed");
     } catch {
-      // Undo the optimistic flip.
-      setPlans((prev) => setHabitDone(prev, habitId, !nextDone));
+      setPlans(snapshot);
     }
   }
 
@@ -520,10 +627,11 @@ function PlansPage() {
               <div className="flex-1 h-px bg-calm-200" />
             </div>
 
-            {/* Habits scheduled at this time (drag the handle to reorder) */}
+            {/* Habits at this time. Drag the grip to reorder, swipe a card
+                left to skip / right to reset, tap the circle to complete. */}
             <PlanBoard
               plan={plan}
-              onToggle={toggleHabit}
+              onStatus={setHabitStatus}
               onReorder={reorderPlan}
             />
           </section>
