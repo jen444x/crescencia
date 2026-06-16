@@ -45,6 +45,29 @@ class Plan(models.Model):
     def __str__(self):
         return f"{self.start_time}"
 
+class PlanDay(models.Model):
+    """A one-day override of a Plan's time.
+
+    The Plan holds the recurring time (same every day); this records that *on a
+    specific date* the routine actually started somewhere else — e.g. you woke
+    up late and pushed the morning back. No row for a day = use the Plan's
+    normal time. One override per plan per day, so a shift just updates it.
+    """
+    plan = models.ForeignKey(Plan, on_delete=models.CASCADE)
+    date = models.DateField()
+    start_time = models.TimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["plan", "date"],
+                name="one_time_override_per_plan_per_day",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.date} - plan {self.plan_id} @ {self.start_time}"
+
 class Schedule(models.Model):
     habit = models.ForeignKey(Habit, on_delete=models.CASCADE)
     plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True)

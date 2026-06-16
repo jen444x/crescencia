@@ -1,11 +1,11 @@
 import json
-from datetime import timedelta
+from datetime import time, timedelta
 
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from .models import Habit, HabitLog, Plan, Schedule
+from .models import Habit, HabitLog, Plan, PlanDay, Schedule
 
 
 class BrowseDaysTests(TestCase):
@@ -110,3 +110,62 @@ class BrowseDaysTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
+
+
+class ShiftPlansTests(TestCase):
+    """Waking up late pushes a cycle and everything after it to a new time —
+    for that day only, never touching the recurring routine."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.tomorrow = self.today + timedelta(days=1)
+        # Three time slots; we'll anchor shifts on the 9:00 one.
+        self.early = Plan.objects.create(start_time=time(8, 0))
+        self.mid = Plan.objects.create(start_time=time(9, 0))
+        self.late = Plan.objects.create(start_time=time(10, 0))
+        self.url = reverse("habits:shift_plans")
+
+    def _shift(self, **body):
+        return self.client.post(self.url, data=body, content_type="application/json")
+
+    def _plan_times(self, response):
+        """Map of plan id -> time string from a /plan/ payload (skips unscheduled)."""
+        groups = json.loads(response.content)
+        return {g["id"]: g["time"] for g in groups if g["id"] is not None}
+
+    def _today_times(self):
+        return self._plan_times(self.client.get(reverse("habits:plan")))
+
+    def test_shifts_anchor_and_everything_after(self):
+        response = self._shift(from_plan=self.mid.id, minutes=45)
+        self.assertEqual(response.status_code, 200)
+
+        times = self._today_times()
+        self.assertEqual(times[self.early.id], "08:00:00")  # before anchor: unchanged
+        self.assertEqual(times[self.mid.id], "09:45:00")    # anchor: moved
+        self.assertEqual(times[self.late.id], "10:45:00")   # after anchor: cascaded
+
+    def test_shift_is_today_only(self):
+        self._shift(from_plan=self.mid.id, minutes=45)
+        tomorrow = self._plan_times(
+            self.client.get(reverse("habits:plan"), {"date": self.tomorrow.isoformat()})
+        )
+        self.assertEqual(tomorrow[self.mid.id], "09:00:00")  # recurring time intact
+
+    def test_negative_minutes_pull_earlier(self):
+        self._shift(from_plan=self.mid.id, minutes=-30)
+        self.assertEqual(self._today_times()[self.mid.id], "08:30:00")
+
+    def test_repeated_shifts_stack(self):
+        self._shift(from_plan=self.mid.id, minutes=30)
+        self._shift(from_plan=self.mid.id, minutes=15)
+        self.assertEqual(self._today_times()[self.mid.id], "09:45:00")  # 9:00 +30 +15
+        # ...and still just one override row for that plan/day.
+        self.assertEqual(
+            PlanDay.objects.filter(plan=self.mid, date=self.today).count(), 1
+        )
+
+    def test_rejects_bad_input(self):
+        self.assertEqual(self._shift(from_plan=999999, minutes=10).status_code, 400)
+        self.assertEqual(self._shift(from_plan=self.mid.id, minutes="lots").status_code, 400)
+        self.assertEqual(self._shift(minutes=10).status_code, 400)  # missing from_plan

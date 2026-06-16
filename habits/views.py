@@ -1,4 +1,5 @@
 import json
+from datetime import time as dt_time
 
 from django.db import transaction
 from django.db.models import F, Prefetch
@@ -9,7 +10,7 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Chain, Habit, Plan, Schedule, HabitLog
+from .models import Area, Chain, Habit, Plan, PlanDay, Schedule, HabitLog
 
 
 def index(request):
@@ -41,6 +42,17 @@ def _resolve_date(value):
     return parsed, None
 
 
+def _shift_time(base, minutes):
+    """`base` (a datetime.time) moved by `minutes`, clamped within the same day.
+
+    Negative minutes pull earlier. Clamping (not wrapping) keeps a big shift from
+    silently jumping a routine across midnight to the wrong end of the day.
+    """
+    total = base.hour * 60 + base.minute + minutes
+    total = max(0, min(total, 23 * 60 + 59))
+    return dt_time(total // 60, total % 60)
+
+
 def plan(request):
     # Which day to show. Defaults to today; the day-browser passes
     # ?date=YYYY-MM-DD to view any other day. The plan/schedule layout is the
@@ -57,6 +69,14 @@ def plan(request):
         HabitLog.objects.filter(date=target_date).values_list("habit_id", "status")
     )
 
+    # Per-day time overrides for this day (from a "running late" shift). A plan
+    # with no override here just uses its normal recurring time. Lets a
+    # pushed-back cycle show its real time for the day without touching the
+    # recurring Plan row.
+    time_by_plan = dict(
+        PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
+    )
+
     def habit_payload(habit, schedule_id=None, chain=None, order=None):
         status = status_by_habit.get(habit.id, HabitLog.Status.PENDING)
         return {
@@ -69,7 +89,6 @@ def plan(request):
             "done_today": status == HabitLog.Status.COMPLETED,
         }
 
-    data = []
     # One query for the plans + their schedules + habits, with schedules sorted
     # by their saved position so /plan/ reflects reordering. Habits with no
     # explicit order (nulls) go last; id breaks ties so the list is stable.
@@ -84,6 +103,8 @@ def plan(request):
     plans = Plan.objects.prefetch_related(
         Prefetch("schedule_set", queryset=ordered_schedules)
     )
+
+    plan_groups = []
     for plan in plans:
         # Each Schedule row carries its own habit, chain (cycle), and order,
         # so we just emit each one. The frontend groups the chains.
@@ -96,21 +117,27 @@ def plan(request):
             )
             for schedule in plan.schedule_set.all()
         ]
-        data.append({
+        plan_groups.append({
             "id": plan.id,
-            "time": plan.start_time,
+            "time": time_by_plan.get(plan.id, plan.start_time),  # the day's time
             "habits": habits,
         })
 
-    # Habits that aren't scheduled in any plan (same "existed by then" filter).
+    # Sort by the day's effective time so a pushed-back cycle slides down the
+    # list (the frontend trusts this order). Timeless plans go last; id breaks
+    # ties for a stable order.
+    plan_groups.sort(key=lambda g: (g["time"] is None, g["time"] or dt_time.min, g["id"]))
+
+    # Habits that aren't scheduled in any plan (same "existed by then" filter),
+    # always last.
     unscheduled = Habit.objects.filter(
         schedule__isnull=True, date_added__date__lte=target_date
     )
-    data.append({
+    data = plan_groups + [{
         "id": None,
         "time": None,
         "habits": [habit_payload(h) for h in unscheduled],
-    })
+    }]
 
     return JsonResponse(data, safe=False)
 
@@ -243,6 +270,78 @@ def reorder_schedules(request):
         for s in sorted(schedules.values(), key=lambda s: s.order)
     ]
     return JsonResponse({"updated": updated})
+
+
+@csrf_exempt
+@require_POST
+def shift_plans(request):
+    """Push a cycle and everything later that day to a new time — for today only.
+
+    Body: {"from_plan": <plan id>, "minutes": <int>, "date"?: "YYYY-MM-DD"}.
+
+    Use case: you woke up late, so the morning cycle and everything after it
+    needs to slide back. Every plan whose time *that day* is at or after the
+    anchor plan's time moves by `minutes` (negative pulls earlier). This writes
+    per-day overrides (PlanDay) and never touches the recurring Plan times, so
+    tomorrow is back to normal. Shifting again stacks on the current day's time.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    from_plan_id = body.get("from_plan")
+    # bool is a subclass of int, so reject it explicitly.
+    if not isinstance(from_plan_id, int) or isinstance(from_plan_id, bool):
+        return JsonResponse({"error": "'from_plan' must be a plan id (integer)."}, status=400)
+
+    minutes = body.get("minutes")
+    if not isinstance(minutes, int) or isinstance(minutes, bool):
+        return JsonResponse(
+            {"error": "'minutes' must be an integer (negative pulls earlier)."}, status=400
+        )
+
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+
+    # Each plan's effective time this day: its override if one exists, else its
+    # recurring time. Timeless plans (no start_time) can't anchor or move.
+    overrides = dict(
+        PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
+    )
+    effective = {
+        p.id: overrides.get(p.id, p.start_time) for p in Plan.objects.all()
+    }
+
+    if from_plan_id not in effective:
+        return JsonResponse({"error": f"Unknown plan id: {from_plan_id}."}, status=400)
+    threshold = effective[from_plan_id]
+    if threshold is None:
+        return JsonResponse(
+            {"error": "That cycle has no time set, so there's nothing to shift from."},
+            status=400,
+        )
+
+    # The anchor cycle and everything at or after it that day move together.
+    affected = {
+        pid: t for pid, t in effective.items() if t is not None and t >= threshold
+    }
+
+    with transaction.atomic():
+        for pid, base in affected.items():
+            PlanDay.objects.update_or_create(
+                plan_id=pid,
+                date=target_date,
+                defaults={"start_time": _shift_time(base, minutes)},
+            )
+
+    # Return the day's new times, sorted, so the UI can reconcile.
+    updated = sorted(
+        ({"plan": pid, "time": _shift_time(base, minutes)} for pid, base in affected.items()),
+        key=lambda r: r["time"],
+    )
+    return JsonResponse({"date": target_date, "updated": updated})
 
 
 def _habit_detail(habit):

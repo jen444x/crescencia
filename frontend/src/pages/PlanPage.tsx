@@ -321,7 +321,7 @@ function HabitCard({
   const skipped = isSkipped(habit);
   return (
     <div
-      className={`group flex items-center gap-3 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
+      className={`group flex items-center gap-3 rounded-xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
         done ? "bg-calm-50" : skipped ? "bg-stone-50" : "bg-white"
       }`}
     >
@@ -481,7 +481,7 @@ function RowLayout({
           {connectBelow && <span className="w-px grow bg-calm-300" />}
         </div>
       )}
-      <div className="flex-1 pb-2">
+      <div className="flex-1 pb-1.5">
         <SwipeableCard habit={habit} onStatus={onStatus} handle={handle} />
       </div>
     </div>
@@ -829,6 +829,46 @@ function DateNav({
   );
 }
 
+// Floating "back to top" button. The page auto-scrolls down to the current time
+// block on load, so this is a one-tap way back up to earlier habits. Sits on the
+// left (the "+" FAB is on the right) and only appears once you've scrolled down.
+function ScrollTopButton() {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setShow(window.scrollY > 300);
+    onScroll(); // we may already be scrolled (auto-scroll-to-now ran on load)
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  if (!show) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+      aria-label="Scroll to top"
+      className="fixed bottom-28 left-6 z-20 flex h-12 w-12 items-center justify-center rounded-full border border-calm-200 bg-white text-calm-600 shadow-lg transition-colors hover:bg-calm-50"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        className="h-6 w-6"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M5 15l7-7 7 7"
+        />
+      </svg>
+    </button>
+  );
+}
+
 function PlansPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
@@ -1049,6 +1089,7 @@ function PlansPage() {
         />
         {body}
       </div>
+      <ScrollTopButton />
     </>
   );
 }
