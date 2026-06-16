@@ -1,6 +1,7 @@
 import {
   useState,
   useEffect,
+  useMemo,
   useRef,
   type ReactNode,
   type CSSProperties,
@@ -67,6 +68,40 @@ function formatTime(time: string | null) {
   return `${hour12}:${minute} ${period}`;
 }
 
+// "08:30:00" -> 510 (minutes since midnight). Used to find which time block
+// is "now" so we can open the page there.
+function timeToMinutes(time: string): number {
+  const [hourStr, minuteStr] = time.split(":");
+  return parseInt(hourStr, 10) * 60 + parseInt(minuteStr, 10);
+}
+
+// Which time block is happening right now? The latest block whose start time has
+// already passed (at 9:10, the "9:00 AM" block is current). Before the day's
+// first block, fall back to it so the page still opens somewhere sensible.
+// Returns the plan id to scroll to, or null if there are no timed blocks.
+function currentBlockId(plans: Plan[]): number | null {
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  let currentId: number | null = null;
+  let currentMinutes = -1;
+  let earliestId: number | null = null;
+  let earliestMinutes = Infinity;
+
+  for (const plan of plans) {
+    if (plan.id == null || !plan.time) continue;
+    const minutes = timeToMinutes(plan.time);
+    if (minutes <= nowMinutes && minutes > currentMinutes) {
+      currentMinutes = minutes;
+      currentId = plan.id;
+    }
+    if (minutes < earliestMinutes) {
+      earliestMinutes = minutes;
+      earliestId = plan.id;
+    }
+  }
+  return currentId ?? earliestId;
+}
+
 // A row to render for one habit. `stepNumber` is its position within a chain
 // (1, 2, 3...) or null if it's a standalone habit. `connectBelow` draws the
 // little connector line down to the next step when they're in the same chain.
@@ -91,6 +126,22 @@ function buildRows(habits: Habit[]): Row[] {
     const connectBelow =
       habit.chain != null && next != null && next.chain === habit.chain;
     return { habit, stepNumber, connectBelow };
+  });
+}
+
+// Keep only the rows we want to show now (the not-completed ones), but RECOMPUTE
+// `connectBelow` against the next *visible* row, so a chain's connector never
+// dangles toward a habit we've collapsed away. Step numbers keep their true
+// position in the full chain (so finishing step 1 honestly leaves "2, 3").
+function keepRows(rows: Row[], keep: (row: Row) => boolean): Row[] {
+  const kept = rows.filter(keep);
+  return kept.map((row, i) => {
+    const next = kept[i + 1];
+    const connectBelow =
+      row.habit.chain != null &&
+      next != null &&
+      next.habit.chain === row.habit.chain;
+    return { ...row, connectBelow };
   });
 }
 
@@ -161,6 +212,26 @@ function GripIcon() {
       <circle cx="15" cy="12" r="1.6" />
       <circle cx="9" cy="18" r="1.6" />
       <circle cx="15" cy="18" r="1.6" />
+    </svg>
+  );
+}
+
+// A chevron that points right when collapsed, down when expanded.
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-90" : ""}`}
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2.5}
+        d="M9 5l7 7-7 7"
+      />
     </svg>
   );
 }
@@ -419,8 +490,81 @@ function StaticRow({
   );
 }
 
-// All of one plan's habits as a single drag-to-reorder list. Grab a habit's
-// handle to move it; on drop we renumber the plan and persist.
+// One completed habit in the collapsed tray: compact, faded, still tappable.
+// The filled check resets it to PENDING and sends it back up to the active list.
+function CompletedRow({
+  habit,
+  onStatus,
+}: {
+  habit: Habit;
+  onStatus: (habitId: number, status: HabitStatus) => void;
+}) {
+  const navigate = useNavigate();
+  return (
+    <div
+      onClick={() => navigate(`/habits/${habit.id}`)}
+      className="flex cursor-pointer items-center gap-3 rounded-lg px-4 py-2 hover:bg-white"
+    >
+      <span className="flex-1 text-sm text-calm-400 line-through">
+        {habit.name}
+      </span>
+      <button
+        type="button"
+        aria-label="Mark as not done today"
+        aria-pressed={true}
+        onClick={(e) => {
+          e.stopPropagation();
+          onStatus(habit.id, "PENDING");
+        }}
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-calm-500 bg-calm-500 text-white transition-colors hover:bg-calm-600"
+      >
+        <CheckIcon />
+      </button>
+    </div>
+  );
+}
+
+// The collapsed "done" tray at the bottom of a time block. Completed habits
+// would otherwise pile up and push the rest of the day off-screen, so we tuck
+// them here — one tap to expand, review, or undo. Collapsed by default.
+function CompletedTray({
+  habits,
+  onStatus,
+}: {
+  habits: Habit[];
+  onStatus: (habitId: number, status: HabitStatus) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 rounded-lg px-1 py-1.5 text-xs font-medium text-calm-500 transition-colors hover:text-calm-700"
+      >
+        <ChevronIcon open={open} />
+        <span>{habits.length} done</span>
+        <span className="h-px flex-1 bg-calm-200" />
+      </button>
+
+      {open && (
+        <ul className="mt-0.5 space-y-0.5">
+          {habits.map((habit) => (
+            <li key={habit.id}>
+              <CompletedRow habit={habit} onStatus={onStatus} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// All of one plan's habits. Not-yet-completed habits show as the active list (a
+// drag-to-reorder list for scheduled plans; a plain list for "Anytime"), and
+// completed habits collapse into the tray below so they stop taking up space.
 function PlanBoard({
   plan,
   onStatus,
@@ -439,53 +583,85 @@ function PlanBoard({
   const planId = plan.id;
   const habits = plan.habits;
 
+  // Number chains over the FULL list (so step numbers are real positions), then
+  // pull completed habits out of the active list and into the tray below.
+  const allRows = buildRows(habits);
+  const activeRows = keepRows(allRows, (row) => !isDone(row.habit));
+  const doneHabits = habits.filter(isDone);
+
+  const tray =
+    doneHabits.length > 0 ? (
+      <div className={activeRows.length > 0 ? "mt-1" : ""}>
+        <CompletedTray habits={doneHabits} onStatus={onStatus} />
+      </div>
+    ) : null;
+
   // The "Anytime" group has no schedule rows, so it can't be reordered.
   if (planId == null) {
     return (
-      <ul>
-        {habits.map((habit) => (
-          <li key={habit.id}>
-            <StaticRow habit={habit} onStatus={onStatus} />
-          </li>
-        ))}
-      </ul>
+      <div>
+        <ul>
+          {activeRows.map((row) => (
+            <li key={row.habit.id}>
+              <StaticRow habit={row.habit} onStatus={onStatus} />
+            </li>
+          ))}
+        </ul>
+        {tray}
+      </div>
     );
   }
 
-  const rows = buildRows(habits);
-  const ids = habits.map((habit) => habit.id);
+  // Drag only reorders the visible (not-completed) habits; completed habits keep
+  // their spot. On drop we rebuild the FULL list — visible habits in their new
+  // order, completed ones left where they were — so reorderPlan can renumber and
+  // persist the whole block in one POST.
+  const activeHabits = habits.filter((habit) => !isDone(habit));
+  const activeIds = activeHabits.map((habit) => habit.id);
 
   function handleDragEnd(event: DragEndEvent) {
     if (planId == null) return;
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const from = habits.findIndex((h) => h.id === Number(active.id));
-    const to = habits.findIndex((h) => h.id === Number(over.id));
+    const from = activeHabits.findIndex((h) => h.id === Number(active.id));
+    const to = activeHabits.findIndex((h) => h.id === Number(over.id));
     if (from < 0 || to < 0) return;
-    onReorder(planId, arrayMove(habits, from, to));
+
+    const newActive = arrayMove(activeHabits, from, to);
+    let next = 0;
+    const newFull = habits.map((habit) =>
+      isDone(habit) ? habit : newActive[next++],
+    );
+    onReorder(planId, newFull);
   }
 
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragEnd={handleDragEnd}
-    >
-      <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-        <ul>
-          {rows.map((row) => (
-            <li key={row.habit.id}>
-              <SortableRow
-                habit={row.habit}
-                stepNumber={row.stepNumber}
-                connectBelow={row.connectBelow}
-                onStatus={onStatus}
-              />
-            </li>
-          ))}
-        </ul>
-      </SortableContext>
-    </DndContext>
+    <div>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <SortableContext
+          items={activeIds}
+          strategy={verticalListSortingStrategy}
+        >
+          <ul>
+            {activeRows.map((row) => (
+              <li key={row.habit.id}>
+                <SortableRow
+                  habit={row.habit}
+                  stepNumber={row.stepNumber}
+                  connectBelow={row.connectBelow}
+                  onStatus={onStatus}
+                />
+              </li>
+            ))}
+          </ul>
+        </SortableContext>
+      </DndContext>
+      {tray}
+    </div>
   );
 }
 
@@ -493,6 +669,15 @@ function PlansPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+
+  // The time block happening right now — used to badge it "Now" and to scroll
+  // the page there on first load.
+  const nowBlockId = useMemo(() => currentBlockId(plans), [plans]);
+
+  // One DOM node per section, so we can scroll the current block into view.
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
+  // Only auto-scroll once (on first load) — not every time a toggle re-renders.
+  const didAutoScroll = useRef(false);
 
   // Set a habit's status for today (complete / skip / reset). We update the UI
   // FIRST (optimistic) so it feels instant, then tell the backend. If the
@@ -574,6 +759,18 @@ function PlansPage() {
     fetchPlans();
   }, []);
 
+  // After the first load, open the page at the time block happening now, so the
+  // user doesn't scroll past the whole morning to reach their current habits.
+  useEffect(() => {
+    if (didAutoScroll.current || isLoading || plans.length === 0) return;
+    if (nowBlockId == null) return;
+    const el = sectionRefs.current[String(nowBlockId)];
+    if (el) {
+      el.scrollIntoView({ block: "start" });
+      didAutoScroll.current = true;
+    }
+  }, [plans, isLoading, nowBlockId]);
+
   if (isLoading) {
     return (
       <div className="max-w-md mx-auto">
@@ -617,25 +814,46 @@ function PlansPage() {
     <>
       <Header title="Plan" body="" />
       <div className="max-w-md mx-auto space-y-8">
-        {plans.map((plan) => (
-          <section key={plan.id ?? "anytime"}>
-            {/* Time label with a divider line */}
-            <div className="flex items-center gap-3 mb-3">
-              <span className="text-xs font-medium uppercase tracking-wide text-calm-600">
-                {formatTime(plan.time)}
-              </span>
-              <div className="flex-1 h-px bg-calm-200" />
-            </div>
+        {plans.map((plan) => {
+          const key = plan.id ?? "anytime";
+          const isNow = plan.id != null && plan.id === nowBlockId;
+          return (
+            <section
+              key={key}
+              ref={(el) => {
+                sectionRefs.current[String(key)] = el;
+              }}
+              // Leave a little breathing room above the block when we scroll to it.
+              className="scroll-mt-6"
+            >
+              {/* Time label with a divider line; the current block gets a "Now" badge */}
+              <div className="flex items-center gap-3 mb-3">
+                <span
+                  className={`text-xs font-medium uppercase tracking-wide ${
+                    isNow ? "text-calm-700" : "text-calm-600"
+                  }`}
+                >
+                  {formatTime(plan.time)}
+                </span>
+                {isNow && (
+                  <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                    Now
+                  </span>
+                )}
+                <div className="flex-1 h-px bg-calm-200" />
+              </div>
 
-            {/* Habits at this time. Drag the grip to reorder, swipe a card
-                left to skip / right to reset, tap the circle to complete. */}
-            <PlanBoard
-              plan={plan}
-              onStatus={setHabitStatus}
-              onReorder={reorderPlan}
-            />
-          </section>
-        ))}
+              {/* Habits at this time. Drag the grip to reorder, swipe a card
+                  left to skip / right to reset, tap the circle to complete;
+                  completed ones collapse into the tray below. */}
+              <PlanBoard
+                plan={plan}
+                onStatus={setHabitStatus}
+                onReorder={reorderPlan}
+              />
+            </section>
+          );
+        })}
       </div>
     </>
   );
