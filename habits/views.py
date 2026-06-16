@@ -219,6 +219,11 @@ def _area_error(area_id):
     return None
 
 
+def habit(request, habit_id):
+    """Read one habit's editable fields (used to pre-fill the edit form)."""
+    return JsonResponse(_habit_detail(get_object_or_404(Habit, id=habit_id)))
+
+
 @csrf_exempt
 @require_POST
 def create_habit(request):
