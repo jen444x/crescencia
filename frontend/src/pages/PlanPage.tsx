@@ -7,7 +7,8 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import Header from "../components/layout/Header";
+import ConfirmDialog from "../components/ConfirmDialog";
+import { useToast } from "../components/Toast";
 import { useNavigate } from "react-router-dom";
 import {
   DndContext,
@@ -25,9 +26,12 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-// The three states a habit can be in for a given day. Matches the backend's
-// HabitLog.Status values.
+// The statuses we can WRITE for a day. Matches the backend's HabitLog.Status.
 type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED";
+// What the server can REPORT: adds MISSED — a derived, read-only state the
+// backend returns for a *past* day's untouched habit. We render it but never
+// send it (the log endpoint only accepts the three writable statuses above).
+type ReadStatus = HabitStatus | "MISSED";
 
 type Plan = {
   // null for the "Anytime" group (habits with no schedule) — that group
@@ -44,10 +48,14 @@ type Habit = {
   name: string;
   chain?: number | null;
   order?: number;
-  // Today's status from the backend. `done_today` is the convenience boolean
-  // (status === "COMPLETED"); we keep both since the API sends both.
-  status?: HabitStatus;
+  // The day's status from the backend. `done_today` is the convenience boolean
+  // (status === "COMPLETED"); we keep both since the API sends both. Can be
+  // "MISSED" on past days, which we render but never send back.
+  status?: ReadStatus;
   done_today?: boolean;
+  // That day's free-text note (HabitLog.notes), "" when none. This is per-DAY,
+  // distinct from the habit's own permanent `notes` edited on the habit page.
+  notes?: string;
 };
 
 // Read a habit's state, tolerating an older payload that only had done_today.
@@ -56,6 +64,11 @@ function isDone(habit: Habit) {
 }
 function isSkipped(habit: Habit) {
   return habit.status === "SKIPPED";
+}
+// A past day's habit that was never completed or skipped. Derived + read-only:
+// the backend sends this status; we never POST it.
+function isMissed(habit: Habit) {
+  return habit.status === "MISSED";
 }
 
 // "08:00:00" -> "8:00 AM"; null/empty -> "Anytime"
@@ -233,6 +246,17 @@ function applyStatus(
   }));
 }
 
+// Return a NEW plans array with one habit's per-day note set. Pure + immutable,
+// like applyStatus, so the note preview updates optimistically on save.
+function applyNote(plans: Plan[], habitId: number, notes: string): Plan[] {
+  return plans.map((plan) => ({
+    ...plan,
+    habits: plan.habits.map((habit) =>
+      habit.id === habitId ? { ...habit, notes } : habit,
+    ),
+  }));
+}
+
 // Return a NEW plans array with one plan's habits set to `orderedHabits`,
 // renumbered 1..N. Pure + immutable, like applyStatus above.
 function applyPlanOrder(
@@ -327,42 +351,106 @@ function ClockIcon() {
   );
 }
 
+// A pencil-on-paper glyph for the per-day note affordance.
+function NoteIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+      />
+    </svg>
+  );
+}
+
 function HabitCard({
   habit,
   onStatus,
+  onOpenNote,
   handle,
 }: {
   habit: Habit;
   onStatus: (habitId: number, status: HabitStatus) => void;
+  // Open the per-day note editor for this habit.
+  onOpenNote: (habit: Habit) => void;
   // Optional drag handle (a grip), rendered at the left inside the card.
   handle?: ReactNode;
 }) {
   const done = isDone(habit);
   const skipped = isSkipped(habit);
+  const missed = isMissed(habit);
+  const note = habit.notes?.trim() ?? "";
   return (
     <div
       className={`group flex items-center gap-3 rounded-xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
-        done ? "bg-calm-50" : skipped ? "bg-stone-50" : "bg-white"
+        done
+          ? "bg-calm-50"
+          : skipped
+            ? "bg-stone-50"
+            : missed
+              ? "bg-rose-50"
+              : "bg-white"
       }`}
     >
       {handle}
-      <h3
-        className={`flex-1 font-medium ${
-          done
-            ? "text-calm-400 line-through"
-            : skipped
-              ? "text-stone-400"
-              : "text-calm-900"
-        }`}
-      >
-        {habit.name}
-      </h3>
+      <div className="min-w-0 flex-1">
+        <h3
+          className={`font-medium ${
+            done
+              ? "text-calm-400 line-through"
+              : skipped
+                ? "text-stone-400"
+                : missed
+                  ? "text-rose-400"
+                  : "text-calm-900"
+          }`}
+        >
+          {habit.name}
+        </h3>
+        {/* A one-line glance at today's note; tap the note button to edit it. */}
+        {note && (
+          <p className="mt-0.5 truncate text-xs italic text-stone-400">{note}</p>
+        )}
+      </div>
 
       {skipped && (
         <span className="shrink-0 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-500">
           Skipped
         </span>
       )}
+
+      {missed && (
+        <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-500">
+          Missed
+        </span>
+      )}
+
+      {/* Per-day note. data-no-swipe + stopPropagation so it doesn't start a
+          swipe or open the detail page. Accented once a note exists. */}
+      <button
+        type="button"
+        data-no-swipe
+        aria-label={note ? "Edit note" : "Add note"}
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenNote(habit);
+        }}
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+          note
+            ? "text-calm-600 hover:bg-calm-100"
+            : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
+        }`}
+      >
+        <NoteIcon />
+      </button>
 
       {/* Complete toggle. data-no-swipe + stopPropagation so tapping it neither
           starts a swipe nor opens the detail page. */}
@@ -387,22 +475,22 @@ function HabitCard({
   );
 }
 
-// Wraps a habit card with a horizontal swipe gesture:
-//   swipe left  -> SKIPPED
-//   swipe right -> PENDING (reset / un-skip)
-// A plain tap opens the habit. We hand-roll this with pointer events so it
-// coexists with the drag handle (grip) and the complete button, both of which
-// are marked data-no-swipe and ignored here.
+// Wraps a habit card with a left-swipe gesture to SKIP it. A plain tap opens the
+// habit. We hand-roll this with pointer events so it coexists with the drag
+// handle (grip) and the complete button, both of which are marked data-no-swipe
+// and ignored here.
 const SWIPE_TRIGGER = 70; // px past which a release fires the action
 const SWIPE_MAX = 110; // px the card is allowed to follow your finger
 
 function SwipeableCard({
   habit,
   onStatus,
+  onOpenNote,
   handle,
 }: {
   habit: Habit;
   onStatus: (habitId: number, status: HabitStatus) => void;
+  onOpenNote: (habit: Habit) => void;
   handle?: ReactNode;
 }) {
   const navigate = useNavigate();
@@ -422,12 +510,12 @@ function SwipeableCard({
     if (startX.current == null) return;
     const delta = e.clientX - startX.current;
     if (Math.abs(delta) > 6) moved.current = true;
-    setDx(Math.max(-SWIPE_MAX, Math.min(SWIPE_MAX, delta)));
+    // Left-only: clamp to <= 0 so a rightward drag does nothing.
+    setDx(Math.max(-SWIPE_MAX, Math.min(0, delta)));
   }
   function onPointerEnd() {
     if (startX.current == null) return;
     if (dx <= -SWIPE_TRIGGER) onStatus(habit.id, "SKIPPED");
-    else if (dx >= SWIPE_TRIGGER) onStatus(habit.id, "PENDING");
     startX.current = null;
     setDragging(false);
     setDx(0); // animate back to rest
@@ -444,12 +532,11 @@ function SwipeableCard({
   return (
     <div
       className={`relative overflow-hidden rounded-xl transition-colors ${
-        dx < -8 ? "bg-amber-100" : dx > 8 ? "bg-calm-100" : ""
+        dx < -8 ? "bg-amber-100" : ""
       }`}
     >
-      {/* Action hints revealed behind the card as it slides. */}
-      <div className="pointer-events-none absolute inset-0 flex items-center justify-between px-5 text-xs font-semibold uppercase tracking-wide">
-        <span className={dx > 8 ? "text-calm-600" : "opacity-0"}>Reset</span>
+      {/* "Skip" hint revealed on the right as the card slides left. */}
+      <div className="pointer-events-none absolute inset-0 flex items-center justify-end px-5 text-xs font-semibold uppercase tracking-wide">
         <span className={dx < -8 ? "text-amber-700" : "opacity-0"}>Skip</span>
       </div>
 
@@ -465,7 +552,12 @@ function SwipeableCard({
           touchAction: "pan-y", // let vertical scroll through; we take horizontal
         }}
       >
-        <HabitCard habit={habit} onStatus={onStatus} handle={handle} />
+        <HabitCard
+          habit={habit}
+          onStatus={onStatus}
+          onOpenNote={onOpenNote}
+          handle={handle}
+        />
       </div>
     </div>
   );
@@ -479,6 +571,7 @@ function RowLayout({
   stepNumber,
   connectBelow,
   onStatus,
+  onOpenNote,
   handle,
   nodeRef,
   style,
@@ -487,6 +580,7 @@ function RowLayout({
   stepNumber: number | null;
   connectBelow: boolean;
   onStatus: (habitId: number, status: HabitStatus) => void;
+  onOpenNote: (habit: Habit) => void;
   handle?: ReactNode;
   nodeRef?: (node: HTMLElement | null) => void;
   style?: CSSProperties;
@@ -502,7 +596,12 @@ function RowLayout({
         </div>
       )}
       <div className="flex-1 pb-1.5">
-        <SwipeableCard habit={habit} onStatus={onStatus} handle={handle} />
+        <SwipeableCard
+          habit={habit}
+          onStatus={onStatus}
+          onOpenNote={onOpenNote}
+          handle={handle}
+        />
       </div>
     </div>
   );
@@ -515,11 +614,13 @@ function SortableRow({
   stepNumber,
   connectBelow,
   onStatus,
+  onOpenNote,
 }: {
   habit: Habit;
   stepNumber: number | null;
   connectBelow: boolean;
   onStatus: (habitId: number, status: HabitStatus) => void;
+  onOpenNote: (habit: Habit) => void;
 }) {
   const {
     attributes,
@@ -556,27 +657,10 @@ function SortableRow({
       stepNumber={stepNumber}
       connectBelow={connectBelow}
       onStatus={onStatus}
+      onOpenNote={onOpenNote}
       handle={handle}
       nodeRef={setNodeRef}
       style={style}
-    />
-  );
-}
-
-// A non-draggable habit row (the "Anytime" group, which has no schedules).
-function StaticRow({
-  habit,
-  onStatus,
-}: {
-  habit: Habit;
-  onStatus: (habitId: number, status: HabitStatus) => void;
-}) {
-  return (
-    <RowLayout
-      habit={habit}
-      stepNumber={null}
-      connectBelow={false}
-      onStatus={onStatus}
     />
   );
 }
@@ -586,19 +670,38 @@ function StaticRow({
 function CompletedRow({
   habit,
   onStatus,
+  onOpenNote,
 }: {
   habit: Habit;
   onStatus: (habitId: number, status: HabitStatus) => void;
+  onOpenNote: (habit: Habit) => void;
 }) {
   const navigate = useNavigate();
+  const note = habit.notes?.trim() ?? "";
   return (
     <div
       onClick={() => navigate(`/habits/${habit.id}`)}
       className="flex cursor-pointer items-center gap-3 rounded-lg px-4 py-2 hover:bg-white"
     >
-      <span className="flex-1 text-sm text-calm-400 line-through">
+      <span className="flex-1 truncate text-sm text-calm-400 line-through">
         {habit.name}
       </span>
+      {/* Jot a reflection even after it's done ("felt great after"). */}
+      <button
+        type="button"
+        aria-label={note ? "Edit note" : "Add note"}
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenNote(habit);
+        }}
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors ${
+          note
+            ? "text-calm-600 hover:bg-calm-100"
+            : "text-calm-300 hover:bg-calm-100 hover:text-calm-500"
+        }`}
+      >
+        <NoteIcon />
+      </button>
       <button
         type="button"
         aria-label="Mark as not done today"
@@ -621,9 +724,11 @@ function CompletedRow({
 function CompletedTray({
   habits,
   onStatus,
+  onOpenNote,
 }: {
   habits: Habit[];
   onStatus: (habitId: number, status: HabitStatus) => void;
+  onOpenNote: (habit: Habit) => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -661,7 +766,11 @@ function CompletedTray({
         <ul className="mt-0.5 space-y-0.5">
           {habits.map((habit) => (
             <li key={habit.id}>
-              <CompletedRow habit={habit} onStatus={onStatus} />
+              <CompletedRow
+                habit={habit}
+                onStatus={onStatus}
+                onOpenNote={onOpenNote}
+              />
             </li>
           ))}
         </ul>
@@ -676,11 +785,19 @@ function CompletedTray({
 function PlanBoard({
   plan,
   onStatus,
+  onOpenNote,
   onReorder,
+  interactive,
 }: {
   plan: Plan;
   onStatus: (habitId: number, status: HabitStatus) => void;
+  onOpenNote: (habit: Habit) => void;
   onReorder: (planId: number, orderedHabits: Habit[]) => void;
+  // Only today is reorderable: dragging writes the *recurring* order (the
+  // reorder API has no date), so we don't let it happen while you're looking at
+  // another day — otherwise re-sorting "yesterday" would silently rearrange
+  // every day's routine.
+  interactive: boolean;
 }) {
   // Require a 6px drag before a pointer-down counts as a drag, so a plain tap
   // still works as a click (toggle / open detail).
@@ -690,6 +807,9 @@ function PlanBoard({
 
   const planId = plan.id;
   const habits = plan.habits;
+  // Not reorderable when it's the "Anytime" group (no schedule rows) or any day
+  // that isn't today (see `interactive` above).
+  const canReorder = planId != null && interactive;
 
   // Split the block into ordered segments: single active habits + in-place
   // "done" groups (runs of consecutive completed habits). Drag still reorders
@@ -700,12 +820,15 @@ function PlanBoard({
   // Renders one collapsed done-group; shared by both branches below.
   const doneItem = (seg: Extract<Segment, { kind: "done" }>) => (
     <li key={seg.key}>
-      <CompletedTray habits={seg.habits} onStatus={onStatus} />
+      <CompletedTray
+        habits={seg.habits}
+        onStatus={onStatus}
+        onOpenNote={onOpenNote}
+      />
     </li>
   );
 
-  // The "Anytime" group has no schedule rows, so it can't be reordered.
-  if (planId == null) {
+  if (!canReorder) {
     return (
       <ul>
         {segments.map((seg) =>
@@ -713,7 +836,14 @@ function PlanBoard({
             doneItem(seg)
           ) : (
             <li key={seg.row.habit.id}>
-              <StaticRow habit={seg.row.habit} onStatus={onStatus} />
+              {/* Non-draggable, but still shows chain step numbers/connectors. */}
+              <RowLayout
+                habit={seg.row.habit}
+                stepNumber={seg.row.stepNumber}
+                connectBelow={seg.row.connectBelow}
+                onStatus={onStatus}
+                onOpenNote={onOpenNote}
+              />
             </li>
           ),
         )}
@@ -760,6 +890,7 @@ function PlanBoard({
                   stepNumber={seg.row.stepNumber}
                   connectBelow={seg.row.connectBelow}
                   onStatus={onStatus}
+                  onOpenNote={onOpenNote}
                 />
               </li>
             ),
@@ -810,7 +941,7 @@ function DateNav({
       </button>
 
       <div className="flex flex-col items-center">
-        <span className="text-sm font-medium text-calm-700">
+        <span className="font-heading text-2xl leading-tight text-calm-900">
           {dayLabel(date)}
         </span>
         {!viewingToday && (
@@ -900,7 +1031,7 @@ function ShiftControl({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-7 z-30 w-60 rounded-xl border border-calm-200 bg-white p-3 text-left shadow-lg">
+        <div className="absolute right-0 top-7 z-50 w-60 rounded-xl border border-calm-200 bg-white p-3 text-left shadow-lg">
           <p className="text-xs font-semibold text-calm-700">Running late?</p>
           <p className="mb-2 text-[11px] leading-snug text-stone-400">
             Moves this cycle and everything after it — today only.
@@ -952,43 +1083,160 @@ function ShiftControl({
   );
 }
 
-// Floating "back to top" button. The page auto-scrolls down to the current time
-// block on load, so this is a one-tap way back up to earlier habits. Sits on the
-// left (the "+" FAB is on the right) and only appears once you've scrolled down.
-function ScrollTopButton() {
-  const [show, setShow] = useState(false);
+// Floating bottom-right controls: "Now" jumps to the current time block (the page
+// auto-scrolls there on load, but you can re-center anytime), and "↑" goes back
+// to the top. "Now" only shows on today's view; "↑" appears once you've scrolled
+// down.
+function FloatingControls({ onGoToNow }: { onGoToNow?: () => void }) {
+  const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
-    const onScroll = () => setShow(window.scrollY > 300);
+    const onScroll = () => setScrolled(window.scrollY > 300);
     onScroll(); // we may already be scrolled (auto-scroll-to-now ran on load)
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  if (!show) return null;
+  if (!onGoToNow && !scrolled) return null;
 
   return (
-    <button
-      type="button"
-      onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-      aria-label="Scroll to top"
-      className="fixed bottom-28 left-6 z-20 flex h-12 w-12 items-center justify-center rounded-full border border-calm-200 bg-white text-calm-600 shadow-lg transition-colors hover:bg-calm-50"
-    >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        className="h-6 w-6"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
+    <div className="fixed bottom-28 right-6 z-20 flex flex-col items-end gap-2">
+      {onGoToNow && (
+        <button
+          type="button"
+          onClick={onGoToNow}
+          aria-label="Jump to now"
+          className="flex h-10 items-center gap-1.5 rounded-full border border-calm-200 bg-white pl-2.5 pr-3 text-xs font-semibold text-calm-600 shadow-lg transition-colors hover:bg-calm-50"
+        >
+          <ClockIcon />
+          Now
+        </button>
+      )}
+      {scrolled && (
+        <button
+          type="button"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          aria-label="Scroll to top"
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-calm-200 bg-white text-calm-600 shadow-lg transition-colors hover:bg-calm-50"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-6 w-6"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M5 15l7-7 7 7"
+            />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
+// A bottom-sheet editor for a habit's per-day note. Seeded from the habit's
+// current note; Save writes it, Clear empties it, and backdrop / Escape / Cancel
+// close without saving. The note is per-DAY (this date's HabitLog), separate
+// from the habit's permanent notes on the edit page.
+function NoteSheet({
+  habit,
+  dateLabel,
+  onSave,
+  onClose,
+}: {
+  habit: Habit;
+  dateLabel: string;
+  onSave: (notes: string) => void;
+  onClose: () => void;
+}) {
+  const existing = habit.notes?.trim() ?? "";
+  const [text, setText] = useState(habit.notes ?? "");
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Focus the field on open and close on Escape.
+  useEffect(() => {
+    taRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const trimmed = text.trim();
+
+  function save() {
+    onSave(trimmed);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
+      <div
+        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Note for ${habit.name}`}
+        className="animate-sheet-in relative w-full max-w-md rounded-t-3xl bg-white p-6 pb-8 shadow-xl sm:rounded-3xl"
       >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={2}
-          d="M5 15l7-7 7 7"
+        {/* Grabber — a small affordance that this sheet came up from the bottom. */}
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-calm-200 sm:hidden" />
+        <h2 className="font-heading text-2xl text-calm-900">{habit.name}</h2>
+        <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wide text-calm-500">
+          Note · {dateLabel}
+        </p>
+
+        <textarea
+          ref={taRef}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={4}
+          placeholder="How did it go? Why you skipped, how it felt…"
+          className="mt-4 w-full resize-none rounded-xl border border-calm-200 bg-white px-4 py-3 text-sm text-calm-900 placeholder:text-calm-400 focus:border-calm-500 focus:outline-none"
         />
-      </svg>
-    </button>
+
+        <div className="mt-4 flex items-center gap-3">
+          {existing && (
+            <button
+              type="button"
+              onClick={() => {
+                onSave("");
+                onClose();
+              }}
+              className="text-sm font-medium text-rose-500 transition-colors hover:text-rose-600"
+            >
+              Clear
+            </button>
+          )}
+          <div className="ml-auto flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl px-4 py-2.5 text-sm font-medium text-calm-600 transition-colors hover:bg-calm-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={trimmed === existing}
+              className="rounded-xl bg-calm-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1014,6 +1262,13 @@ function PlansPage() {
   // Only auto-scroll once (on first load) — not every time a toggle re-renders.
   const didAutoScroll = useRef(false);
 
+  const toast = useToast();
+
+  // The habit whose per-day note is being edited (null = sheet closed), and
+  // whether the "Skip day" confirmation dialog is open.
+  const [editingNote, setEditingNote] = useState<Habit | null>(null);
+  const [skipDayOpen, setSkipDayOpen] = useState(false);
+
   // Set a habit's status for today (complete / skip / reset). We update the UI
   // FIRST (optimistic) so it feels instant, then tell the backend. If the
   // request fails we restore the snapshot, so the UI never lies.
@@ -1037,6 +1292,31 @@ function PlansPage() {
       if (!res.ok) throw new Error("Request failed");
     } catch {
       setPlans(snapshot);
+    }
+  }
+
+  // Save a habit's per-day note. Optimistic like setHabitStatus: show it now,
+  // POST it (independent of status — a note never marks the habit done), and
+  // roll back with an error toast if the save fails. "" clears the note.
+  async function setHabitNote(habitId: number, notes: string) {
+    const snapshot = plans;
+    setPlans((prev) => applyNote(prev, habitId, notes));
+
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/habits/${habitId}/log/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            isViewingToday ? { notes } : { notes, date: toYMD(viewedDate) },
+          ),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+    } catch {
+      setPlans(snapshot);
+      toast("Couldn't save your note", { variant: "error" });
     }
   }
 
@@ -1121,10 +1401,59 @@ function PlansPage() {
             : { from_plan: planId, minutes, date: toYMD(viewedDate) },
         ),
       });
-      if (!res.ok) throw new Error("Request failed");
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? "Couldn't shift the day");
+      }
       setReloadToken((token) => token + 1); // re-fetch the day's new times
+    } catch (err) {
+      // The shift didn't apply (nothing to roll back) — surface why, since this
+      // used to fail silently.
+      toast(err instanceof Error ? err.message : "Couldn't shift the day", {
+        variant: "error",
+      });
+    }
+  }
+
+  // Reset a day's per-day adjustments (skips + running-late shifts) back to
+  // default, keeping completions and notes. Powers the "Undo" on the skip toast.
+  // Takes the date explicitly so Undo targets the day that was skipped even if
+  // the user has since navigated away.
+  async function clearDay(date: Date) {
+    const today = isSameDay(date, new Date());
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/days/clear/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(today ? {} : { date: toYMD(date) }),
+      });
+      if (!res.ok) throw new Error("Request failed");
+      setReloadToken((token) => token + 1);
     } catch {
-      // The shift didn't apply; nothing changed in the UI to roll back.
+      toast("Couldn't undo — try again", { variant: "error" });
+    }
+  }
+
+  // Skip every habit for the viewed day in one go (e.g. you're out of town).
+  // The backend keeps anything already completed; we re-fetch to show the result
+  // and offer an Undo (which clears the day back to default).
+  async function confirmSkipDay() {
+    setSkipDayOpen(false);
+    const skippedDate = viewedDate;
+    const today = isSameDay(skippedDate, new Date());
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/days/skip/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(today ? {} : { date: toYMD(skippedDate) }),
+      });
+      if (!res.ok) throw new Error("Request failed");
+      setReloadToken((token) => token + 1); // re-fetch to show everything skipped
+      toast("All habits skipped for this day", {
+        action: { label: "Undo", onClick: () => clearDay(skippedDate) },
+      });
+    } catch {
+      toast("Couldn't skip the day", { variant: "error" });
     }
   }
 
@@ -1141,10 +1470,32 @@ function PlansPage() {
     }
   }, [plans, isLoading, nowBlockId, isViewingToday]);
 
+  // Re-center on the current time block (the "Now" button).
+  function scrollToNow() {
+    if (nowBlockId == null) return;
+    sectionRefs.current[String(nowBlockId)]?.scrollIntoView({
+      block: "start",
+      behavior: "smooth",
+    });
+  }
+
   // A past day can come back with fewer habits (ones added later didn't exist
   // yet), and a time block can be empty — skip empty blocks so we don't render
   // a bare time label with nothing under it.
   const visiblePlans = plans.filter((plan) => plan.habits.length > 0);
+
+  // Has the whole day been skipped? (every habit resolved to skipped or done,
+  // with at least one skip). If so, the day-level control flips from "Skip day"
+  // to a persistent "Reset day" undo — so you can un-skip even after the toast
+  // has faded, not just in the few seconds it's on screen.
+  const anySkipped = visiblePlans.some((plan) =>
+    plan.habits.some((habit) => isSkipped(habit)),
+  );
+  const dayFullySkipped =
+    anySkipped &&
+    visiblePlans.every((plan) =>
+      plan.habits.every((habit) => isSkipped(habit) || isDone(habit)),
+    );
 
   let body: ReactNode;
   if (isLoading && plans.length === 0) {
@@ -1218,12 +1569,14 @@ function PlansPage() {
               </div>
 
               {/* Habits at this time. Drag the grip to reorder, swipe a card
-                  left to skip / right to reset, tap the circle to complete;
-                  completed ones collapse in place. */}
+                  left to skip, tap the circle to complete, tap the note icon to
+                  jot a day note; completed ones collapse in place. */}
               <PlanBoard
                 plan={plan}
                 onStatus={setHabitStatus}
+                onOpenNote={setEditingNote}
                 onReorder={reorderPlan}
+                interactive={isViewingToday}
               />
             </section>
           );
@@ -1234,17 +1587,68 @@ function PlansPage() {
 
   return (
     <>
-      <Header title="Plan" body="" />
       <div className="max-w-md mx-auto">
+        {/* The date selector doubles as the page header — the big day label is
+            the title, so there's no separate hero taking up space. */}
         <DateNav
           date={viewedDate}
           onPrev={() => setViewedDate((d) => addDays(d, -1))}
           onNext={() => setViewedDate((d) => addDays(d, 1))}
           onToday={() => setViewedDate(startOfDay(new Date()))}
         />
+        {/* Day-level control. Skip the whole day at once, or — once it's
+            skipped — a persistent "Reset day" to undo it (no time limit, unlike
+            the toast). Per-habit skip is still the swipe gesture. */}
+        {visiblePlans.length > 0 && (
+          <div className="-mt-2 mb-4 flex justify-end">
+            {dayFullySkipped ? (
+              <button
+                type="button"
+                onClick={() => clearDay(viewedDate)}
+                className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
+              >
+                Reset day
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setSkipDayOpen(true)}
+                className="text-[11px] font-medium uppercase tracking-wide text-stone-400 transition-colors hover:text-rose-500"
+              >
+                Skip day
+              </button>
+            )}
+          </div>
+        )}
         {body}
       </div>
-      <ScrollTopButton />
+
+      <FloatingControls
+        onGoToNow={
+          isViewingToday && nowBlockId != null ? scrollToNow : undefined
+        }
+      />
+
+      {/* Per-day note editor (bottom sheet). */}
+      {editingNote && (
+        <NoteSheet
+          habit={editingNote}
+          dateLabel={dayLabel(viewedDate)}
+          onSave={(notes) => setHabitNote(editingNote.id, notes)}
+          onClose={() => setEditingNote(null)}
+        />
+      )}
+
+      {/* Confirm before a bulk skip — replaces the old window.confirm. */}
+      <ConfirmDialog
+        open={skipDayOpen}
+        title="Skip this day?"
+        message="Every habit for this day gets marked skipped. Anything already done stays done — and you can undo it."
+        confirmLabel="Skip day"
+        destructive
+        onConfirm={confirmSkipDay}
+        onCancel={() => setSkipDayOpen(false)}
+      />
     </>
   );
 }

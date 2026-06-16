@@ -1,19 +1,20 @@
 import { NavLink } from "react-router-dom";
 
+// Shared style for the nav tabs (highlighted when active).
+const tabClass = ({ isActive }: { isActive: boolean }) =>
+  `flex flex-1 flex-col items-center gap-1 py-2 rounded-xl transition-all ${
+    isActive ? "bg-white/20 text-white" : "text-white/60 hover:text-white/80"
+  }`;
+
+// Just the two destinations we have today: the daily Plan and Add habit. More
+// tabs (Areas, Insights) can slot back in here once those pages are ready.
 function BottomNav() {
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-gradient-to-r from-calm-600 to-calm-500 px-6 pt-3 pb-6 shadow-lg">
-      <div className="flex justify-around items-center">
-        <NavLink
-          to="/habits"
-          className={({ isActive }) =>
-            `flex flex-col items-center px-6 py-2 rounded-xl transition-all ${
-              isActive
-                ? "bg-white/20 text-white"
-                : "text-white/60 hover:text-white/80"
-            }`
-          }
-        >
+    // z-40 keeps the bar above page content (chain step badges are z-10, so
+    // without this they show through when rows scroll behind the bar).
+    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-gradient-to-r from-calm-600 to-calm-500 px-6 pt-3 pb-6 shadow-lg">
+      <div className="mx-auto flex max-w-md items-center gap-2">
+        <NavLink to="/plan/" className={tabClass}>
           <svg
             xmlns="http://www.w3.org/2000/svg"
             className="h-6 w-6"
@@ -25,22 +26,13 @@ function BottomNav() {
               strokeLinecap="round"
               strokeLinejoin="round"
               strokeWidth={2}
-              d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
+              d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
             />
           </svg>
-          <span className="text-xs mt-1 font-medium">Habits</span>
+          <span className="text-xs font-medium">Plan</span>
         </NavLink>
 
-        <NavLink
-          to="/areas"
-          className={({ isActive }) =>
-            `flex flex-col items-center px-6 py-2 rounded-xl transition-all ${
-              isActive
-                ? "bg-white/20 text-white"
-                : "text-white/60 hover:text-white/80"
-            }`
-          }
-        >
+        <NavLink to="/habits/new" className={tabClass}>
           <svg
             xmlns="http://www.w3.org/2000/svg"
             className="h-6 w-6"
@@ -52,37 +44,10 @@ function BottomNav() {
               strokeLinecap="round"
               strokeLinejoin="round"
               strokeWidth={2}
-              d="M13 10V3L4 14h7v7l9-11h-7z"
+              d="M12 4v16m8-8H4"
             />
           </svg>
-          <span className="text-xs mt-1 font-medium">Areas</span>
-        </NavLink>
-
-        <NavLink
-          to="/insights"
-          className={({ isActive }) =>
-            `flex flex-col items-center px-6 py-2 rounded-xl transition-all ${
-              isActive
-                ? "bg-white/20 text-white"
-                : "text-white/60 hover:text-white/80"
-            }`
-          }
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-6 w-6"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-            />
-          </svg>
-          <span className="text-xs mt-1 font-medium">Insights</span>
+          <span className="text-xs font-medium">Add Habit</span>
         </NavLink>
       </div>
     </nav>

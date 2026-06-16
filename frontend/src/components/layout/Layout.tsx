@@ -1,6 +1,5 @@
 import { Outlet } from "react-router";
 import BottomNav from "./BottomNav";
-import AddHabitFab from "./AddHabitFab";
 
 function Layout() {
   return (
@@ -9,7 +8,6 @@ function Layout() {
         {/* padding-bottom for nav height */}
         <Outlet />
       </div>
-      <AddHabitFab />
       <BottomNav />
     </>
   );

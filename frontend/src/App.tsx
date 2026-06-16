@@ -1,4 +1,5 @@
 import { Route, Routes } from "react-router";
+import { ToastProvider } from "./components/Toast.tsx";
 import Layout from "./components/layout/Layout.tsx";
 import LandingPage from "./pages/LandingPage";
 import SignUpPage from "./pages/SignUpPage.tsx";
@@ -11,7 +12,7 @@ import EditHabitPage from "./pages/EditHabitPage.tsx";
 
 function App() {
   return (
-    <>
+    <ToastProvider>
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/signup" element={<SignUpPage />} />
@@ -23,7 +24,7 @@ function App() {
           <Route path="/areas/:id" element={<AreaPage />} />
         </Route>
       </Routes>
-    </>
+    </ToastProvider>
   );
 }
 
