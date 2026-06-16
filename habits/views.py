@@ -1,81 +1,121 @@
+import json
+from datetime import date
+
 from django.http import JsonResponse
-from .models import Area, Habit, Plan
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
+
+from .models import Area, Habit, Plan, Schedule, HabitLog
+
 
 def index(request):
     return JsonResponse({"message": "Hello from Django!"})
 
-def plan(request):
-    plans = Plan.objects.prefetch_related(
-        "habitplan_set__habit__habitchain_set__chain__habitchain_set__habit"
-    )
-    data = []
-    for plan in plans:
-        # print(plan)
-        # print()
-        # get all habits at this time
-        habits = []
-        habit_plans = plan.habitplan_set.all()
-        # print(habit_plans)
-        # print()
-        for habit_plan in habit_plans:
-            # check if it has other habits in chain
-            habit = habit_plan.habit
-            # print(habit)
-            # print()
-            habit_chain = habit.habitchain_set
-            habit_chain = habit_chain.first() # first bc theres only 1
-    
-            if habit_chain:   # check if it relationship exists
-                if habit_chain.order > 1:
-                    continue
-                chain = habit_chain.chain
-                # get habits in this chain
-                chain_habits = chain.habitchain_set.all()
-                # print(chain_habits)
-                # prep each habit
-                for chain_habit in chain_habits:
-                
-                    habitt = chain_habit.habit
-                    habits.append({
-                        "name": habitt.name,
-                        "id": habitt.id,
-                        "chain": habit_chain.id,
-                        "order": chain_habit.order
-                    })
-            else:
-                habits.append({
-                    "name": habit.name,     # note: the outer habit, not habitt
-                    "id": habit.id,
-                    "chain": None
-                })
 
-                
-        # add habits to plan
-        plan_data = {
+def plan(request):
+    today = date.today()
+
+    # Habit ids completed today, so the UI shows the right checkmarks
+    # after a page refresh.
+    completed_today = set(
+        HabitLog.objects.filter(
+            date=today, status=HabitLog.Status.COMPLETED
+        ).values_list("habit_id", flat=True)
+    )
+
+    data = []
+    # One query for the plans + their schedules + habits.
+    plans = Plan.objects.prefetch_related("schedule_set__habit")
+    for plan in plans:
+        habits = []
+        # Each Schedule row now carries its own habit, chain (cycle), and
+        # order, so we just emit each one. The frontend groups the chains.
+        for schedule in plan.schedule_set.all():
+            habit = schedule.habit
+            habits.append({
+                "id": habit.id,
+                "name": habit.name,
+                "chain": schedule.chain_id,   # cycle id, or None if standalone
+                "order": schedule.order,
+                "done_today": habit.id in completed_today,
+            })
+        data.append({
             "id": plan.id,
             "time": plan.start_time,
-            "habits": habits
-        }
-        # print(plan_data)
-        # print()
-        data.append(plan_data)
+            "habits": habits,
+        })
 
-
-    missed_habits = {
+    # Habits that aren't scheduled in any plan.
+    unscheduled = Habit.objects.filter(schedule__isnull=True)
+    data.append({
         "id": None,
-        "time": None, 
-        "habits": [{"name": h.name, "id": h.id} for h in Habit.objects.filter(habitplan__isnull=True)]
-
-    }
-    # habits with no plans
-    data.append(missed_habits)
+        "time": None,
+        "habits": [
+            {
+                "id": h.id,
+                "name": h.name,
+                "chain": None,
+                "done_today": h.id in completed_today,
+            }
+            for h in unscheduled
+        ],
+    })
 
     return JsonResponse(data, safe=False)
+
+
+@csrf_exempt
+@require_POST
+def log_habit(request, habit_id):
+    """Mark a habit done / not-done for today (the Plan page toggle calls this)."""
+    habit = get_object_or_404(Habit, id=habit_id)
+
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        body = {}
+    requested_status = body.get("status")
+
+    # One log per habit per day; create it the first time it's toggled.
+    log, _ = HabitLog.objects.get_or_create(habit=habit, date=date.today())
+
+    if requested_status == HabitLog.Status.COMPLETED:
+        log.status = HabitLog.Status.COMPLETED
+        log.time = timezone.localtime().time()   # when it was actually done
+    else:
+        # Anything else (e.g. unchecking) resets it to not-done.
+        log.status = HabitLog.Status.PENDING
+        log.time = None
+    log.save()
+
+    return JsonResponse({
+        "habit": habit.id,
+        "status": log.status,
+        "done_today": log.status == HabitLog.Status.COMPLETED,
+    })
+
+
+def logs(request):
+    todays_logs = HabitLog.objects.filter(date=date.today()).order_by("time")
+    data = [
+        {
+            "id": log.id,
+            "status": log.status,
+            "name": log.habit.name if log.habit else None,
+            "time": log.time,
+        }
+        for log in todays_logs
+    ]
+    return JsonResponse(data, safe=False)
+
 
 def areas(request):
     areas = Area.objects.all().order_by('name')
     data = list(areas.values('id', 'name'))
     return JsonResponse(data, safe=False)
+
 
 def area(request, area_id):
     area = Area.objects.get(id=area_id)

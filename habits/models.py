@@ -27,21 +27,13 @@ class Habit(models.Model):
 
     class Meta:
         # Default sort by the related plan's start time
-        ordering = ['habitplan__plan__start_time', 'habitchain__order']
+        ordering = ['schedule__plan__start_time', 'schedule__order']
 
     def __str__(self):
         return f"{self.name}"
     
 class Chain(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
-
-class HabitChain(models.Model):
-    chain = models.ForeignKey(Chain, on_delete=models.CASCADE)
-    habit = models.ForeignKey(Habit, on_delete=models.CASCADE)
-    order = models.PositiveIntegerField()
-
-    def __str__(self):
-        return f"{self.chain.id}.{self.order} - {self.habit}"
 
 class Plan(models.Model):
     start_date = models.DateField(auto_now_add=True)
@@ -53,12 +45,28 @@ class Plan(models.Model):
     def __str__(self):
         return f"{self.start_time}"
 
-class HabitPlan(models.Model):
+class Schedule(models.Model):
     habit = models.ForeignKey(Habit, on_delete=models.CASCADE)
     plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True)
+    chain = models.ForeignKey(Chain, on_delete=models.CASCADE, null=True, blank=True)
+    order = models.PositiveIntegerField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.plan.start_time} - {self.habit.name}"
+    
+class HabitLog(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        COMPLETED = 'COMPLETED', 'Completed'
+        SKIPPED = 'SKIPPED', 'Skipped'
+        # UNTRACKED = 'UNTRACKED', 'Untracked' # Optional, used for unanswered days'
+
+    # includes habit and time 
+    habit = models.ForeignKey(Habit, on_delete=models.SET_NULL, null=True)
+    date = models.DateField()
+    time = models.TimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    notes = models.TextField(blank=True)
 
 
 class HabitTier(models.Model):

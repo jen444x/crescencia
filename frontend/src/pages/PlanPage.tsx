@@ -12,6 +12,10 @@ type Habit = {
   name: string;
   chain?: number | null;
   order?: number;
+  // Has this habit been completed today? Comes from the backend so the
+  // toggle shows the right state after a page refresh. Optional for now
+  // (defaults to "not done") until your /plan/ endpoint sends it.
+  done_today?: boolean;
 };
 
 // A plan's habits, grouped for rendering: standalone habits stay on their own,
@@ -58,11 +62,23 @@ function groupHabits(habits: Habit[]): PlanItem[] {
   return items;
 }
 
-function PlusIcon() {
+// Return a NEW plans array with one habit's completion flipped.
+// Pure + immutable: we build new objects instead of mutating the old ones,
+// so React reliably notices the change and re-renders.
+function setHabitDone(plans: Plan[], habitId: number, done: boolean): Plan[] {
+  return plans.map((plan) => ({
+    ...plan,
+    habits: plan.habits.map((habit) =>
+      habit.id === habitId ? { ...habit, done_today: done } : habit,
+    ),
+  }));
+}
+
+function CheckIcon() {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4 text-calm-500 shrink-0"
+      className="h-4 w-4"
       fill="none"
       viewBox="0 0 24 24"
       stroke="currentColor"
@@ -70,8 +86,8 @@ function PlusIcon() {
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
-        strokeWidth={2}
-        d="M12 5v14M5 12h14"
+        strokeWidth={3}
+        d="M5 13l4 4L19 7"
       />
     </svg>
   );
@@ -79,20 +95,50 @@ function PlusIcon() {
 
 function HabitCard({
   habit,
+  done,
+  onToggle,
   leading,
 }: {
   habit: Habit;
+  done: boolean;
+  onToggle: () => void;
   leading?: ReactNode;
 }) {
   const navigate = useNavigate();
   return (
     <div
       onClick={() => navigate(`/habits/${habit.id}`)}
-      className="group flex items-center gap-3 bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow cursor-pointer"
+      className={`group flex items-center gap-3 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
+        done ? "bg-calm-50" : "bg-white"
+      }`}
     >
       {leading}
-      <h3 className="flex-1 font-medium text-calm-900">{habit.name}</h3>
-      <PlusIcon />
+      <h3
+        className={`flex-1 font-medium ${
+          done ? "text-calm-400 line-through" : "text-calm-900"
+        }`}
+      >
+        {habit.name}
+      </h3>
+
+      {/* Complete toggle. We stopPropagation so tapping it doesn't ALSO
+          fire the card's navigate() and open the detail page. */}
+      <button
+        type="button"
+        aria-label={done ? "Mark as not done today" : "Mark as done today"}
+        aria-pressed={done}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
+          done
+            ? "border-calm-600 bg-calm-600 text-white"
+            : "border-calm-300 text-transparent hover:border-calm-500"
+        }`}
+      >
+        <CheckIcon />
+      </button>
     </div>
   );
 }
@@ -101,6 +147,30 @@ function PlansPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+
+  // Toggle a habit's "done today" state. We flip the UI FIRST (optimistic
+  // update) so it feels instant, then tell the backend. If the request
+  // fails we roll the UI back, so it never lies about what's actually saved.
+  async function toggleHabit(habitId: number, nextDone: boolean) {
+    setPlans((prev) => setHabitDone(prev, habitId, nextDone));
+
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/habits/${habitId}/log/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: nextDone ? "COMPLETED" : "UNTRACKED",
+          }),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+    } catch {
+      // Undo the optimistic flip.
+      setPlans((prev) => setHabitDone(prev, habitId, !nextDone));
+    }
+  }
 
   useEffect(() => {
     async function fetchPlans() {
@@ -189,6 +259,10 @@ function PlansPage() {
                   <li key={`h-${item.habit.id}`}>
                     <HabitCard
                       habit={item.habit}
+                      done={!!item.habit.done_today}
+                      onToggle={() =>
+                        toggleHabit(item.habit.id, !item.habit.done_today)
+                      }
                       leading={
                         <span className="h-2 w-2 rounded-full bg-calm-400 shrink-0" />
                       }
@@ -210,7 +284,13 @@ function PlansPage() {
                             )}
                           </div>
                           <div className={`flex-1 ${isLast ? "" : "pb-2"}`}>
-                            <HabitCard habit={step} />
+                            <HabitCard
+                              habit={step}
+                              done={!!step.done_today}
+                              onToggle={() =>
+                                toggleHabit(step.id, !step.done_today)
+                              }
+                            />
                           </div>
                         </div>
                       );
