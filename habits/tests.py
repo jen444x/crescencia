@@ -76,6 +76,25 @@ class BrowseDaysTests(TestCase):
         # Today: both show.
         self.assertIn(new_habit.id, today)
 
+    def test_past_pending_reads_as_missed(self):
+        # Nothing logged. Yesterday is over → missed; today still has time → pending.
+        yesterday = self._statuses(
+            self.client.get(reverse("habits:plan"), {"date": self.yesterday.isoformat()})
+        )
+        today = self._statuses(self.client.get(reverse("habits:plan")))
+        self.assertEqual(yesterday[self.habit.id], "MISSED")
+        self.assertEqual(today[self.habit.id], "PENDING")
+
+    def test_intentional_skip_is_not_a_miss(self):
+        # An explicit skip on a past day stays SKIPPED — only untouched is a miss.
+        HabitLog.objects.create(
+            habit=self.habit, date=self.yesterday, status=HabitLog.Status.SKIPPED
+        )
+        yesterday = self._statuses(
+            self.client.get(reverse("habits:plan"), {"date": self.yesterday.isoformat()})
+        )
+        self.assertEqual(yesterday[self.habit.id], "SKIPPED")
+
     def test_log_targets_the_given_day(self):
         url = reverse("habits:log_habit", args=[self.habit.id])
         response = self.client.post(

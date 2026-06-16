@@ -12,6 +12,12 @@ from django.views.decorators.http import require_POST
 
 from .models import Area, Chain, Habit, Plan, PlanDay, Schedule, HabitLog
 
+# Derived (never stored) status: once a day is over, a habit that was never
+# completed or skipped reads as "missed". It's computed at read time, so there's
+# no MISSED row to create and clients never POST it — log_habit only accepts the
+# three real HabitLog.Status values.
+MISSED_STATUS = "MISSED"
+
 
 def index(request):
     return JsonResponse({"message": "Hello from Django!"})
@@ -62,6 +68,10 @@ def plan(request):
     if date_error:
         return date_error
 
+    # Once a day is over, a still-pending habit counts as a miss. We derive that
+    # in habit_payload rather than storing it (see MISSED_STATUS).
+    is_past_day = target_date < timezone.localdate()
+
     # That day's status for each habit, so the UI shows the right state
     # (pending / completed / skipped). Habits with no log for the day default
     # to PENDING below.
@@ -79,6 +89,9 @@ def plan(request):
 
     def habit_payload(habit, schedule_id=None, chain=None, order=None):
         status = status_by_habit.get(habit.id, HabitLog.Status.PENDING)
+        # A past day's still-pending habit reads as missed (derived, never stored).
+        if is_past_day and status == HabitLog.Status.PENDING:
+            status = MISSED_STATUS
         return {
             "id": habit.id,
             "schedule_id": schedule_id,   # the row to target when reordering
