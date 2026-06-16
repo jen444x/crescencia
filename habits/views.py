@@ -73,9 +73,14 @@ def plan(request):
     # One query for the plans + their schedules + habits, with schedules sorted
     # by their saved position so /plan/ reflects reordering. Habits with no
     # explicit order (nulls) go last; id breaks ties so the list is stable.
-    ordered_schedules = Schedule.objects.select_related("habit").order_by(
-        F("order").asc(nulls_last=True), "id"
-    )
+    #
+    # Only habits that already existed on the viewed day are shown: a habit you
+    # add today shouldn't appear when you scroll back to last week, since it
+    # didn't exist then. (For today/future days this filter matches everything,
+    # so it's a no-op there.)
+    ordered_schedules = Schedule.objects.select_related("habit").filter(
+        habit__date_added__date__lte=target_date
+    ).order_by(F("order").asc(nulls_last=True), "id")
     plans = Plan.objects.prefetch_related(
         Prefetch("schedule_set", queryset=ordered_schedules)
     )
@@ -97,8 +102,10 @@ def plan(request):
             "habits": habits,
         })
 
-    # Habits that aren't scheduled in any plan.
-    unscheduled = Habit.objects.filter(schedule__isnull=True)
+    # Habits that aren't scheduled in any plan (same "existed by then" filter).
+    unscheduled = Habit.objects.filter(
+        schedule__isnull=True, date_added__date__lte=target_date
+    )
     data.append({
         "id": None,
         "time": None,

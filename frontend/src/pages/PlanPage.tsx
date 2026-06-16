@@ -102,6 +102,50 @@ function currentBlockId(plans: Plan[]): number | null {
   return currentId ?? earliestId;
 }
 
+// --- Day navigation (browse other days) -------------------------------------
+
+// Local midnight — the canonical value we compare/store a viewed day by.
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+// Local "YYYY-MM-DD" for the API. NOT toISOString() — that's UTC and can land on
+// the wrong calendar day near midnight.
+function toYMD(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function addDays(date: Date, days: number): Date {
+  const result = startOfDay(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+// "Today" / "Yesterday" / "Tomorrow", else e.g. "Sat, Jun 13".
+function dayLabel(date: Date): string {
+  const diff = Math.round(
+    (startOfDay(date).getTime() - startOfDay(new Date()).getTime()) / 86_400_000,
+  );
+  if (diff === 0) return "Today";
+  if (diff === -1) return "Yesterday";
+  if (diff === 1) return "Tomorrow";
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 // A row to render for one habit. `stepNumber` is its position within a chain
 // (1, 2, 3...) or null if it's a standalone habit. `connectBelow` draws the
 // little connector line down to the next step when they're in the same chain.
@@ -129,20 +173,47 @@ function buildRows(habits: Habit[]): Row[] {
   });
 }
 
-// Keep only the rows we want to show now (the not-completed ones), but RECOMPUTE
-// `connectBelow` against the next *visible* row, so a chain's connector never
-// dangles toward a habit we've collapsed away. Step numbers keep their true
-// position in the full chain (so finishing step 1 honestly leaves "2, 3").
-function keepRows(rows: Row[], keep: (row: Row) => boolean): Row[] {
-  const kept = rows.filter(keep);
-  return kept.map((row, i) => {
-    const next = kept[i + 1];
+// A time block renders as an ordered list of segments: either a single active
+// (not-yet-completed) habit, or a "done" group — a RUN of consecutive completed
+// habits collapsed together IN PLACE. So finishing the top 3 makes one "3 done"
+// group at the top; if a pending habit sits between completed ones, you get two
+// separate groups in their own spots (they don't merge across the gap).
+type Segment =
+  | { kind: "active"; row: Row }
+  | { kind: "done"; key: string; habits: Habit[] };
+
+function buildSegments(habits: Habit[]): Segment[] {
+  const rows = buildRows(habits); // true step numbers, over the full list
+  const segments: Segment[] = [];
+  let run: Habit[] = []; // the completed habits piling up since the last active one
+
+  const flushRun = () => {
+    if (run.length > 0) {
+      segments.push({ kind: "done", key: `done-${run[0].id}`, habits: run });
+      run = [];
+    }
+  };
+
+  rows.forEach((row, i) => {
+    if (isDone(row.habit)) {
+      run.push(row.habit);
+      return;
+    }
+    flushRun();
+    // Only connect down to the next habit when it's the immediately-following,
+    // still-active step of the same chain — so the connector never dangles into
+    // a collapsed group below it.
+    const next = habits[i + 1];
     const connectBelow =
       row.habit.chain != null &&
       next != null &&
-      next.habit.chain === row.habit.chain;
-    return { ...row, connectBelow };
+      !isDone(next) &&
+      next.chain === row.habit.chain;
+    segments.push({ kind: "active", row: { ...row, connectBelow } });
   });
+  flushRun();
+
+  return segments;
 }
 
 // Return a NEW plans array with one habit's status set (and done_today kept in
@@ -524,9 +595,9 @@ function CompletedRow({
   );
 }
 
-// The collapsed "done" tray at the bottom of a time block. Completed habits
-// would otherwise pile up and push the rest of the day off-screen, so we tuck
-// them here — one tap to expand, review, or undo. Collapsed by default.
+// A collapsed group of consecutive completed habits, shown IN PLACE (where they
+// sit in the order) rather than swept to the bottom. Reads as a small "✓ N done"
+// chip; tap to expand and review/undo. Collapsed by default.
 function CompletedTray({
   habits,
   onStatus,
@@ -537,16 +608,33 @@ function CompletedTray({
   const [open, setOpen] = useState(false);
 
   return (
-    <div>
+    <div className="pb-2">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-lg px-1 py-1.5 text-xs font-medium text-calm-500 transition-colors hover:text-calm-700"
+        // Full-width so a tap anywhere along the row toggles it, not just on the
+        // "N done" text.
+        className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-calm-500 transition-colors hover:bg-calm-100 hover:text-calm-700"
       >
         <ChevronIcon open={open} />
+        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-calm-500 text-white">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-2.5 w-2.5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={3}
+              d="M5 13l4 4L19 7"
+            />
+          </svg>
+        </span>
         <span>{habits.length} done</span>
-        <span className="h-px flex-1 bg-calm-200" />
       </button>
 
       {open && (
@@ -583,42 +671,41 @@ function PlanBoard({
   const planId = plan.id;
   const habits = plan.habits;
 
-  // Number chains over the FULL list (so step numbers are real positions), then
-  // pull completed habits out of the active list and into the tray below.
-  const allRows = buildRows(habits);
-  const activeRows = keepRows(allRows, (row) => !isDone(row.habit));
-  const doneHabits = habits.filter(isDone);
+  // Split the block into ordered segments: single active habits + in-place
+  // "done" groups (runs of consecutive completed habits). Drag still reorders
+  // only the active habits; completed ones keep their exact spot.
+  const segments = buildSegments(habits);
+  const activeHabits = habits.filter((habit) => !isDone(habit));
 
-  const tray =
-    doneHabits.length > 0 ? (
-      <div className={activeRows.length > 0 ? "mt-1" : ""}>
-        <CompletedTray habits={doneHabits} onStatus={onStatus} />
-      </div>
-    ) : null;
+  // Renders one collapsed done-group; shared by both branches below.
+  const doneItem = (seg: Extract<Segment, { kind: "done" }>) => (
+    <li key={seg.key}>
+      <CompletedTray habits={seg.habits} onStatus={onStatus} />
+    </li>
+  );
 
   // The "Anytime" group has no schedule rows, so it can't be reordered.
   if (planId == null) {
     return (
-      <div>
-        <ul>
-          {activeRows.map((row) => (
-            <li key={row.habit.id}>
-              <StaticRow habit={row.habit} onStatus={onStatus} />
+      <ul>
+        {segments.map((seg) =>
+          seg.kind === "done" ? (
+            doneItem(seg)
+          ) : (
+            <li key={seg.row.habit.id}>
+              <StaticRow habit={seg.row.habit} onStatus={onStatus} />
             </li>
-          ))}
-        </ul>
-        {tray}
-      </div>
+          ),
+        )}
+      </ul>
     );
   }
 
-  // Drag only reorders the visible (not-completed) habits; completed habits keep
-  // their spot. On drop we rebuild the FULL list — visible habits in their new
-  // order, completed ones left where they were — so reorderPlan can renumber and
-  // persist the whole block in one POST.
-  const activeHabits = habits.filter((habit) => !isDone(habit));
   const activeIds = activeHabits.map((habit) => habit.id);
 
+  // On drop we rebuild the FULL list — active habits in their new order,
+  // completed ones left exactly where they were — so reorderPlan can renumber
+  // and persist the whole block in one POST.
   function handleDragEnd(event: DragEndEvent) {
     if (planId == null) return;
     const { active, over } = event;
@@ -636,31 +723,108 @@ function PlanBoard({
   }
 
   return (
-    <div>
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={handleDragEnd}
-      >
-        <SortableContext
-          items={activeIds}
-          strategy={verticalListSortingStrategy}
-        >
-          <ul>
-            {activeRows.map((row) => (
-              <li key={row.habit.id}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext items={activeIds} strategy={verticalListSortingStrategy}>
+        <ul>
+          {segments.map((seg) =>
+            seg.kind === "done" ? (
+              doneItem(seg)
+            ) : (
+              <li key={seg.row.habit.id}>
                 <SortableRow
-                  habit={row.habit}
-                  stepNumber={row.stepNumber}
-                  connectBelow={row.connectBelow}
+                  habit={seg.row.habit}
+                  stepNumber={seg.row.stepNumber}
+                  connectBelow={seg.row.connectBelow}
                   onStatus={onStatus}
                 />
               </li>
-            ))}
-          </ul>
-        </SortableContext>
-      </DndContext>
-      {tray}
+            ),
+          )}
+        </ul>
+      </SortableContext>
+    </DndContext>
+  );
+}
+
+// The ◀ [day] ▶ bar above the plan, for browsing other days. The layout is the
+// same every day; only each habit's done/skipped state changes. "Jump to today"
+// only appears once you've navigated away.
+function DateNav({
+  date,
+  onPrev,
+  onNext,
+  onToday,
+}: {
+  date: Date;
+  onPrev: () => void;
+  onNext: () => void;
+  onToday: () => void;
+}) {
+  const viewingToday = isSameDay(date, new Date());
+  return (
+    <div className="mb-6 flex items-center justify-between">
+      <button
+        type="button"
+        onClick={onPrev}
+        aria-label="Previous day"
+        className="flex h-9 w-9 items-center justify-center rounded-full text-calm-600 transition-colors hover:bg-calm-100"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          className="h-5 w-5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M15 19l-7-7 7-7"
+          />
+        </svg>
+      </button>
+
+      <div className="flex flex-col items-center">
+        <span className="text-sm font-medium text-calm-700">
+          {dayLabel(date)}
+        </span>
+        {!viewingToday && (
+          <button
+            type="button"
+            onClick={onToday}
+            className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
+          >
+            Jump to today
+          </button>
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={onNext}
+        aria-label="Next day"
+        className="flex h-9 w-9 items-center justify-center rounded-full text-calm-600 transition-colors hover:bg-calm-100"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          className="h-5 w-5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M9 5l7 7-7 7"
+          />
+        </svg>
+      </button>
     </div>
   );
 }
@@ -669,6 +833,11 @@ function PlansPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+
+  // The day being viewed (default: today). ◀/▶ move it; we re-fetch /plan/ for
+  // the new day and its statuses come from that day's logs.
+  const [viewedDate, setViewedDate] = useState(() => startOfDay(new Date()));
+  const isViewingToday = isSameDay(viewedDate, new Date());
 
   // The time block happening right now — used to badge it "Now" and to scroll
   // the page there on first load.
@@ -692,7 +861,11 @@ function PlansPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status }),
+          // Omit date on today so the server stamps its own "today" (its call to
+          // make, per the contract); send it only when logging another day.
+          body: JSON.stringify(
+            isViewingToday ? { status } : { status, date: toYMD(viewedDate) },
+          ),
         },
       );
       if (!res.ok) throw new Error("Request failed");
@@ -735,12 +908,17 @@ function PlansPage() {
   useEffect(() => {
     async function fetchPlans() {
       setIsLoading(true);
+      setError("");
+
+      // Omit ?date on today (identical to the original behaviour); pass it only
+      // when browsing another day.
+      const today = isSameDay(viewedDate, new Date());
+      const url = today
+        ? `${import.meta.env.VITE_API_URL}/plan/`
+        : `${import.meta.env.VITE_API_URL}/plan/?date=${toYMD(viewedDate)}`;
 
       try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/plan/`, {
-          method: "GET",
-          headers: {},
-        });
+        const res = await fetch(url, { method: "GET", headers: {} });
 
         const data = await res.json();
         if (!res.ok) {
@@ -757,66 +935,67 @@ function PlansPage() {
       }
     }
     fetchPlans();
-  }, []);
+  }, [viewedDate]);
 
   // After the first load, open the page at the time block happening now, so the
   // user doesn't scroll past the whole morning to reach their current habits.
   useEffect(() => {
     if (didAutoScroll.current || isLoading || plans.length === 0) return;
-    if (nowBlockId == null) return;
+    // "Now" only means anything on today's view.
+    if (!isViewingToday || nowBlockId == null) return;
     const el = sectionRefs.current[String(nowBlockId)];
     if (el) {
       el.scrollIntoView({ block: "start" });
       didAutoScroll.current = true;
     }
-  }, [plans, isLoading, nowBlockId]);
+  }, [plans, isLoading, nowBlockId, isViewingToday]);
 
-  if (isLoading) {
-    return (
-      <div className="max-w-md mx-auto">
-        <div className="flex items-center justify-center py-12">
-          <div className="w-6 h-6 border-2 border-calm-300 border-t-calm-600 rounded-full animate-spin"></div>
-          <span className="ml-3 text-stone-400 text-sm">Loading habits...</span>
-        </div>
+  // A past day can come back with fewer habits (ones added later didn't exist
+  // yet), and a time block can be empty — skip empty blocks so we don't render
+  // a bare time label with nothing under it.
+  const visiblePlans = plans.filter((plan) => plan.habits.length > 0);
+
+  let body: ReactNode;
+  if (isLoading && plans.length === 0) {
+    // First load only — when switching days we keep the current list visible
+    // (dimmed) instead of flashing a spinner.
+    body = (
+      <div className="flex items-center justify-center py-12">
+        <div className="w-6 h-6 border-2 border-calm-300 border-t-calm-600 rounded-full animate-spin"></div>
+        <span className="ml-3 text-stone-400 text-sm">Loading habits...</span>
       </div>
     );
-  }
-
-  if (error) {
-    return (
-      <div className="max-w-md mx-auto">
-        <div className="bg-red-50 rounded-xl p-4 text-center">
-          <p className="text-red-500 text-sm">{error}</p>
-        </div>
+  } else if (error) {
+    body = (
+      <div className="bg-red-50 rounded-xl p-4 text-center">
+        <p className="text-red-500 text-sm">{error}</p>
       </div>
     );
-  }
-
-  if (plans.length === 0) {
-    return (
-      <div className="max-w-md mx-auto">
-        <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-accent-100 flex items-center justify-center">
-            <span className="text-3xl">&#x1F331;</span>
-          </div>
-          <h3 className="font-heading text-xl text-stone-900 mb-2">
-            No habits yet
-          </h3>
-          <p className="text-stone-400 text-sm">
-            Create your first habit to push your limits
-          </p>
+  } else if (visiblePlans.length === 0) {
+    body = (
+      <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
+        <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-accent-100 flex items-center justify-center">
+          <span className="text-3xl">&#x1F331;</span>
         </div>
+        <h3 className="font-heading text-xl text-stone-900 mb-2">
+          {plans.length === 0 ? "No habits yet" : "Nothing this day"}
+        </h3>
+        <p className="text-stone-400 text-sm">
+          {plans.length === 0
+            ? "Create your first habit to push your limits"
+            : "No habits were scheduled for this day"}
+        </p>
       </div>
     );
-  }
-
-  return (
-    <>
-      <Header title="Plan" body="" />
-      <div className="max-w-md mx-auto space-y-8">
-        {plans.map((plan) => {
+  } else {
+    body = (
+      <div
+        className={`space-y-8 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
+      >
+        {visiblePlans.map((plan) => {
           const key = plan.id ?? "anytime";
-          const isNow = plan.id != null && plan.id === nowBlockId;
+          const isNow =
+            isViewingToday && plan.id != null && plan.id === nowBlockId;
           return (
             <section
               key={key}
@@ -845,7 +1024,7 @@ function PlansPage() {
 
               {/* Habits at this time. Drag the grip to reorder, swipe a card
                   left to skip / right to reset, tap the circle to complete;
-                  completed ones collapse into the tray below. */}
+                  completed ones collapse in place. */}
               <PlanBoard
                 plan={plan}
                 onStatus={setHabitStatus}
@@ -854,6 +1033,21 @@ function PlansPage() {
             </section>
           );
         })}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <Header title="Plan" body="" />
+      <div className="max-w-md mx-auto">
+        <DateNav
+          date={viewedDate}
+          onPrev={() => setViewedDate((d) => addDays(d, -1))}
+          onNext={() => setViewedDate((d) => addDays(d, 1))}
+          onToday={() => setViewedDate(startOfDay(new Date()))}
+        />
+        {body}
       </div>
     </>
   );

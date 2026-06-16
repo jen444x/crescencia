@@ -16,8 +16,14 @@ class BrowseDaysTests(TestCase):
         self.today = timezone.localdate()
         self.yesterday = self.today - timedelta(days=1)
 
-        # A single scheduled habit is enough to assert per-day status.
+        # A single scheduled habit is enough to assert per-day status. Backdate
+        # it (update() bypasses auto_now_add) so it counts as already existing on
+        # past days — otherwise the "hide habits that didn't exist yet" filter
+        # would correctly drop it from any earlier day.
         self.habit = Habit.objects.create(name="Stretch")
+        Habit.objects.filter(id=self.habit.id).update(
+            date_added=timezone.now() - timedelta(days=30)
+        )
         self.plan = Plan.objects.create()
         Schedule.objects.create(habit=self.habit, plan=self.plan, order=1)
 
@@ -53,6 +59,22 @@ class BrowseDaysTests(TestCase):
         for bad in ("not-a-date", "2026-13-40"):
             response = self.client.get(reverse("habits:plan"), {"date": bad})
             self.assertEqual(response.status_code, 400, bad)
+
+    def test_plan_hides_habits_created_after_the_viewed_day(self):
+        # self.habit is 30 days old (see setUp). Add a second habit that only
+        # exists as of today.
+        new_habit = Habit.objects.create(name="Meditate")
+        Schedule.objects.create(habit=new_habit, plan=self.plan, order=2)
+
+        three_days_ago = (self.today - timedelta(days=3)).isoformat()
+        past = self._statuses(self.client.get(reverse("habits:plan"), {"date": three_days_ago}))
+        today = self._statuses(self.client.get(reverse("habits:plan")))
+
+        # Three days ago: only the week-old habit existed.
+        self.assertIn(self.habit.id, past)
+        self.assertNotIn(new_habit.id, past)
+        # Today: both show.
+        self.assertIn(new_habit.id, today)
 
     def test_log_targets_the_given_day(self):
         url = reverse("habits:log_habit", args=[self.habit.id])
