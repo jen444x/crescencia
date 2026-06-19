@@ -698,9 +698,28 @@ function SwipeableCard({
         dx < -8 ? "bg-amber-100" : ""
       }`}
     >
-      {/* "Skip" hint revealed on the right as the card slides left. */}
-      <div className="pointer-events-none absolute inset-0 flex items-center justify-end px-5 text-xs font-semibold uppercase tracking-wide">
-        <span className={dx < -8 ? "text-amber-700" : "opacity-0"}>Skip</span>
+      {/* Always-visible "swipe left to skip" affordance on the right edge.
+          Faint at rest; intensifies to the amber Skip treatment as you drag. */}
+      <div
+        className={`pointer-events-none absolute inset-0 flex items-center justify-end gap-1 px-5 text-xs font-semibold uppercase tracking-wide transition-colors ${
+          dx < -8 ? "text-amber-700" : "text-stone-300/70"
+        }`}
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          className="h-3.5 w-3.5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2.5}
+            d="M15 19l-7-7 7-7"
+          />
+        </svg>
+        <span>Skip</span>
       </div>
 
       <div
