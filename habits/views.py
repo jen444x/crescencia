@@ -10,7 +10,7 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Chain, Habit, Plan, PlanDay, Schedule, HabitLog, Note
+from .models import Area, Chain, Habit, Plan, PlanDay, Schedule, HabitLog, Note, JournalEntry
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -741,6 +741,47 @@ def delete_note(request, note_id):
         "note_deleted": note_deleted,
         "remaining_habits": remaining,
     })
+
+
+# --- Journal entries (JournalEntry model) -----------------------------------
+# A day-level free-text entry, not tied to any habit. Several per day are fine;
+# they read as a timeline (oldest first within a day). Much simpler than notes —
+# each entry stands alone: no habits, no shared/scope, no orphan rule.
+
+def _journal_detail(entry):
+    """Shape of a JournalEntry in responses."""
+    return {
+        "id": entry.id,
+        "body": entry.body,
+        "date": entry.date,
+        "created_at": entry.created_at,
+        "updated_at": entry.updated_at,
+    }
+
+
+@csrf_exempt
+@require_POST
+def create_journal(request):
+    """Add a journal entry for a day. Body: {"body": "...", "date"?: "YYYY-MM-DD"}.
+
+    `date` defaults to today; several entries per day are allowed.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    text = body.get("body")
+    if not isinstance(text, str) or not text.strip():
+        return JsonResponse({"error": "'body' is required."}, status=400)
+    text = text.strip()
+
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+
+    entry = JournalEntry.objects.create(body=text, date=target_date)
+    return JsonResponse(_journal_detail(entry), status=201)
 
 
 def logs(request):

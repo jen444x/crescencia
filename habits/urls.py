@@ -18,6 +18,7 @@ urlpatterns = [
     path("notes/create/", views.create_note, name="create_note"),
     path("notes/<int:note_id>/edit/", views.edit_note, name="edit_note"),
     path("notes/<int:note_id>/delete/", views.delete_note, name="delete_note"),
+    path("journal/create/", views.create_journal, name="create_journal"),
     path("schedules/reorder/", views.reorder_schedules, name="reorder_schedules"),
     path("plans/shift/", views.shift_plans, name="shift_plans"),
     path("areas/", views.areas, name="areas"),
