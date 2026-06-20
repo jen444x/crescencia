@@ -53,9 +53,27 @@ type Habit = {
   // "MISSED" on past days, which we render but never send back.
   status?: ReadStatus;
   done_today?: boolean;
-  // That day's free-text note (HabitLog.notes), "" when none. This is per-DAY,
-  // distinct from the habit's own permanent `notes` edited on the habit page.
+  // LEGACY: that day's free-text note (HabitLog.notes), "" when none. Superseded
+  // by the new Note model (`dayNotes` below); kept as a fallback while the
+  // /days/notes/ endpoint rolls out. Per-DAY, distinct from the habit's own
+  // permanent `notes` edited on the habit page.
   notes?: string;
+  // That day's notes from the new Note model, attached client-side from
+  // /days/notes/ (see notesByHabit). A shared note appears on each of its habits.
+  dayNotes?: DayNote[];
+};
+
+// A per-day note from the new Note model (GET /days/notes/). Unlike the legacy
+// `Habit.notes` string, it has its own id, can carry several habits, and can be
+// shared across them (`shared` === habits.length > 1).
+type DayNote = {
+  id: number;
+  body: string;
+  date: string;
+  habits: number[];
+  shared: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
 // Read a habit's state, tolerating an older payload that only had done_today.
@@ -371,6 +389,30 @@ function NoteIcon() {
   );
 }
 
+// Two linked rings — marks a note shared across more than one habit.
+function SharedNoteIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-3 w-3 shrink-0"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      aria-hidden
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M9 17H7A5 5 0 017 7h2M15 7h2a5 5 0 010 10h-2M8 12h8"
+      />
+    </svg>
+  );
+}
+
+// How many of a habit's notes to preview inline before collapsing to "+N more".
+const MAX_PREVIEW_NOTES = 3;
+
 // A U-turn arrow for "un-skip": send a skipped/missed habit back to today's list.
 function RestoreIcon() {
   return (
@@ -407,7 +449,14 @@ function HabitCard({
   const done = isDone(habit);
   const skipped = isSkipped(habit);
   const missed = isMissed(habit);
-  const note = habit.notes?.trim() ?? "";
+  // Notes come from the new Note model; fall back to the legacy per-habit string
+  // while /days/notes/ rolls out (shown as a single unshared line). `hasNotes`
+  // drives the icon accent; the preview shows up to MAX_PREVIEW_NOTES lines.
+  const dayNotes = habit.dayNotes ?? [];
+  const legacyNote = habit.notes?.trim() ?? "";
+  const hasNotes = dayNotes.length > 0 || legacyNote !== "";
+  const shownNotes = dayNotes.slice(0, MAX_PREVIEW_NOTES);
+  const extraNotes = dayNotes.length - shownNotes.length;
   return (
     <div
       className={`group flex items-center gap-3 rounded-xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
@@ -435,9 +484,30 @@ function HabitCard({
         >
           {habit.name}
         </h3>
-        {/* A one-line glance at today's note; tap the note button to edit it. */}
-        {note && (
-          <p className="mt-0.5 truncate text-xs italic text-stone-400">{note}</p>
+        {/* A glance at the day's notes; tap the note button to edit them. A
+            shared note (attached to more than one habit) gets a link glyph. */}
+        {dayNotes.length > 0 ? (
+          <ul className="mt-0.5 space-y-0.5">
+            {shownNotes.map((n) => (
+              <li
+                key={n.id}
+                className="flex items-center gap-1 text-xs italic text-stone-400"
+                title={n.shared ? "Shared across habits" : undefined}
+              >
+                {n.shared && <SharedNoteIcon />}
+                <span className="min-w-0 truncate">{n.body.trim()}</span>
+              </li>
+            ))}
+            {extraNotes > 0 && (
+              <li className="text-xs italic text-stone-400">+{extraNotes} more</li>
+            )}
+          </ul>
+        ) : (
+          legacyNote && (
+            <p className="mt-0.5 truncate text-xs italic text-stone-400">
+              {legacyNote}
+            </p>
+          )
         )}
       </div>
 
@@ -458,13 +528,13 @@ function HabitCard({
       <button
         type="button"
         data-no-swipe
-        aria-label={note ? "Edit note" : "Add note"}
+        aria-label={hasNotes ? "Edit notes" : "Add note"}
         onClick={(e) => {
           e.stopPropagation();
           onOpenNote(habit);
         }}
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
-          note
+          hasNotes
             ? "text-calm-600 hover:bg-calm-100"
             : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
         }`}
@@ -720,7 +790,10 @@ function CompletedRow({
   onOpenNote: (habit: Habit) => void;
 }) {
   const navigate = useNavigate();
-  const note = habit.notes?.trim() ?? "";
+  // Prefer the new Note model; fall back to the legacy per-habit string while
+  // /days/notes/ rolls out. (Step 2 shows multiple notes; this shows the first
+  // as a one-line preview, matching the old single-note behavior.)
+  const note = (habit.dayNotes?.[0]?.body ?? habit.notes ?? "").trim();
   return (
     <div
       onClick={() => navigate(`/habits/${habit.id}`)}
@@ -1313,6 +1386,9 @@ function NoteSheet({
 
 function PlansPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
+  // The viewed day's notes from the new Note model (GET /days/notes/). Source of
+  // truth for notes; grouped onto each habit via notesByHabit below.
+  const [dayNotes, setDayNotes] = useState<DayNote[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -1327,6 +1403,20 @@ function PlansPage() {
   // The time block happening right now — used to badge it "Now" and to scroll
   // the page there on first load.
   const nowBlockId = useMemo(() => currentBlockId(plans), [plans]);
+
+  // habit id -> that habit's notes for the day. A shared note lands under each
+  // habit it's attached to. Built from the new Note model (dayNotes).
+  const notesByHabit = useMemo(() => {
+    const map = new Map<number, DayNote[]>();
+    for (const note of dayNotes) {
+      for (const habitId of note.habits) {
+        const list = map.get(habitId);
+        if (list) list.push(note);
+        else map.set(habitId, [note]);
+      }
+    }
+    return map;
+  }, [dayNotes]);
 
   // One DOM node per section, so we can scroll the current block into view.
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -1430,12 +1520,17 @@ function PlansPage() {
       // Omit ?date on today (identical to the original behaviour); pass it only
       // when browsing another day.
       const today = isSameDay(viewedDate, new Date());
-      const url = today
-        ? `${import.meta.env.VITE_API_URL}/plan/`
-        : `${import.meta.env.VITE_API_URL}/plan/?date=${toYMD(viewedDate)}`;
+      const suffix = today ? "" : `?date=${toYMD(viewedDate)}`;
+      const url = `${import.meta.env.VITE_API_URL}/plan/${suffix}`;
+      const notesUrl = `${import.meta.env.VITE_API_URL}/days/notes/${suffix}`;
 
       try {
-        const res = await fetch(url, { method: "GET", headers: {} });
+        // /plan/ and /days/notes/ are independent reads for the same day — fetch
+        // them together so notes don't add a serial round-trip.
+        const [res, notesRes] = await Promise.all([
+          fetch(url, { method: "GET", headers: {} }),
+          fetch(notesUrl, { method: "GET", headers: {} }),
+        ]);
 
         const data = await res.json();
         if (!res.ok) {
@@ -1443,6 +1538,10 @@ function PlansPage() {
           return;
         }
         setPlans(data);
+
+        // Notes are additive: if the endpoint isn't live yet or errors, fall back
+        // to the legacy per-habit string by clearing the new-model notes.
+        setDayNotes(notesRes.ok ? await notesRes.json() : []);
       } catch (error) {
         setError(
           error instanceof Error ? error.message : "An unknown error occurred",
@@ -1553,7 +1652,22 @@ function PlansPage() {
   // A past day can come back with fewer habits (ones added later didn't exist
   // yet), and a time block can be empty — skip empty blocks so we don't render
   // a bare time label with nothing under it.
-  const visiblePlans = plans.filter((plan) => plan.habits.length > 0);
+  // Drop empty blocks, and attach each habit's day-notes (from the new Note
+  // model) so the row components can read habit.dayNotes the way they read
+  // habit.notes today — no extra prop threading through the tree.
+  const visiblePlans = useMemo(
+    () =>
+      plans
+        .filter((plan) => plan.habits.length > 0)
+        .map((plan) => ({
+          ...plan,
+          habits: plan.habits.map((habit) => ({
+            ...habit,
+            dayNotes: notesByHabit.get(habit.id) ?? [],
+          })),
+        })),
+    [plans, notesByHabit],
+  );
 
   // Has the whole day been skipped? (every habit resolved to skipped or done,
   // with at least one skip). If so, the day-level control flips from "Skip day"
