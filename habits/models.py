@@ -45,7 +45,26 @@ class Note(models.Model):
 
     def __str__(self):
         return f"{self.date} - {self.body[:30]}"
-    
+
+
+class JournalEntry(models.Model):
+    """A free-text entry about the day overall (not tied to any habit). Several
+    are allowed per day, read as a timeline: morning thought, afternoon update,
+    night reflection. `date` is the day it's about; `created_at` orders the
+    stream within that day (and lets a backfilled thought land on the right day).
+    """
+    body = models.TextField()
+    date = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['date', 'created_at']
+
+    def __str__(self):
+        return f"{self.date} - {self.body[:30]}"
+
+
 class Chain(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
