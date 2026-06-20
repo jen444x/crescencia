@@ -31,6 +31,20 @@ class Habit(models.Model):
 
     def __str__(self):
         return f"{self.name}"
+
+
+class Note(models.Model):
+    body = models.TextField()
+    date = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    habits = models.ManyToManyField(Habit, related_name="day_notes")
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.date} - {self.body[:30]}"
     
 class Chain(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
