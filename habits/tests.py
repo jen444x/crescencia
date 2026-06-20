@@ -5,7 +5,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from .models import Habit, HabitLog, Plan, PlanDay, Schedule
+from .models import Habit, HabitLog, Note, Plan, PlanDay, Schedule
 
 
 class BrowseDaysTests(TestCase):
@@ -323,3 +323,138 @@ class ClearDayTests(TestCase):
 
     def test_rejects_bad_date(self):
         self.assertEqual(self._clear(date="nope").status_code, 400)
+
+
+class NoteApiTests(TestCase):
+    """The shared per-day Note model: create / read / edit (all vs one,
+    copy-on-write) / delete (all vs one, with the orphan rule)."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.a = Habit.objects.create(name="A")
+        self.b = Habit.objects.create(name="B")
+
+    def _create(self, **body):
+        return self.client.post(
+            reverse("habits:create_note"), data=body, content_type="application/json"
+        )
+
+    def _edit(self, note_id, **body):
+        return self.client.post(
+            reverse("habits:edit_note", args=[note_id]),
+            data=body, content_type="application/json",
+        )
+
+    def _delete(self, note_id, **body):
+        return self.client.post(
+            reverse("habits:delete_note", args=[note_id]),
+            data=body, content_type="application/json",
+        )
+
+    def _day_notes(self, date=None):
+        url = reverse("habits:day_notes")
+        if date:
+            url += f"?date={date}"
+        return json.loads(self.client.get(url).content)
+
+    # --- create ---
+    def test_create_for_one_habit(self):
+        resp = self._create(body="felt good", habits=[self.a.id])
+        self.assertEqual(resp.status_code, 201)
+        data = json.loads(resp.content)
+        self.assertEqual(data["body"], "felt good")
+        self.assertEqual(data["habits"], [self.a.id])
+        self.assertFalse(data["shared"])
+        self.assertEqual(Note.objects.count(), 1)
+
+    def test_create_shared_across_habits(self):
+        resp = self._create(body="rough day", habits=[self.a.id, self.b.id])
+        data = json.loads(resp.content)
+        self.assertEqual(data["habits"], sorted([self.a.id, self.b.id]))
+        self.assertTrue(data["shared"])
+
+    def test_create_trims_and_requires_body(self):
+        self.assertEqual(self._create(body="   ", habits=[self.a.id]).status_code, 400)
+        self.assertEqual(self._create(habits=[self.a.id]).status_code, 400)
+
+    def test_create_requires_habits(self):
+        self.assertEqual(self._create(body="x", habits=[]).status_code, 400)
+        self.assertEqual(self._create(body="x").status_code, 400)
+
+    def test_create_rejects_unknown_habit(self):
+        self.assertEqual(self._create(body="x", habits=[999999]).status_code, 400)
+
+    # --- read ---
+    def test_day_notes_lists_for_the_day(self):
+        self._create(body="today note", habits=[self.a.id])
+        notes = self._day_notes()
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["body"], "today note")
+
+    def test_day_notes_honors_date(self):
+        self._create(body="today", habits=[self.a.id])
+        other = (self.today - timedelta(days=3)).isoformat()
+        self.assertEqual(self._day_notes(date=other), [])
+
+    # --- edit all ---
+    def test_edit_all_updates_in_place(self):
+        note = json.loads(self._create(body="v1", habits=[self.a.id, self.b.id]).content)
+        resp = self._edit(note["id"], body="v2", scope="all")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.content)["body"], "v2")
+        self.assertEqual(Note.objects.count(), 1)  # no fork
+        self.assertEqual(Note.objects.get(id=note["id"]).body, "v2")
+
+    # --- edit one ---
+    def test_edit_one_on_shared_note_forks(self):
+        note = json.loads(self._create(body="v1", habits=[self.a.id, self.b.id]).content)
+        resp = self._edit(note["id"], body="just A", scope="one", habit=self.a.id)
+        self.assertEqual(resp.status_code, 201)
+        forked = json.loads(resp.content)
+        # New note holds only A with the new text...
+        self.assertEqual(forked["habits"], [self.a.id])
+        self.assertEqual(forked["body"], "just A")
+        self.assertNotEqual(forked["id"], note["id"])
+        # ...original keeps B with the old text.
+        original = Note.objects.get(id=note["id"])
+        self.assertEqual(list(original.habits.values_list("id", flat=True)), [self.b.id])
+        self.assertEqual(original.body, "v1")
+        self.assertEqual(Note.objects.count(), 2)
+
+    def test_edit_one_on_solo_note_edits_in_place(self):
+        note = json.loads(self._create(body="v1", habits=[self.a.id]).content)
+        resp = self._edit(note["id"], body="v2", scope="one", habit=self.a.id)
+        self.assertEqual(resp.status_code, 200)  # plain edit, not a fork
+        self.assertEqual(Note.objects.count(), 1)
+        self.assertEqual(Note.objects.get(id=note["id"]).body, "v2")
+
+    def test_edit_one_requires_linked_habit(self):
+        note = json.loads(self._create(body="v1", habits=[self.a.id]).content)
+        self.assertEqual(
+            self._edit(note["id"], body="x", scope="one", habit=self.b.id).status_code, 400
+        )
+
+    # --- delete all ---
+    def test_delete_all_removes_note(self):
+        note = json.loads(self._create(body="bye", habits=[self.a.id, self.b.id]).content)
+        resp = self._delete(note["id"], scope="all")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(json.loads(resp.content)["note_deleted"])
+        self.assertEqual(Note.objects.count(), 0)
+
+    # --- delete one ---
+    def test_delete_one_unlinks_and_keeps_shared_note(self):
+        note = json.loads(self._create(body="shared", habits=[self.a.id, self.b.id]).content)
+        resp = self._delete(note["id"], scope="one", habit=self.a.id)
+        data = json.loads(resp.content)
+        self.assertFalse(data["note_deleted"])
+        self.assertEqual(data["remaining_habits"], 1)
+        original = Note.objects.get(id=note["id"])
+        self.assertEqual(list(original.habits.values_list("id", flat=True)), [self.b.id])
+
+    def test_delete_one_orphan_deletes_note(self):
+        note = json.loads(self._create(body="solo", habits=[self.a.id]).content)
+        resp = self._delete(note["id"], scope="one", habit=self.a.id)
+        data = json.loads(resp.content)
+        self.assertTrue(data["note_deleted"])  # last habit removed -> note gone
+        self.assertEqual(Note.objects.count(), 0)

@@ -10,7 +10,7 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Chain, Habit, Plan, PlanDay, Schedule, HabitLog
+from .models import Area, Chain, Habit, Plan, PlanDay, Schedule, HabitLog, Note
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -554,6 +554,193 @@ def edit_habit(request, habit_id):
 
     habit.save()
     return JsonResponse(_habit_detail(habit))
+
+
+# --- Per-day notes (Note model) ---------------------------------------------
+# A Note is its own row (body + date) linked to one or more habits (M2M). Unlike
+# the legacy HabitLog.notes (one string per habit per day), a habit can now have
+# several notes a day, and one note can be shared across habits. That shared case
+# is why edit/delete carry a "scope": "all" touches the shared note itself, while
+# "one" peels a single habit off it (copy-on-write on edit; unlink on delete).
+
+def _note_detail(note):
+    """Shape of a Note in responses. `shared` is a UI hint: when a note sits on
+    more than one habit, the client should offer "change this one vs. all"."""
+    habit_ids = sorted(h.id for h in note.habits.all())
+    return {
+        "id": note.id,
+        "body": note.body,
+        "date": note.date,
+        "habits": habit_ids,
+        "shared": len(habit_ids) > 1,
+        "created_at": note.created_at,
+        "updated_at": note.updated_at,
+    }
+
+
+def _valid_id(value):
+    """True if `value` is a usable id (int, not bool — bool is an int subclass)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def day_notes(request):
+    """Every note for a day (defaults today). One call for the Plan page; the
+    client groups them by the habit ids in each note's `habits` list. Honors
+    ?date=YYYY-MM-DD like /plan/ does."""
+    target_date, date_error = _resolve_date(request.GET.get("date"))
+    if date_error:
+        return date_error
+    notes = Note.objects.filter(date=target_date).prefetch_related("habits")
+    return JsonResponse([_note_detail(n) for n in notes], safe=False)
+
+
+@csrf_exempt
+@require_POST
+def create_note(request):
+    """Create a note for one or more habits on a day.
+
+    Body: {"body": "...", "habits": [<id>, ...], "date"?: "YYYY-MM-DD"}.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    text = body.get("body")
+    if not isinstance(text, str) or not text.strip():
+        return JsonResponse({"error": "'body' is required."}, status=400)
+    text = text.strip()
+
+    habit_ids = body.get("habits")
+    if not isinstance(habit_ids, list) or not habit_ids:
+        return JsonResponse(
+            {"error": "'habits' must be a non-empty list of habit ids."}, status=400
+        )
+    if not all(_valid_id(hid) for hid in habit_ids):
+        return JsonResponse({"error": "Each habit id must be an integer."}, status=400)
+
+    wanted = set(habit_ids)
+    found = set(Habit.objects.filter(id__in=wanted).values_list("id", flat=True))
+    missing = sorted(wanted - found)
+    if missing:
+        return JsonResponse({"error": f"Unknown habit ids: {missing}."}, status=400)
+
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+
+    with transaction.atomic():
+        note = Note.objects.create(body=text, date=target_date)
+        note.habits.set(found)
+    return JsonResponse(_note_detail(note), status=201)
+
+
+@csrf_exempt
+@require_POST
+def edit_note(request, note_id):
+    """Edit a note's text.
+
+    Body: {"body": "...", "scope"?: "all" | "one", "habit"?: <id>}.
+      - scope "all" (default): change the shared note in place — every habit on
+        it sees the new text.
+      - scope "one": change it for just one habit. If the note is on other habits
+        too, that habit is peeled onto a NEW note (copy-on-write) so the others
+        keep the original; if it was the only habit, this is just a plain edit.
+    """
+    note = get_object_or_404(Note, id=note_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    text = body.get("body")
+    if not isinstance(text, str) or not text.strip():
+        return JsonResponse({"error": "'body' is required."}, status=400)
+    text = text.strip()
+
+    scope = body.get("scope", "all")
+    if scope not in ("all", "one"):
+        return JsonResponse({"error": "'scope' must be 'all' or 'one'."}, status=400)
+
+    if scope == "all":
+        note.body = text
+        note.save()
+        return JsonResponse(_note_detail(note))
+
+    # scope == "one"
+    habit_id = body.get("habit")
+    if not _valid_id(habit_id):
+        return JsonResponse(
+            {"error": "'habit' (id) is required when scope is 'one'."}, status=400
+        )
+    linked = set(note.habits.values_list("id", flat=True))
+    if habit_id not in linked:
+        return JsonResponse(
+            {"error": "That habit isn't attached to this note."}, status=400
+        )
+
+    # Only habit on the note → editing "one" is just editing it.
+    if len(linked) == 1:
+        note.body = text
+        note.save()
+        return JsonResponse(_note_detail(note))
+
+    # Shared note → fork a copy for this habit, leave the rest on the original.
+    with transaction.atomic():
+        note.habits.remove(habit_id)
+        forked = Note.objects.create(body=text, date=note.date)
+        forked.habits.add(habit_id)
+    return JsonResponse(_note_detail(forked), status=201)
+
+
+@csrf_exempt
+@require_POST
+def delete_note(request, note_id):
+    """Delete a note, or detach it from one habit.
+
+    Body: {"scope"?: "all" | "one", "habit"?: <id>}.
+      - scope "all" (default): delete the note for every habit on it.
+      - scope "one": detach just one habit. If that leaves the note with no
+        habits, the note is deleted too (the orphan rule).
+    """
+    note = get_object_or_404(Note, id=note_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    scope = body.get("scope", "all")
+    if scope not in ("all", "one"):
+        return JsonResponse({"error": "'scope' must be 'all' or 'one'."}, status=400)
+
+    if scope == "all":
+        note.delete()
+        return JsonResponse({"note_id": note_id, "note_deleted": True})
+
+    habit_id = body.get("habit")
+    if not _valid_id(habit_id):
+        return JsonResponse(
+            {"error": "'habit' (id) is required when scope is 'one'."}, status=400
+        )
+    linked = set(note.habits.values_list("id", flat=True))
+    if habit_id not in linked:
+        return JsonResponse(
+            {"error": "That habit isn't attached to this note."}, status=400
+        )
+
+    with transaction.atomic():
+        note.habits.remove(habit_id)
+        remaining = note.habits.count()
+        note_deleted = remaining == 0
+        if note_deleted:
+            note.delete()
+
+    return JsonResponse({
+        "note_id": note_id,
+        "unlinked_habit": habit_id,
+        "note_deleted": note_deleted,
+        "remaining_habits": remaining,
+    })
 
 
 def logs(request):
