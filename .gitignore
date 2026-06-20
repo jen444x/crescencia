@@ -63,6 +63,11 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+
+# Database backups / dumps (may contain production data — never commit)
+backups/
+*.dump
+*.sql
 media/                                                                                       
 staticfiles/  
                                     
