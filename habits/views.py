@@ -10,7 +10,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Chain, Routine, Habit, Plan, PlanDay, Schedule, HabitLog, Note, JournalEntry
+from .models import Area, Chain, Routine, Habit, Plan, PlanDay, Schedule, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -59,6 +59,24 @@ def _shift_time(base, minutes):
     return dt_time(total // 60, total % 60)
 
 
+def _habit_tiers(habit):
+    """This habit's tiers low->high, each with its current value (the newest
+    TierValue). Returns [] for an untiered habit. Shape matches the /plan/ and
+    habit-detail contract: [{level, name, value}, ...]."""
+    tiers = []
+    for ht in (HabitTier.objects.filter(habit=habit)
+               .select_related("tier").order_by("tier__level")):
+        if ht.tier is None:        # tier FK is SET_NULL; skip an orphaned row
+            continue
+        current = TierValue.objects.filter(habit_tier=ht).first()  # ordering -> newest
+        tiers.append({
+            "level": ht.tier.level,
+            "name": ht.tier.get_level_display(),
+            "value": current.value if current else "",
+        })
+    return tiers
+
+
 def plan(request):
     # Which day to show. Defaults to today; the day-browser passes
     # ?date=YYYY-MM-DD to view any other day. The plan/schedule layout is the
@@ -75,9 +93,9 @@ def plan(request):
     # That day's status + per-day note for each habit. Habits with no log for the
     # day default to PENDING / empty note below.
     logs_by_habit = {
-        hid: (status, notes)
-        for hid, status, notes in HabitLog.objects.filter(date=target_date).values_list(
-            "habit_id", "status", "notes"
+        hid: (status, notes, tier_level)
+        for hid, status, notes, tier_level in HabitLog.objects.filter(date=target_date).values_list(
+            "habit_id", "status", "notes", "achieved_tier__level"
         )
     }
 
@@ -89,23 +107,70 @@ def plan(request):
         PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
     )
 
+    # The habit's tier list ([{level,name,value}], current value each), memoized so
+    # a habit with several tier-slots only builds it once. EVERY /plan/ row carries
+    # it: Case A (slot fixed to a tier) shows its own tier's value; Case B (tiers
+    # share one slot, e.g. meditate) lets the frontend swap the value by day-tier.
+    tiers_by_habit = {}
+
+    def habit_tier_list(habit):
+        if habit.id not in tiers_by_habit:
+            tiers_by_habit[habit.id] = _habit_tiers(habit)
+        return tiers_by_habit[habit.id]
+
     def habit_payload(habit, schedule_id=None, chain=None, order=None,
-                      routine=None, routine_name=None):
-        status, notes = logs_by_habit.get(habit.id, (HabitLog.Status.PENDING, ""))
-        # A past day's still-pending habit reads as missed (derived, never stored).
-        if is_past_day and status == HabitLog.Status.PENDING:
-            status = MISSED_STATUS
+                      routine=None, routine_name=None, tier=None):
+        # One HabitLog per habit per day, shared by all the habit's tier-slots.
+        raw_status, notes, achieved = logs_by_habit.get(
+            habit.id, (HabitLog.Status.PENDING, "", None)
+        )
+        tiers = habit_tier_list(habit)
+        tier_level = tier.level if tier else None
+        if tier_level is not None:
+            # A tier-slot is one of a habit's easy/hard versions sitting at its own
+            # time. It reads done when the day's achieved_tier reaches this slot's
+            # level (cascade) — so completing Growth ticks the Roots slot too.
+            # Skipping the habit skips every slot; a still-pending slot on a past
+            # day reads missed.
+            if raw_status == HabitLog.Status.SKIPPED:
+                status = HabitLog.Status.SKIPPED
+            elif achieved is not None and achieved >= tier_level:
+                status = HabitLog.Status.COMPLETED
+            elif is_past_day:
+                status = MISSED_STATUS
+            else:
+                status = HabitLog.Status.PENDING
+            done = achieved is not None and achieved >= tier_level
+            tier_name = tier.get_level_display()
+            tier_value = next(
+                (t["value"] for t in tiers if t["level"] == tier_level), None
+            )
+        else:
+            # Untiered slot OR Case B (tiers share one slot, tier null): status/done
+            # straight from the log; the frontend swaps the value by the day-tier.
+            status = raw_status
+            if is_past_day and status == HabitLog.Status.PENDING:
+                status = MISSED_STATUS
+            done = status == HabitLog.Status.COMPLETED
+            tier_name = None
+            tier_value = None
         return {
-            "id": habit.id,
-            "schedule_id": schedule_id,   # the row to target when reordering
+            "id": habit.id,                # SAME across a habit's slots; FE groups by it
+            "schedule_id": schedule_id,    # THIS slot — the row to target when reordering
             "name": habit.name,
             "chain": chain,   # cycle id, or None if standalone
             "routine": routine,            # routine (group) id, or None if ungrouped
             "routine_name": routine_name,  # the group's name, for the block header
             "order": order,
             "status": status,
-            "done_today": status == HabitLog.Status.COMPLETED,
+            "done_today": done,
             "notes": notes,   # that day's HabitLog.notes ("" if none)
+            "is_important": habit.is_important,  # starred "one I care about"
+            "tier": tier_level,            # this slot's tier level, or null (untiered/Case B)
+            "tier_name": tier_name,        # "Roots"/"Growth", or null
+            "tier_value": tier_value,      # Case A: this slot's tier value, else null
+            "tiers": tiers,                # habit's tier->value list, [] if untiered
+            "achieved_tier": achieved,     # habit's highest tier completed today, or null
         }
 
     # One query for the plans + their schedules + habits, with schedules sorted
@@ -116,7 +181,9 @@ def plan(request):
     # add today shouldn't appear when you scroll back to last week, since it
     # didn't exist then. (For today/future days this filter matches everything,
     # so it's a no-op there.)
-    ordered_schedules = Schedule.objects.select_related("habit", "routine").filter(
+    ordered_schedules = Schedule.objects.select_related(
+        "habit", "routine", "tier"
+    ).filter(
         habit__date_added__date__lte=target_date
     ).order_by(F("order").asc(nulls_last=True), "id")
     plans = Plan.objects.prefetch_related(
@@ -135,6 +202,7 @@ def plan(request):
                 routine=schedule.routine_id,
                 routine_name=schedule.routine.name if schedule.routine_id else None,
                 order=schedule.order,
+                tier=schedule.tier,   # this slot's tier (None = untiered slot)
             )
             for schedule in plan.schedule_set.all()
         ]
@@ -196,6 +264,18 @@ def log_habit(request, habit_id):
     if has_notes and not isinstance(body["notes"], str):
         return JsonResponse({"error": "'notes' must be a string."}, status=400)
 
+    # Optional: the tier LEVEL completed. Validated up front; it's only *recorded*
+    # on a completion (below). A tier the habit doesn't have is a 400.
+    raw_tier = body.get("tier")
+    has_tier = "tier" in body and raw_tier is not None
+    if has_tier:
+        if raw_tier not in (1, 2, 3):
+            return JsonResponse({"error": "'tier' must be 1, 2, or 3."}, status=400)
+        if not HabitTier.objects.filter(habit=habit, tier__level=raw_tier).exists():
+            return JsonResponse(
+                {"error": f"This habit has no tier {raw_tier}."}, status=400
+            )
+
     # Which day this log is for. Defaults to today, so the existing toggle keeps
     # working unchanged; the day-browser passes "date" to log against the day
     # it's showing (e.g. ticking off something you forgot yesterday).
@@ -204,19 +284,25 @@ def log_habit(request, habit_id):
         return date_error
 
     # One log per habit per day; create it the first time it's touched.
-    log, _ = HabitLog.objects.get_or_create(habit=habit, date=target_date)
+    with transaction.atomic():
+        log, _ = HabitLog.objects.get_or_create(habit=habit, date=target_date)
 
-    if has_status:
-        log.status = body["status"]
-        # Only a completion has a meaningful "time done"; clear it otherwise.
-        log.time = (
-            timezone.localtime().time()
-            if log.status == HabitLog.Status.COMPLETED
-            else None
-        )
-    if has_notes:
-        log.notes = body["notes"].strip()
-    log.save()
+        if has_status:
+            log.status = body["status"]
+            # Only a completion has a meaningful "time done"; clear it otherwise.
+            log.time = (
+                timezone.localtime().time()
+                if log.status == HabitLog.Status.COMPLETED
+                else None
+            )
+            # Record the tier only on a completion; any other status clears it.
+            if log.status == HabitLog.Status.COMPLETED and has_tier:
+                log.achieved_tier = Tier.objects.filter(level=raw_tier).first()
+            else:
+                log.achieved_tier = None
+        if has_notes:
+            log.notes = body["notes"].strip()
+        log.save()
 
     # Return the saved state so the UI can reconcile against the truth.
     return JsonResponse({
@@ -225,7 +311,65 @@ def log_habit(request, habit_id):
         "status": log.status,
         "done_today": log.status == HabitLog.Status.COMPLETED,
         "notes": log.notes,
+        "achieved_tier": log.achieved_tier.level if log.achieved_tier_id else None,
     })
+
+
+@csrf_exempt
+@require_POST
+def add_habit_tier(request, habit_id):
+    """Add a tier to a habit, or set/bump its value — all are "append a value".
+
+    Body: {"tier": 1|2|3, "value": "7 min" (OPTIONAL)}. Ensures the HabitTier
+    exists; if a non-empty value is given, appends a TierValue dated today (the
+    new current value; the old one stays as history). No value = a plain tier tag
+    (e.g. a Growth-only habit like makeup). Returns {"tiers": [...]} — same shape
+    as /plan/.
+    """
+    habit = get_object_or_404(Habit, id=habit_id)
+
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    level = body.get("tier")
+    if level not in (1, 2, 3):
+        return JsonResponse({"error": "'tier' must be 1, 2, or 3."}, status=400)
+    # Value is OPTIONAL: a habit can simply belong to a tier with no number/label
+    # (e.g. "makeup" is a Growth-only habit). Only append a TierValue when a
+    # non-empty value is actually given.
+    value = body.get("value")
+    if value is not None and not isinstance(value, str):
+        return JsonResponse({"error": "'value' must be a string."}, status=400)
+
+    with transaction.atomic():
+        tier, _ = Tier.objects.get_or_create(level=level)
+        habit_tier, _ = HabitTier.objects.get_or_create(habit=habit, tier=tier)
+        if isinstance(value, str) and value.strip():
+            TierValue.objects.create(
+                habit_tier=habit_tier,
+                value=value.strip(),
+                started=timezone.localdate(),
+            )
+
+    return JsonResponse({"tiers": _habit_tiers(habit)})
+
+
+@csrf_exempt
+@require_POST
+def delete_habit_tier(request, habit_id, level):
+    """Drop a tier from a habit. Deletes the HabitTier and its TierValue history
+    (CASCADE); the habit just stops existing at that tier. Past logs keep their
+    achieved_tier (it's a Tier FK, not a HabitTier FK). Returns the remaining
+    {"tiers": [...]}. No such tier on the habit -> 404.
+    """
+    habit = get_object_or_404(Habit, id=habit_id)
+    habit_tier = HabitTier.objects.filter(habit=habit, tier__level=level).first()
+    if habit_tier is None:
+        return JsonResponse({"error": f"This habit has no tier {level}."}, status=404)
+    habit_tier.delete()
+    return JsonResponse({"tiers": _habit_tiers(habit)})
 
 
 @csrf_exempt
@@ -361,6 +505,15 @@ def reorder_schedules(request):
             entry["chain"] = item["chain"]   # None or a chain id
         if "routine" in item:
             entry["routine"] = item["routine"]   # None or a routine id
+        if "tier" in item:
+            t = item["tier"]   # None (clear) or a tier level 1/2/3
+            if t is not None and (
+                not isinstance(t, int) or isinstance(t, bool) or t not in (1, 2, 3)
+            ):
+                return JsonResponse(
+                    {"error": "'tier' must be 1, 2, 3, or null."}, status=400
+                )
+            entry["tier"] = t
         cleaned.append(entry)
 
     schedules = Schedule.objects.in_bulk([e["id"] for e in cleaned])
@@ -383,6 +536,9 @@ def reorder_schedules(request):
         if unknown:
             return JsonResponse({"error": f"Unknown routine ids: {unknown}."}, status=400)
 
+    # Map tier level (1/2/3) -> Tier row id, for any items setting a slot's tier.
+    tier_by_level = {t.level: t.id for t in Tier.objects.all()}
+
     fields = {"order"}
     for e in cleaned:
         schedule = schedules[e["id"]]
@@ -393,6 +549,11 @@ def reorder_schedules(request):
         if "routine" in e:
             schedule.routine_id = e["routine"]
             fields.add("routine")
+        if "tier" in e:
+            schedule.tier_id = (
+                tier_by_level.get(e["tier"]) if e["tier"] is not None else None
+            )
+            fields.add("tier")
 
     # One UPDATE for the whole batch, all-or-nothing.
     with transaction.atomic():
@@ -547,6 +708,8 @@ def _habit_detail(habit):
         "notes": habit.notes,
         "area": habit.area_id,
         "date_added": habit.date_added,
+        "is_important": habit.is_important,
+        "tiers": _habit_tiers(habit),   # same shape as in /plan/
     }
 
 
@@ -594,7 +757,13 @@ def create_habit(request):
     if area_error:
         return area_error
 
-    habit = Habit.objects.create(name=name, notes=notes.strip(), area_id=area_id)
+    is_important = body.get("is_important", False)
+    if not isinstance(is_important, bool):
+        return JsonResponse({"error": "'is_important' must be true or false."}, status=400)
+
+    habit = Habit.objects.create(
+        name=name, notes=notes.strip(), area_id=area_id, is_important=is_important
+    )
     return JsonResponse(_habit_detail(habit), status=201)
 
 
@@ -630,6 +799,11 @@ def edit_habit(request, habit_id):
         if area_error:
             return area_error
         habit.area_id = body["area"]
+
+    if "is_important" in body:
+        if not isinstance(body["is_important"], bool):
+            return JsonResponse({"error": "'is_important' must be true or false."}, status=400)
+        habit.is_important = body["is_important"]
 
     habit.save()
     return JsonResponse(_habit_detail(habit))

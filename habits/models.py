@@ -24,6 +24,10 @@ class Habit(models.Model):
     name = models.CharField(max_length=200) # length of name
     notes = models.TextField(blank=True)
     date_added = models.DateTimeField(auto_now_add=True)
+    # A habit she actually cares about completing (vs a planning/helper habit
+    # that just structures the day). Display-only: drives a star + the "Important
+    # only" filter. Nothing about tracking changes — helpers still get logged.
+    is_important = models.BooleanField(default=False)
 
     class Meta:
         # Default sort by the related plan's start time
@@ -132,6 +136,12 @@ class Schedule(models.Model):
     # CASCADE: deleting a Routine just ungroups its habits — they stay on the
     # plan as standalone rows — rather than dropping them off the plan.
     routine = models.ForeignKey(Routine, on_delete=models.SET_NULL, null=True, blank=True)
+    # Which tier (Roots/Growth) this slot is for. null = the slot isn't
+    # tier-specific (an untiered habit). A habit may have MULTIPLE Schedule rows —
+    # one per tier that sits at its own time — so "Wake up" can be Growth at 7:30
+    # and Roots at 11am. The tier's value/history lives on HabitTier/TierValue;
+    # this just places the tier on the timeline.
+    tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
     order = models.PositiveIntegerField(null=True, blank=True)
 
     def __str__(self):
@@ -150,6 +160,10 @@ class HabitLog(models.Model):
     time = models.TimeField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     notes = models.TextField(blank=True)
+    # Highest tier LEVEL completed that day. The cascade is derived from this,
+    # never stored: a lower tier reads as done when achieved_tier's level >= its
+    # level. null = not completed, or an untiered habit.
+    achieved_tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
 
     class Meta:
         # A habit has exactly one log per day, so completing/skipping it just
@@ -167,10 +181,33 @@ class HabitLog(models.Model):
 
 class HabitTier(models.Model):
     habit = models.ForeignKey(Habit, on_delete=models.CASCADE)
-    
+
     tier = models.ForeignKey(
-        Tier, 
-        on_delete=models.SET_NULL, 
+        Tier,
+        on_delete=models.SET_NULL,
         null=True
     )
-    
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["habit", "tier"],
+                name="one_habittier_per_habit_tier",
+            )
+        ]
+
+
+class TierValue(models.Model):
+    """One value a habit-tier has had, with the date it became active. Many
+    rows per HabitTier = the history; the newest `started` is the live value.
+    Climbing the number and dropping back are both just a new row dated today
+    — a value is never overwritten."""
+    habit_tier = models.ForeignKey(HabitTier, on_delete=models.CASCADE)
+    value = models.CharField(max_length=100)   # "5 min", "2000 steps", "throw water"
+    started = models.DateField()               # the view sets timezone.localdate() on create
+
+    class Meta:
+        ordering = ['-started', '-id']         # newest first -> [0] is the current value
+
+    def __str__(self):
+        return f"{self.habit_tier_id}: {self.value} (from {self.started})"
