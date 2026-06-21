@@ -1253,6 +1253,7 @@ function NoteSheet({
   notes,
   dateLabel,
   onCreate,
+  onEdit,
   onDelete,
   onClose,
 }: {
@@ -1262,13 +1263,19 @@ function NoteSheet({
   notes: DayNote[];
   dateLabel: string;
   onCreate: (body: string) => Promise<boolean>;
+  onEdit: (noteId: number, body: string) => Promise<boolean>;
   onDelete: (noteId: number) => void;
   onClose: () => void;
 }) {
-  // The sheet is an "add a note" composer plus the day's note list. It always
-  // starts empty (it adds, never seeds an edit — editing lands in Step 3b).
+  // The sheet is an "add a note" composer plus the day's note list. The composer
+  // always starts empty; editing happens inline on a note via `editingId`.
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
+  // Which note is being edited inline (null = none), its draft text, and whether
+  // that edit is mid-save.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   // Keep the sheet sitting *above* the on-screen keyboard. Mobile browsers shrink
@@ -1317,6 +1324,16 @@ function NoteSheet({
     }
   }
 
+  // Save an inline edit; close the editor only if the save sticks.
+  async function saveEdit(noteId: number) {
+    const body = editText.trim();
+    if (!body || editSaving) return;
+    setEditSaving(true);
+    const ok = await onEdit(noteId, body);
+    setEditSaving(false);
+    if (ok) setEditingId(null);
+  }
+
   return (
     <div
       className="fixed inset-x-0 z-50 flex items-end justify-center sm:items-center"
@@ -1348,31 +1365,73 @@ function NoteSheet({
             the next step — for now a note is add-or-delete. */}
         {notes.length > 0 ? (
           <ul className="mt-4 space-y-2">
-            {notes.map((n) => (
-              <li
-                key={n.id}
-                className="flex items-start gap-2 rounded-xl border border-calm-100 bg-calm-50 px-3 py-2"
-              >
-                {n.shared && (
-                  <span
-                    className="mt-0.5 text-calm-400"
-                    title="Shared across habits"
-                  >
-                    <SharedNoteIcon />
-                  </span>
-                )}
-                <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm text-calm-800">
-                  {n.body}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => onDelete(n.id)}
-                  className="shrink-0 text-xs font-medium text-rose-500 transition-colors hover:text-rose-600"
+            {notes.map((n) =>
+              editingId === n.id ? (
+                <li
+                  key={n.id}
+                  className="rounded-xl border border-calm-200 bg-white p-3"
                 >
-                  Delete
-                </button>
-              </li>
-            ))}
+                  <textarea
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    rows={3}
+                    autoFocus
+                    className="w-full resize-none rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none"
+                  />
+                  <div className="mt-2 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingId(null)}
+                      className="rounded-lg px-3 py-1.5 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => saveEdit(n.id)}
+                      disabled={editText.trim() === "" || editSaving}
+                      className="rounded-lg bg-calm-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </li>
+              ) : (
+                <li
+                  key={n.id}
+                  className="flex items-start gap-2 rounded-xl border border-calm-100 bg-calm-50 px-3 py-2"
+                >
+                  {n.shared && (
+                    <span
+                      className="mt-0.5 text-calm-400"
+                      title="Shared across habits"
+                    >
+                      <SharedNoteIcon />
+                    </span>
+                  )}
+                  <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm text-calm-800">
+                    {n.body}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingId(n.id);
+                      setEditText(n.body);
+                    }}
+                    className="shrink-0 text-xs font-medium text-calm-500 transition-colors hover:text-calm-700"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDelete(n.id)}
+                    className="shrink-0 text-xs font-medium text-rose-500 transition-colors hover:text-rose-600"
+                  >
+                    Delete
+                  </button>
+                </li>
+              ),
+            )}
           </ul>
         ) : (
           <p className="mt-4 text-sm text-calm-400">No notes yet for this day.</p>
@@ -1537,6 +1596,56 @@ function PlansPage() {
     } catch {
       setDayNotes(snapshot);
       toast("Couldn't delete that note", { variant: "error" });
+    }
+  }
+
+  // Edit a note. scope "all" changes the text for every habit on it (200, same
+  // id). scope "one" is copy-on-write: on a SHARED note the backend peels this
+  // habit onto a brand-new note (201, new id) and leaves the others untouched;
+  // on a single-habit note it's just a plain edit (200). We branch on the
+  // status to mirror that in state. Returns true on success.
+  async function editNote(
+    noteId: number,
+    habitId: number,
+    body: string,
+    scope: "all" | "one",
+  ): Promise<boolean> {
+    const text = body.trim();
+    if (!text) return false;
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/notes/${noteId}/edit/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            scope === "one"
+              ? { body: text, scope: "one", habit: habitId }
+              : { body: text, scope: "all" },
+          ),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      const note: DayNote = await res.json();
+      if (res.status === 201) {
+        // Forked: this habit moved onto `note`; drop it from the original, which
+        // keeps its remaining habits.
+        setDayNotes((prev) => [
+          ...prev.map((n) => {
+            if (n.id !== noteId) return n;
+            const habits = n.habits.filter((id) => id !== habitId);
+            return { ...n, habits, shared: habits.length > 1 };
+          }),
+          note,
+        ]);
+      } else {
+        // In-place: replace the note (same id) with the server's version.
+        setDayNotes((prev) => prev.map((n) => (n.id === note.id ? note : n)));
+      }
+      return true;
+    } catch {
+      toast("Couldn't save your note", { variant: "error" });
+      return false;
     }
   }
 
@@ -1880,6 +1989,7 @@ function PlansPage() {
           notes={notesByHabit.get(editingNote.id) ?? []}
           dateLabel={dayLabel(viewedDate)}
           onCreate={(body) => createNote(editingNote.id, body)}
+          onEdit={(noteId, body) => editNote(noteId, editingNote.id, body, "one")}
           onDelete={(noteId) => deleteNote(noteId, editingNote.id)}
           onClose={() => setEditingNote(null)}
         />
