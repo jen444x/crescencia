@@ -171,6 +171,10 @@ function JournalPage() {
 
   const toast = useToast();
 
+  // The composer at the bottom of the timeline.
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+
   // Load the viewed day's entries. Today omits the ?date= suffix (like /plan/).
   useEffect(() => {
     let cancelled = false;
@@ -198,10 +202,34 @@ function JournalPage() {
     };
   }, [viewedDate]);
 
-  // Avoid an unused-var error until Step 2 wires up create/toast. Touch them so
-  // the read-only scaffold compiles under noUnusedLocals.
-  void isViewingToday;
-  void toast;
+  // Add a new entry. The server assigns id + created_at, so we await it and then
+  // append (rather than guessing an optimistic shape). Today omits ?date; other
+  // days backfill onto the viewed day.
+  async function createEntry() {
+    const body = text.trim();
+    if (!body || saving) return;
+    setSaving(true);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/journal/create/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            isViewingToday ? { body } : { body, date: toYMD(viewedDate) },
+          ),
+        },
+      );
+      if (!res.ok) throw new Error();
+      const created: JournalEntry = await res.json();
+      setEntries((prev) => [...prev, created]);
+      setText("");
+    } catch {
+      toast("Couldn't save your entry.", { variant: "error" });
+    } finally {
+      setSaving(false);
+    }
+  }
 
   let body: ReactNode;
   if (isLoading && entries.length === 0) {
@@ -253,6 +281,38 @@ function JournalPage() {
         onToday={() => setViewedDate(startOfDay(new Date()))}
       />
       {body}
+
+      {/* Composer — new entries append to the bottom of the timeline (newest
+          last). Cmd/Ctrl+Enter saves; plain Enter makes a new line. */}
+      <div className="mt-4 rounded-2xl bg-white p-4 shadow-sm">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              createEntry();
+            }
+          }}
+          rows={3}
+          placeholder={
+            isViewingToday
+              ? "How was today?"
+              : `Add a thought for ${dayLabel(viewedDate)}...`
+          }
+          className="w-full resize-none rounded-xl border border-calm-200 bg-calm-50 px-3 py-2 text-sm text-stone-700 placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
+        />
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={createEntry}
+            disabled={!text.trim() || saving}
+            className="rounded-xl bg-calm-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+          >
+            {saving ? "Saving..." : "Add entry"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
