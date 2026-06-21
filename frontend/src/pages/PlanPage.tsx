@@ -7,6 +7,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../components/Toast";
 import { useNavigate } from "react-router-dom";
@@ -1196,15 +1197,19 @@ function ShiftControl({
   );
 }
 
-// --- Retime a single cycle (drag its time header) ---------------------------
-// The single-block companion to the "running late" shift: grab a cycle's time
-// header and drag it to a new ABSOLUTE time. Only that one cycle moves (no
-// cascade), today only — it's a per-day override; tomorrow is back to normal.
+// --- Retime a single cycle (ephemeral time ruler) ---------------------------
+// The single-block companion to the "running late" shift. Grab a cycle by its
+// header strip and a slim time ruler fades in *just for the drag*: the dragged
+// block rides the ruler so its position = its time (the calendar feel), then the
+// ruler vanishes on drop — at rest it's still a plain habit list, never a grid.
+// Sets one ABSOLUTE time for that one cycle (no cascade), today only — a per-day
+// override; tomorrow is normal again. Undo lives on a toast after each drop.
 
-// Drag feel: ~1.5px per minute means a comfortable ~90px drag covers an hour.
-// The live readout snaps to clean 5-minute marks.
-const RETIME_PX_PER_MIN = 1.5;
-const RETIME_SNAP_MIN = 5;
+// Ruler scale: ~1.1px per minute (≈66px/hour), so 15-min steps are ~16px — easy
+// to hit. The SAME scale drives the pointer→time mapping and the on-screen ruler,
+// so the dragged chip tracks your finger. Times snap to a loose 15-min grid.
+const RETIME_PX_PER_MIN = 1.1;
+const RETIME_SNAP_MIN = 15;
 const RETIME_DRAG_THRESHOLD = 4; // px of movement before a press counts as a drag
 const DAY_END_MIN = 23 * 60 + 59; // 23:59 — the day's last valid minute
 
@@ -1232,7 +1237,7 @@ function avoidRetimeCollision(minutes: number, takenMinutes: number[]): number {
   return minutes; // every nearby minute taken (degenerate) — let it stack
 }
 
-// A faint up/down chevron hinting the time label can be dragged to a new time.
+// A faint up/down chevron hinting the block can be dragged to a new time.
 function RetimeHandleIcon() {
   return (
     <svg
@@ -1253,50 +1258,168 @@ function RetimeHandleIcon() {
   );
 }
 
-// The draggable time header for ONE timed cycle. Drag it up (earlier) or down
-// (later); a floating pill reads out the time live, and on release we POST the
-// chosen absolute time. `otherTimes` are the other cycles' effective minutes,
-// used only to break a same-minute tie on drop (see avoidRetimeCollision). We
-// hand-roll the gesture with pointer events (like SwipeableCard) rather than
-// dnd-kit, which is set up for the within-block reorder list.
-function RetimeHeader({
+// The ephemeral time ruler, shown only while a block is being dragged. A slim,
+// translucent calendar surface: hour ticks + labels, faint markers for the day's
+// other timed blocks (so you can place this one relative to them), a dotted line
+// at the block's original time, and the dragged block as a chip. Everything is
+// anchored so the block's start time sits at the press point (anchorY) and uses
+// the same px/min as the pointer mapping, so the chip tracks your finger.
+// Portaled to <body> and pointer-events:none — the block's captured pointer
+// handlers drive it; this is purely the visual.
+function RetimeRuler({
+  anchorY,
+  startMin,
+  previewMin,
+  blockLabel,
+  otherBlocks,
+}: {
+  anchorY: number;
+  startMin: number;
+  previewMin: number;
+  blockLabel: string;
+  otherBlocks: { min: number; name: string }[];
+}) {
+  // Screen Y for a minute, anchored so startMin lands at the press point.
+  const yForMin = (min: number) =>
+    anchorY + (min - startMin) * RETIME_PX_PER_MIN;
+  const viewportH = window.innerHeight;
+  // The ruler runs past the viewport both ways; only draw what's on screen.
+  const onScreen = (y: number) => y > -48 && y < viewportH + 48;
+
+  return createPortal(
+    <div className="pointer-events-none fixed inset-0 z-50">
+      {/* Dim the list so the ruler is the focus; both vanish on drop. */}
+      <div className="absolute inset-0 bg-calm-900/30" />
+
+      <div className="relative mx-auto h-full max-w-md overflow-hidden bg-white/60">
+        <p className="absolute inset-x-0 top-0 z-10 bg-white/70 py-2 text-center text-[11px] font-medium uppercase tracking-wide text-calm-500">
+          Drag to a time · release to set · today only
+        </p>
+
+        {/* Hour gridlines + labels. */}
+        {Array.from({ length: 24 }, (_, h) => h).map((h) => {
+          const y = yForMin(h * 60);
+          if (!onScreen(y)) return null;
+          return (
+            <div
+              key={`hour-${h}`}
+              className="absolute inset-x-0 flex -translate-y-1/2 items-center gap-2 px-4"
+              style={{ top: y }}
+            >
+              <span className="w-12 shrink-0 text-right text-[10px] tabular-nums text-calm-400">
+                {formatTime(minutesToHHMM(h * 60))}
+              </span>
+              <span className="h-px flex-1 bg-calm-200" />
+            </div>
+          );
+        })}
+
+        {/* The day's other timed blocks, as light context markers. */}
+        {otherBlocks.map((b) => {
+          const y = yForMin(b.min);
+          if (!onScreen(y)) return null;
+          return (
+            <div
+              key={`${b.min}-${b.name}`}
+              className="absolute inset-x-0 flex -translate-y-1/2 items-center px-4"
+              style={{ top: y }}
+            >
+              <span className="ml-14 max-w-[55%] truncate rounded-md bg-calm-100/90 px-2 py-0.5 text-[10px] text-calm-500">
+                {b.name}
+              </span>
+            </div>
+          );
+        })}
+
+        {/* Dotted guide at the block's original time — drag back here to undo. */}
+        {onScreen(yForMin(startMin)) && (
+          <div
+            className="absolute inset-x-0 -translate-y-1/2 px-4"
+            style={{ top: yForMin(startMin) }}
+          >
+            <div className="ml-14 border-t border-dashed border-calm-300" />
+          </div>
+        )}
+
+        {/* The dragged block itself, riding the ruler at its live time. */}
+        <div
+          className="absolute inset-x-0 -translate-y-1/2 px-4"
+          style={{ top: yForMin(previewMin) }}
+        >
+          <div className="ml-12 flex items-center gap-2 rounded-xl bg-calm-600 px-3 py-2 text-white shadow-lg ring-2 ring-white">
+            <span className="text-sm font-semibold tabular-nums">
+              {formatTime(minutesToHHMM(previewMin))}
+            </span>
+            <span className="min-w-0 truncate text-xs text-calm-100">
+              {blockLabel}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// The retime gesture for a WHOLE timed cycle. Grab the block by its header strip;
+// past a small threshold the ephemeral RetimeRuler takes over and the block's
+// position on it = its time, until you release. Grabbing the header (not the
+// habit rows) leaves the within-block reorder + swipe-to-skip gestures untouched.
+// `otherBlocks` give the ruler its context markers and break a same-minute tie on
+// drop. Hand-rolled pointer events (like SwipeableCard), not dnd-kit.
+function RetimeBlock({
   planId,
   time,
-  isNow,
-  otherTimes,
+  blockLabel,
+  otherBlocks,
   onRetime,
+  header,
+  children,
 }: {
   planId: number;
   time: string;
-  isNow: boolean;
-  otherTimes: number[];
+  blockLabel: string;
+  otherBlocks: { min: number; name: string }[];
   onRetime: (planId: number, time: string) => void;
+  // The time-label row — becomes the grab handle. Anything inside it that must
+  // stay tappable (e.g. the ⏰ shift button) carries data-no-retime.
+  header: ReactNode;
+  // The block's habit list (PlanBoard) — sits under the ruler while dragging, but
+  // keeps its own gestures since the drag only ever starts on the header.
+  children: ReactNode;
 }) {
   const startY = useRef<number | null>(null);
-  const startMin = useRef(0);
   const [dragging, setDragging] = useState(false);
-  // The minute the cycle would land on right now (shown in the floating pill).
+  // The press point on screen, so the ruler can anchor the start time to it.
+  const [anchorY, setAnchorY] = useState(0);
+  // The minute the cycle would land on right now (drives the chip + the save).
   const [previewMin, setPreviewMin] = useState<number | null>(null);
-  // Pointer position, so the pill can follow the finger/cursor.
-  const [pointer, setPointer] = useState({ x: 0, y: 0 });
+
+  // The block's current time in minutes. Derived from the `time` prop (stable
+  // through a drag — no refetch happens until drop), so we never stash it in a
+  // ref and read it during render.
+  const startMin = timeToMinutes(time);
 
   function onPointerDown(e: ReactPointerEvent) {
+    // A press on a control inside the header (the shift button) isn't a retime.
+    if ((e.target as HTMLElement).closest("[data-no-retime]")) return;
     startY.current = e.clientY;
-    startMin.current = timeToMinutes(time);
-    setPreviewMin(startMin.current);
-    setPointer({ x: e.clientX, y: e.clientY });
+    setPreviewMin(startMin);
     e.currentTarget.setPointerCapture(e.pointerId);
   }
 
   function onPointerMove(e: ReactPointerEvent) {
     if (startY.current == null) return;
-    const dy = e.clientY - startY.current;
+    const delta = e.clientY - startY.current;
     // Ignore tiny movements so a stray tap on the header doesn't start a retime.
-    if (!dragging && Math.abs(dy) < RETIME_DRAG_THRESHOLD) return;
-    if (!dragging) setDragging(true);
-    // Down = later (further down the sorted list), up = earlier.
-    setPreviewMin(snapRetime(startMin.current + dy / RETIME_PX_PER_MIN));
-    setPointer({ x: e.clientX, y: e.clientY });
+    if (!dragging && Math.abs(delta) < RETIME_DRAG_THRESHOLD) return;
+    if (!dragging) {
+      setDragging(true);
+      setAnchorY(startY.current); // ruler anchors the start time to the press point
+    }
+    // Down = later, up = earlier — same scale the ruler draws, so the chip tracks
+    // the finger. snapRetime rounds to the grid and clamps inside the day.
+    setPreviewMin(snapRetime(startMin + delta / RETIME_PX_PER_MIN));
   }
 
   function onPointerUp() {
@@ -1305,11 +1428,12 @@ function RetimeHeader({
     startY.current = null;
     setDragging(false);
     setPreviewMin(null);
-    // A press without a real drag, or a drag that lands back on the start time,
-    // writes nothing. (Dropping on the recurring time clears the override — the
-    // backend handles that "drag home" case, so we just send the absolute time.)
-    if (!moved || target == null || target === startMin.current) return;
-    onRetime(planId, minutesToHHMM(avoidRetimeCollision(target, otherTimes)));
+    // A press without a real drag, or a release back on the start time, writes
+    // nothing. (Dropping on the recurring time clears the override — the backend
+    // handles that "drag home" case, so we just send the absolute time.)
+    if (!moved || target == null || target === startMin) return;
+    const taken = otherBlocks.map((b) => b.min);
+    onRetime(planId, minutesToHHMM(avoidRetimeCollision(target, taken)));
   }
 
   // A cancelled gesture (e.g. the OS steals the pointer) must NOT commit a move.
@@ -1320,36 +1444,34 @@ function RetimeHeader({
   }
 
   return (
-    <span
-      aria-label={`Set time for this cycle — now ${formatTime(
-        time,
-      )}. Drag up for earlier, down for later.`}
-      title="Drag up or down to set this cycle's time (today only)"
-      draggable={false}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerCancel}
-      className={`inline-flex cursor-grab touch-none select-none items-center gap-1 text-xs font-medium uppercase tracking-wide transition-opacity active:cursor-grabbing ${
-        isNow ? "text-calm-700" : "text-calm-600"
-      } ${dragging ? "opacity-40" : ""}`}
-    >
-      {formatTime(time)}
-      <span className="text-calm-300">
-        <RetimeHandleIcon />
-      </span>
+    <div className="relative">
+      {/* The header strip is the grab handle — a big target. */}
+      <div
+        aria-label={`Set time for this cycle — now ${formatTime(
+          time,
+        )}. Drag up or down on the ruler to set a new time.`}
+        title="Drag up or down to set this cycle's time (today only)"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        className="cursor-grab touch-none select-none active:cursor-grabbing"
+      >
+        {header}
+      </div>
 
-      {/* Live readout following the pointer while dragging — offset up-right so a
-          finger doesn't cover it. Reuses formatTime via minutesToHHMM. */}
+      {children}
+
       {dragging && previewMin != null && (
-        <span
-          className="pointer-events-none fixed z-50 -translate-y-full translate-x-3 rounded-full bg-calm-900 px-2.5 py-1 text-sm font-semibold normal-case tracking-normal text-white shadow-lg"
-          style={{ left: pointer.x, top: pointer.y }}
-        >
-          {formatTime(minutesToHHMM(previewMin))}
-        </span>
+        <RetimeRuler
+          anchorY={anchorY}
+          startMin={startMin}
+          previewMin={previewMin}
+          blockLabel={blockLabel}
+          otherBlocks={otherBlocks}
+        />
       )}
-    </span>
+    </div>
   );
 }
 
@@ -2080,11 +2202,11 @@ function PlansPage() {
     }
   }
 
-  // Retime ONE cycle: its time header was dragged to a new absolute time, and
-  // only that cycle moves there (no cascade) — a per-day override, like the
-  // shift. We re-fetch because /plan/ returns the day's new effective times,
-  // already re-sorted, so we don't hand-apply the move.
-  async function retimePlan(planId: number, time: string) {
+  // POST one cycle's new absolute time (a per-day override, like the shift, no
+  // cascade) and re-fetch the day — /plan/ returns the new effective times,
+  // already re-sorted, so we don't hand-apply. Returns true on success; shared by
+  // a drag and by its Undo.
+  async function postRetime(planId: number, time: string): Promise<boolean> {
     const today = isSameDay(viewedDate, new Date());
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/plans/retime/`, {
@@ -2101,11 +2223,26 @@ function PlansPage() {
         throw new Error(data?.error ?? "Couldn't move that cycle");
       }
       setReloadToken((token) => token + 1); // re-fetch the day's new times
+      return true;
     } catch (err) {
       toast(err instanceof Error ? err.message : "Couldn't move that cycle", {
         variant: "error",
       });
+      return false;
     }
+  }
+
+  // Drag handler: remember the block's time *before* the move, apply it, then
+  // offer a one-tap Undo (the app's standard toast pattern, same as Skip day)
+  // that puts it back. When there was no override, the previous effective time IS
+  // the recurring time — so undoing all the way home clears the override.
+  async function retimePlan(planId: number, time: string) {
+    const previousTime = plans.find((p) => p.id === planId)?.time ?? null;
+    const ok = await postRetime(planId, time);
+    if (!ok || previousTime == null) return;
+    toast(`Moved to ${formatTime(time)}`, {
+      action: { label: "Undo", onClick: () => postRetime(planId, previousTime) },
+    });
   }
 
   // Reset a day's per-day adjustments (skips + running-late shifts) back to
@@ -2246,6 +2383,19 @@ function PlansPage() {
           const key = plan.id ?? "anytime";
           const isNow =
             isViewingToday && plan.id != null && plan.id === nowBlockId;
+          // The habit list is identical whether or not the block is retime-able;
+          // build it once and drop it into the right wrapper below. Drag the grip
+          // to reorder, swipe a card left to skip, tap the circle to complete,
+          // tap the note icon to jot a day note; completed ones collapse in place.
+          const planBoard = (
+            <PlanBoard
+              plan={plan}
+              onStatus={setHabitStatus}
+              onOpenNote={setEditingNote}
+              onReorder={reorderPlan}
+              interactive={isViewingToday}
+            />
+          );
           return (
             <section
               key={key}
@@ -2255,48 +2405,65 @@ function PlansPage() {
               // Leave a little breathing room above the block when we scroll to it.
               className="scroll-mt-6"
             >
-              {/* Time label with a divider line; the current block gets a "Now" badge */}
-              <div className="flex items-center gap-3 mb-2">
-                {/* Timed cycles get a draggable time header — drag it to retime
-                    just this cycle (today only). The "Anytime" group has no time
-                    to drag, so it stays a plain label. */}
-                {plan.id != null && plan.time ? (
-                  <RetimeHeader
-                    planId={plan.id}
-                    time={plan.time}
-                    isNow={isNow}
-                    otherTimes={visiblePlans.flatMap((p) =>
-                      p.id !== plan.id && p.time ? [timeToMinutes(p.time)] : [],
-                    )}
-                    onRetime={retimePlan}
-                  />
-                ) : (
-                  <span className="text-xs font-medium uppercase tracking-wide text-calm-600">
-                    {formatTime(plan.time)}
-                  </span>
-                )}
-                {isNow && (
-                  <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
-                    Now
-                  </span>
-                )}
-                <div className="flex-1 h-px bg-calm-200" />
-                {/* "Running late" shift — only on real timed cycles */}
-                {plan.id != null && plan.time && (
-                  <ShiftControl planId={plan.id} onShift={shiftFromPlan} />
-                )}
-              </div>
-
-              {/* Habits at this time. Drag the grip to reorder, swipe a card
-                  left to skip, tap the circle to complete, tap the note icon to
-                  jot a day note; completed ones collapse in place. */}
-              <PlanBoard
-                plan={plan}
-                onStatus={setHabitStatus}
-                onOpenNote={setEditingNote}
-                onReorder={reorderPlan}
-                interactive={isViewingToday}
-              />
+              {plan.id != null && plan.time ? (
+                // Timed cycle: the whole block is the unit you retime — grab the
+                // header strip and it lifts to a new time (today only).
+                <RetimeBlock
+                  planId={plan.id}
+                  time={plan.time}
+                  blockLabel={plan.habits[0]?.name ?? formatTime(plan.time)}
+                  otherBlocks={visiblePlans.flatMap((p) =>
+                    p.id !== plan.id && p.time
+                      ? [
+                          {
+                            min: timeToMinutes(p.time),
+                            name: p.habits[0]?.name ?? formatTime(p.time),
+                          },
+                        ]
+                      : [],
+                  )}
+                  onRetime={retimePlan}
+                  header={
+                    <div className="flex items-center gap-3 mb-2">
+                      {/* Time label + a drag hint; the whole strip is grabbable. */}
+                      <span
+                        className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
+                          isNow ? "text-calm-700" : "text-calm-600"
+                        }`}
+                      >
+                        {formatTime(plan.time)}
+                        <span className="text-calm-300">
+                          <RetimeHandleIcon />
+                        </span>
+                      </span>
+                      {isNow && (
+                        <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                          Now
+                        </span>
+                      )}
+                      <div className="flex-1 h-px bg-calm-200" />
+                      {/* "Running late" shift stays tappable — opt it out of the
+                          block's retime drag. */}
+                      <div data-no-retime>
+                        <ShiftControl planId={plan.id} onShift={shiftFromPlan} />
+                      </div>
+                    </div>
+                  }
+                >
+                  {planBoard}
+                </RetimeBlock>
+              ) : (
+                // "Anytime" group: no time, so nothing to retime.
+                <>
+                  <div className="flex items-center gap-3 mb-2">
+                    <span className="text-xs font-medium uppercase tracking-wide text-calm-600">
+                      {formatTime(plan.time)}
+                    </span>
+                    <div className="flex-1 h-px bg-calm-200" />
+                  </div>
+                  {planBoard}
+                </>
+              )}
             </section>
           );
         })}
