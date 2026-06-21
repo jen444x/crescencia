@@ -264,17 +264,6 @@ function applyStatus(
   }));
 }
 
-// Return a NEW plans array with one habit's per-day note set. Pure + immutable,
-// like applyStatus, so the note preview updates optimistically on save.
-function applyNote(plans: Plan[], habitId: number, notes: string): Plan[] {
-  return plans.map((plan) => ({
-    ...plan,
-    habits: plan.habits.map((habit) =>
-      habit.id === habitId ? { ...habit, notes } : habit,
-    ),
-  }));
-}
-
 // Return a NEW plans array with one plan's habits set to `orderedHabits`,
 // renumbered 1..N. Pure + immutable, like applyStatus above.
 function applyPlanOrder(
@@ -1261,17 +1250,25 @@ function FloatingControls({ onGoToNow }: { onGoToNow?: () => void }) {
 // from the habit's permanent notes on the edit page.
 function NoteSheet({
   habit,
+  notes,
   dateLabel,
-  onSave,
+  onCreate,
+  onDelete,
   onClose,
 }: {
   habit: Habit;
+  // LIVE notes for this habit (from notesByHabit) — re-read each render so the
+  // list stays current as notes are added/removed while the sheet is open.
+  notes: DayNote[];
   dateLabel: string;
-  onSave: (notes: string) => void;
+  onCreate: (body: string) => Promise<boolean>;
+  onDelete: (noteId: number) => void;
   onClose: () => void;
 }) {
-  const existing = habit.notes?.trim() ?? "";
-  const [text, setText] = useState(habit.notes ?? "");
+  // The sheet is an "add a note" composer plus the day's note list. It always
+  // starts empty (it adds, never seeds an edit — editing lands in Step 3b).
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   // Keep the sheet sitting *above* the on-screen keyboard. Mobile browsers shrink
@@ -1306,11 +1303,18 @@ function NoteSheet({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const trimmed = text.trim();
-
-  function save() {
-    onSave(trimmed);
-    onClose();
+  // Add the composed note. Keep the sheet open and the field focused so several
+  // notes can be jotted in a row; only clear the field once the save succeeds.
+  async function add() {
+    const body = text.trim();
+    if (!body || saving) return;
+    setSaving(true);
+    const ok = await onCreate(body);
+    setSaving(false);
+    if (ok) {
+      setText("");
+      taRef.current?.focus();
+    }
   }
 
   return (
@@ -1329,55 +1333,79 @@ function NoteSheet({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`Note for ${habit.name}`}
+        aria-label={`Notes for ${habit.name}`}
         className="animate-sheet-in relative max-h-full w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 pb-8 shadow-xl sm:rounded-3xl"
       >
         {/* Grabber — a small affordance that this sheet came up from the bottom. */}
         <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-calm-200 sm:hidden" />
         <h2 className="font-heading text-2xl text-calm-900">{habit.name}</h2>
         <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wide text-calm-500">
-          Note · {dateLabel}
+          Notes · {dateLabel}
         </p>
 
+        {/* The day's existing notes. A shared note (on more than one habit) is
+            marked; deleting it here detaches just this habit. Editing arrives in
+            the next step — for now a note is add-or-delete. */}
+        {notes.length > 0 ? (
+          <ul className="mt-4 space-y-2">
+            {notes.map((n) => (
+              <li
+                key={n.id}
+                className="flex items-start gap-2 rounded-xl border border-calm-100 bg-calm-50 px-3 py-2"
+              >
+                {n.shared && (
+                  <span
+                    className="mt-0.5 text-calm-400"
+                    title="Shared across habits"
+                  >
+                    <SharedNoteIcon />
+                  </span>
+                )}
+                <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm text-calm-800">
+                  {n.body}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => onDelete(n.id)}
+                  className="shrink-0 text-xs font-medium text-rose-500 transition-colors hover:text-rose-600"
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-4 text-sm text-calm-400">No notes yet for this day.</p>
+        )}
+
+        <label className="mt-5 block text-[11px] font-medium uppercase tracking-wide text-calm-500">
+          Add a note
+        </label>
         <textarea
           ref={taRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          rows={4}
+          rows={3}
           placeholder="How did it go? Why you skipped, how it felt…"
-          className="mt-4 w-full resize-none rounded-xl border border-calm-200 bg-white px-4 py-3 text-sm text-calm-900 placeholder:text-calm-400 focus:border-calm-500 focus:outline-none"
+          className="mt-1.5 w-full resize-none rounded-xl border border-calm-200 bg-white px-4 py-3 text-sm text-calm-900 placeholder:text-calm-400 focus:border-calm-500 focus:outline-none"
         />
 
-        <div className="mt-4 flex items-center gap-3">
-          {existing && (
-            <button
-              type="button"
-              onClick={() => {
-                onSave("");
-                onClose();
-              }}
-              className="text-sm font-medium text-rose-500 transition-colors hover:text-rose-600"
-            >
-              Clear
-            </button>
-          )}
-          <div className="ml-auto flex gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-xl px-4 py-2.5 text-sm font-medium text-calm-600 transition-colors hover:bg-calm-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={save}
-              disabled={trimmed === existing}
-              className="rounded-xl bg-calm-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
-            >
-              Save
-            </button>
-          </div>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl px-4 py-2.5 text-sm font-medium text-calm-600 transition-colors hover:bg-calm-50"
+          >
+            Done
+          </button>
+          <button
+            type="button"
+            onClick={add}
+            disabled={text.trim() === "" || saving}
+            className="rounded-xl bg-calm-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+          >
+            Add
+          </button>
         </div>
       </div>
     </div>
@@ -1456,28 +1484,59 @@ function PlansPage() {
     }
   }
 
-  // Save a habit's per-day note. Optimistic like setHabitStatus: show it now,
-  // POST it (independent of status — a note never marks the habit done), and
-  // roll back with an error toast if the save fails. "" clears the note.
-  async function setHabitNote(habitId: number, notes: string) {
-    const snapshot = plans;
-    setPlans((prev) => applyNote(prev, habitId, notes));
+  // Create a new note for this habit via the new Note model. Returns true on
+  // success so the sheet can clear its field. Not optimistic — the server
+  // assigns the note id, so we add the note once it comes back.
+  async function createNote(habitId: number, body: string): Promise<boolean> {
+    const text = body.trim();
+    if (!text) return false;
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/notes/create/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          isViewingToday
+            ? { body: text, habits: [habitId] }
+            : { body: text, habits: [habitId], date: toYMD(viewedDate) },
+        ),
+      });
+      if (!res.ok) throw new Error("Request failed");
+      const note: DayNote = await res.json();
+      setDayNotes((prev) => [...prev, note]);
+      return true;
+    } catch {
+      toast("Couldn't save your note", { variant: "error" });
+      return false;
+    }
+  }
 
+  // Delete a note for one habit. scope "one" detaches just this habit; the
+  // backend deletes the note if that was its last habit (orphan rule). Today's
+  // notes are single-habit, so this is a plain delete — and it stays correct
+  // once notes can be shared (Step 4). Optimistic, with rollback on failure.
+  async function deleteNote(noteId: number, habitId: number) {
+    const snapshot = dayNotes;
+    setDayNotes((prev) =>
+      prev.flatMap((n) => {
+        if (n.id !== noteId) return [n];
+        const habits = n.habits.filter((id) => id !== habitId);
+        if (habits.length === 0) return [];
+        return [{ ...n, habits, shared: habits.length > 1 }];
+      }),
+    );
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/habits/${habitId}/log/`,
+        `${import.meta.env.VITE_API_URL}/notes/${noteId}/delete/`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(
-            isViewingToday ? { notes } : { notes, date: toYMD(viewedDate) },
-          ),
+          body: JSON.stringify({ scope: "one", habit: habitId }),
         },
       );
       if (!res.ok) throw new Error("Request failed");
     } catch {
-      setPlans(snapshot);
-      toast("Couldn't save your note", { variant: "error" });
+      setDayNotes(snapshot);
+      toast("Couldn't delete that note", { variant: "error" });
     }
   }
 
@@ -1818,8 +1877,10 @@ function PlansPage() {
       {editingNote && (
         <NoteSheet
           habit={editingNote}
+          notes={notesByHabit.get(editingNote.id) ?? []}
           dateLabel={dayLabel(viewedDate)}
-          onSave={(notes) => setHabitNote(editingNote.id, notes)}
+          onCreate={(body) => createNote(editingNote.id, body)}
+          onDelete={(noteId) => deleteNote(noteId, editingNote.id)}
           onClose={() => setEditingNote(null)}
         />
       )}
