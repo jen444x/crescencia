@@ -492,9 +492,6 @@ function SharedNoteIcon() {
   );
 }
 
-// How many of a habit's notes to preview inline before collapsing to "+N more".
-const MAX_PREVIEW_NOTES = 3;
-
 // A U-turn arrow for "un-skip": send a skipped/missed habit back to today's list.
 function RestoreIcon() {
   return (
@@ -532,13 +529,11 @@ function HabitCard({
   const skipped = isSkipped(habit);
   const missed = isMissed(habit);
   // Notes come from the new Note model; fall back to the legacy per-habit string
-  // while /days/notes/ rolls out (shown as a single unshared line). `hasNotes`
-  // drives the icon accent; the preview shows up to MAX_PREVIEW_NOTES lines.
+  // while /days/notes/ rolls out. `hasNotes` drives the note button's accent
+  // (the notes themselves are viewed on the habit detail page).
   const dayNotes = habit.dayNotes ?? [];
   const legacyNote = habit.notes?.trim() ?? "";
   const hasNotes = dayNotes.length > 0 || legacyNote !== "";
-  const shownNotes = dayNotes.slice(0, MAX_PREVIEW_NOTES);
-  const extraNotes = dayNotes.length - shownNotes.length;
   return (
     <div
       className={`group flex items-center gap-3 rounded-xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
@@ -566,31 +561,6 @@ function HabitCard({
         >
           {habit.name}
         </h3>
-        {/* A glance at the day's notes; tap the note button to edit them. A
-            shared note (attached to more than one habit) gets a link glyph. */}
-        {dayNotes.length > 0 ? (
-          <ul className="mt-0.5 space-y-0.5">
-            {shownNotes.map((n) => (
-              <li
-                key={n.id}
-                className="flex items-center gap-1 text-xs italic text-stone-400"
-                title={n.shared ? "Shared across habits" : undefined}
-              >
-                {n.shared && <SharedNoteIcon />}
-                <span className="min-w-0 truncate">{n.body.trim()}</span>
-              </li>
-            ))}
-            {extraNotes > 0 && (
-              <li className="text-xs italic text-stone-400">+{extraNotes} more</li>
-            )}
-          </ul>
-        ) : (
-          legacyNote && (
-            <p className="mt-0.5 truncate text-xs italic text-stone-400">
-              {legacyNote}
-            </p>
-          )
-        )}
       </div>
 
       {skipped && (
