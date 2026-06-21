@@ -100,6 +100,15 @@ function formatTime(time: string | null) {
   return `${hour12}:${minute} ${period}`;
 }
 
+// A short label for a whole cycle: its first habit, plus "+N" when it holds more
+// (so a multi-habit block reads as more than just its first item). Falls back to
+// the time if a block somehow has no habits.
+function cycleLabel(habits: Habit[], time: string | null): string {
+  const first = habits[0]?.name;
+  if (!first) return formatTime(time);
+  return habits.length > 1 ? `${first} +${habits.length - 1}` : first;
+}
+
 // "08:30:00" -> 510 (minutes since midnight). Used to find which time block
 // is "now" so we can open the page there.
 function timeToMinutes(time: string): number {
@@ -1259,13 +1268,13 @@ function RetimeHandleIcon() {
 }
 
 // The ephemeral time ruler, shown only while a block is being dragged. A slim,
-// translucent calendar surface: hour ticks + labels, faint markers for the day's
-// other timed blocks (so you can place this one relative to them), a dotted line
-// at the block's original time, and the dragged block as a chip. Everything is
-// anchored so the block's start time sits at the press point (anchorY) and uses
-// the same px/min as the pointer mapping, so the chip tracks your finger.
-// Portaled to <body> and pointer-events:none — the block's captured pointer
-// handlers drive it; this is purely the visual.
+// translucent calendar surface: hour ticks + labels, cards for the day's other
+// timed blocks (so you place this one relative to them), a dotted line at the
+// block's original time, and the dragged block as a chip. Anchored so the
+// block's start time sits at the press point (anchorY), at the same px/min as
+// the pointer mapping — so the chip tracks your finger as it travels past the
+// other cycles. Portaled to <body> and pointer-events:none — the block's
+// captured pointer handlers drive it; this is purely the visual.
 function RetimeRuler({
   anchorY,
   startMin,
@@ -1279,7 +1288,8 @@ function RetimeRuler({
   blockLabel: string;
   otherBlocks: { min: number; name: string }[];
 }) {
-  // Screen Y for a minute, anchored so startMin lands at the press point.
+  // Screen Y for a minute, anchored so startMin sits at the press point — the
+  // chip then tracks your finger while the other cycles stay put as context.
   const yForMin = (min: number) =>
     anchorY + (min - startMin) * RETIME_PX_PER_MIN;
   const viewportH = window.innerHeight;
@@ -1324,8 +1334,11 @@ function RetimeRuler({
               className="absolute inset-x-0 flex -translate-y-1/2 items-center px-4"
               style={{ top: y }}
             >
-              <span className="ml-14 max-w-[55%] truncate rounded-md bg-calm-100/90 px-2 py-0.5 text-[10px] text-calm-500">
-                {b.name}
+              <span className="ml-14 flex max-w-[70%] items-center gap-1.5 truncate rounded-lg bg-white px-2 py-1 text-[11px] text-calm-500 shadow-sm ring-1 ring-calm-200">
+                <span className="shrink-0 tabular-nums text-calm-400">
+                  {formatTime(minutesToHHMM(b.min))}
+                </span>
+                <span className="truncate">{b.name}</span>
               </span>
             </div>
           );
@@ -2411,13 +2424,13 @@ function PlansPage() {
                 <RetimeBlock
                   planId={plan.id}
                   time={plan.time}
-                  blockLabel={plan.habits[0]?.name ?? formatTime(plan.time)}
+                  blockLabel={cycleLabel(plan.habits, plan.time)}
                   otherBlocks={visiblePlans.flatMap((p) =>
                     p.id !== plan.id && p.time
                       ? [
                           {
                             min: timeToMinutes(p.time),
-                            name: p.habits[0]?.name ?? formatTime(p.time),
+                            name: cycleLabel(p.habits, p.time),
                           },
                         ]
                       : [],

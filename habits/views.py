@@ -10,7 +10,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Chain, Habit, Plan, PlanDay, Schedule, HabitLog, Note, JournalEntry
+from .models import Area, Chain, Routine, Habit, Plan, PlanDay, Schedule, HabitLog, Note, JournalEntry
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -89,7 +89,8 @@ def plan(request):
         PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
     )
 
-    def habit_payload(habit, schedule_id=None, chain=None, order=None):
+    def habit_payload(habit, schedule_id=None, chain=None, order=None,
+                      routine=None, routine_name=None):
         status, notes = logs_by_habit.get(habit.id, (HabitLog.Status.PENDING, ""))
         # A past day's still-pending habit reads as missed (derived, never stored).
         if is_past_day and status == HabitLog.Status.PENDING:
@@ -99,6 +100,8 @@ def plan(request):
             "schedule_id": schedule_id,   # the row to target when reordering
             "name": habit.name,
             "chain": chain,   # cycle id, or None if standalone
+            "routine": routine,            # routine (group) id, or None if ungrouped
+            "routine_name": routine_name,  # the group's name, for the block header
             "order": order,
             "status": status,
             "done_today": status == HabitLog.Status.COMPLETED,

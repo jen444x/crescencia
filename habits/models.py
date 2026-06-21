@@ -68,6 +68,29 @@ class JournalEntry(models.Model):
 class Chain(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
+
+class Routine(models.Model):
+    """A named group of habits shown as ONE collapsible block on the Plan page
+    (e.g. "Morning routine": brush teeth, wash face, ...).
+
+    A routine is just another optional tag on a Schedule row, exactly like
+    `chain` — a habit can be in a routine, a chain, both, or neither. The
+    difference is only in how each renders: a chain gives its habits an order
+    (step 1 → 2 → 3); a routine just groups them, to be done in any order,
+    whenever.
+
+    A routine's "done" state is NEVER stored. It's derived from its members'
+    HabitLogs: the block reads as done when every member is COMPLETED or SKIPPED
+    that day. "Complete the block" is just a fan-out that writes a COMPLETED
+    HabitLog for each member (see views.log_routine) — there's no routine log.
+    """
+    name = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+
 class Plan(models.Model):
     start_date = models.DateField(auto_now_add=True)
     start_time = models.TimeField(blank=True, null=True)
@@ -105,6 +128,10 @@ class Schedule(models.Model):
     habit = models.ForeignKey(Habit, on_delete=models.CASCADE)
     plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True)
     chain = models.ForeignKey(Chain, on_delete=models.CASCADE, null=True, blank=True)
+    # Like `chain`, but groups (no order) instead of ordering. SET_NULL, not
+    # CASCADE: deleting a Routine just ungroups its habits — they stay on the
+    # plan as standalone rows — rather than dropping them off the plan.
+    routine = models.ForeignKey(Routine, on_delete=models.SET_NULL, null=True, blank=True)
     order = models.PositiveIntegerField(null=True, blank=True)
 
     def __str__(self):
