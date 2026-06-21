@@ -106,6 +106,14 @@ function timeToMinutes(time: string): number {
   return parseInt(hourStr, 10) * 60 + parseInt(minuteStr, 10);
 }
 
+// 510 -> "08:30". The inverse of timeToMinutes — the absolute time we send to
+// /plans/retime/ when a cycle's time header is dragged.
+function minutesToHHMM(total: number): string {
+  const hour = Math.floor(total / 60);
+  const minute = total % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
 // Which time block is happening right now? The latest block whose start time has
 // already passed (at 9:10, the "9:00 AM" block is current). Before the day's
 // first block, fall back to it so the page still opens somewhere sensible.
@@ -1188,6 +1196,163 @@ function ShiftControl({
   );
 }
 
+// --- Retime a single cycle (drag its time header) ---------------------------
+// The single-block companion to the "running late" shift: grab a cycle's time
+// header and drag it to a new ABSOLUTE time. Only that one cycle moves (no
+// cascade), today only — it's a per-day override; tomorrow is back to normal.
+
+// Drag feel: ~1.5px per minute means a comfortable ~90px drag covers an hour.
+// The live readout snaps to clean 5-minute marks.
+const RETIME_PX_PER_MIN = 1.5;
+const RETIME_SNAP_MIN = 5;
+const RETIME_DRAG_THRESHOLD = 4; // px of movement before a press counts as a drag
+const DAY_END_MIN = 23 * 60 + 59; // 23:59 — the day's last valid minute
+
+// Round to the nearest 5 minutes, then clamp inside the day so a long drag stops
+// at 00:00 / 23:59 instead of running off either end.
+function snapRetime(minutes: number): number {
+  const snapped = Math.round(minutes / RETIME_SNAP_MIN) * RETIME_SNAP_MIN;
+  return Math.max(0, Math.min(DAY_END_MIN, snapped));
+}
+
+// Keep two cycles off the exact same minute — /plan/ renders same-time blocks as
+// two stacked rows, which she didn't want. If `minutes` is already taken by
+// another cycle, step outward (just-after first, then just-before) to the nearest
+// free minute so the dropped cycle sorts beside its neighbor but stays its own
+// block. Frontend owns this; the backend just stores whatever time we send.
+function avoidRetimeCollision(minutes: number, takenMinutes: number[]): number {
+  const taken = new Set(takenMinutes);
+  if (!taken.has(minutes)) return minutes;
+  for (let delta = 1; delta <= 60; delta++) {
+    if (minutes + delta <= DAY_END_MIN && !taken.has(minutes + delta))
+      return minutes + delta;
+    if (minutes - delta >= 0 && !taken.has(minutes - delta))
+      return minutes - delta;
+  }
+  return minutes; // every nearby minute taken (degenerate) — let it stack
+}
+
+// A faint up/down chevron hinting the time label can be dragged to a new time.
+function RetimeHandleIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-3 w-3"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      aria-hidden
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2.5}
+        d="M8 9l4-4 4 4M8 15l4 4 4-4"
+      />
+    </svg>
+  );
+}
+
+// The draggable time header for ONE timed cycle. Drag it up (earlier) or down
+// (later); a floating pill reads out the time live, and on release we POST the
+// chosen absolute time. `otherTimes` are the other cycles' effective minutes,
+// used only to break a same-minute tie on drop (see avoidRetimeCollision). We
+// hand-roll the gesture with pointer events (like SwipeableCard) rather than
+// dnd-kit, which is set up for the within-block reorder list.
+function RetimeHeader({
+  planId,
+  time,
+  isNow,
+  otherTimes,
+  onRetime,
+}: {
+  planId: number;
+  time: string;
+  isNow: boolean;
+  otherTimes: number[];
+  onRetime: (planId: number, time: string) => void;
+}) {
+  const startY = useRef<number | null>(null);
+  const startMin = useRef(0);
+  const [dragging, setDragging] = useState(false);
+  // The minute the cycle would land on right now (shown in the floating pill).
+  const [previewMin, setPreviewMin] = useState<number | null>(null);
+  // Pointer position, so the pill can follow the finger/cursor.
+  const [pointer, setPointer] = useState({ x: 0, y: 0 });
+
+  function onPointerDown(e: ReactPointerEvent) {
+    startY.current = e.clientY;
+    startMin.current = timeToMinutes(time);
+    setPreviewMin(startMin.current);
+    setPointer({ x: e.clientX, y: e.clientY });
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(e: ReactPointerEvent) {
+    if (startY.current == null) return;
+    const dy = e.clientY - startY.current;
+    // Ignore tiny movements so a stray tap on the header doesn't start a retime.
+    if (!dragging && Math.abs(dy) < RETIME_DRAG_THRESHOLD) return;
+    if (!dragging) setDragging(true);
+    // Down = later (further down the sorted list), up = earlier.
+    setPreviewMin(snapRetime(startMin.current + dy / RETIME_PX_PER_MIN));
+    setPointer({ x: e.clientX, y: e.clientY });
+  }
+
+  function onPointerUp() {
+    const target = previewMin;
+    const moved = dragging;
+    startY.current = null;
+    setDragging(false);
+    setPreviewMin(null);
+    // A press without a real drag, or a drag that lands back on the start time,
+    // writes nothing. (Dropping on the recurring time clears the override — the
+    // backend handles that "drag home" case, so we just send the absolute time.)
+    if (!moved || target == null || target === startMin.current) return;
+    onRetime(planId, minutesToHHMM(avoidRetimeCollision(target, otherTimes)));
+  }
+
+  // A cancelled gesture (e.g. the OS steals the pointer) must NOT commit a move.
+  function onPointerCancel() {
+    startY.current = null;
+    setDragging(false);
+    setPreviewMin(null);
+  }
+
+  return (
+    <span
+      aria-label={`Set time for this cycle — now ${formatTime(
+        time,
+      )}. Drag up for earlier, down for later.`}
+      title="Drag up or down to set this cycle's time (today only)"
+      draggable={false}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      className={`inline-flex cursor-grab touch-none select-none items-center gap-1 text-xs font-medium uppercase tracking-wide transition-opacity active:cursor-grabbing ${
+        isNow ? "text-calm-700" : "text-calm-600"
+      } ${dragging ? "opacity-40" : ""}`}
+    >
+      {formatTime(time)}
+      <span className="text-calm-300">
+        <RetimeHandleIcon />
+      </span>
+
+      {/* Live readout following the pointer while dragging — offset up-right so a
+          finger doesn't cover it. Reuses formatTime via minutesToHHMM. */}
+      {dragging && previewMin != null && (
+        <span
+          className="pointer-events-none fixed z-50 -translate-y-full translate-x-3 rounded-full bg-calm-900 px-2.5 py-1 text-sm font-semibold normal-case tracking-normal text-white shadow-lg"
+          style={{ left: pointer.x, top: pointer.y }}
+        >
+          {formatTime(minutesToHHMM(previewMin))}
+        </span>
+      )}
+    </span>
+  );
+}
+
 // Floating bottom-right controls: "Now" jumps to the current time block (the page
 // auto-scrolls there on load, but you can re-center anytime), and "↑" goes back
 // to the top. "Now" only shows on today's view; "↑" appears once you've scrolled
@@ -1915,6 +2080,34 @@ function PlansPage() {
     }
   }
 
+  // Retime ONE cycle: its time header was dragged to a new absolute time, and
+  // only that cycle moves there (no cascade) — a per-day override, like the
+  // shift. We re-fetch because /plan/ returns the day's new effective times,
+  // already re-sorted, so we don't hand-apply the move.
+  async function retimePlan(planId: number, time: string) {
+    const today = isSameDay(viewedDate, new Date());
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/plans/retime/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          today
+            ? { plan: planId, time }
+            : { plan: planId, time, date: toYMD(viewedDate) },
+        ),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? "Couldn't move that cycle");
+      }
+      setReloadToken((token) => token + 1); // re-fetch the day's new times
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Couldn't move that cycle", {
+        variant: "error",
+      });
+    }
+  }
+
   // Reset a day's per-day adjustments (skips + running-late shifts) back to
   // default, keeping completions and notes. Powers the "Undo" on the skip toast.
   // Takes the date explicitly so Undo targets the day that was skipped even if
@@ -2064,13 +2257,24 @@ function PlansPage() {
             >
               {/* Time label with a divider line; the current block gets a "Now" badge */}
               <div className="flex items-center gap-3 mb-2">
-                <span
-                  className={`text-xs font-medium uppercase tracking-wide ${
-                    isNow ? "text-calm-700" : "text-calm-600"
-                  }`}
-                >
-                  {formatTime(plan.time)}
-                </span>
+                {/* Timed cycles get a draggable time header — drag it to retime
+                    just this cycle (today only). The "Anytime" group has no time
+                    to drag, so it stays a plain label. */}
+                {plan.id != null && plan.time ? (
+                  <RetimeHeader
+                    planId={plan.id}
+                    time={plan.time}
+                    isNow={isNow}
+                    otherTimes={visiblePlans.flatMap((p) =>
+                      p.id !== plan.id && p.time ? [timeToMinutes(p.time)] : [],
+                    )}
+                    onRetime={retimePlan}
+                  />
+                ) : (
+                  <span className="text-xs font-medium uppercase tracking-wide text-calm-600">
+                    {formatTime(plan.time)}
+                  </span>
+                )}
                 {isNow && (
                   <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
                     Now

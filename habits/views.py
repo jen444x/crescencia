@@ -6,7 +6,7 @@ from django.db.models import F, Prefetch
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from django.utils.dateparse import parse_date
+from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
@@ -458,6 +458,68 @@ def shift_plans(request):
         key=lambda r: r["time"],
     )
     return JsonResponse({"date": target_date, "updated": updated})
+
+
+@csrf_exempt
+@require_POST
+def retime_plan(request):
+    """Move ONE cycle to a new time — for today only, no cascade.
+
+    Body: {"plan": <plan id>, "time": "HH:MM", "date"?: "YYYY-MM-DD"}.
+
+    The drag-the-time-header companion to shift_plans: you drop a single cycle at
+    an absolute time and *only* that cycle moves — everything else stays put
+    (whereas shift slides the anchor and everything after it). Like shift, it
+    writes a per-day override (PlanDay) and never touches the recurring Plan time,
+    so tomorrow is back to normal. Dropping a cycle on its normal recurring time
+    clears the override instead of storing a redundant "no-op" one.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    plan_id = body.get("plan")
+    # bool is a subclass of int, so reject it explicitly.
+    if not isinstance(plan_id, int) or isinstance(plan_id, bool):
+        return JsonResponse({"error": "'plan' must be a plan id (integer)."}, status=400)
+
+    raw_time = body.get("time")
+    if not isinstance(raw_time, str):
+        return JsonResponse({"error": "'time' must be an 'HH:MM' string."}, status=400)
+    try:
+        new_time = parse_time(raw_time)   # None if the format is wrong
+    except ValueError:
+        new_time = None                   # right shape, impossible time (e.g. 25:00)
+    if new_time is None:
+        return JsonResponse(
+            {"error": f"'time' must be a valid 'HH:MM' time, got {raw_time!r}."},
+            status=400,
+        )
+    # The rest of the app works at minute precision; drop any seconds/micros so a
+    # "back to recurring" compare below is exact.
+    new_time = new_time.replace(second=0, microsecond=0)
+
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+
+    try:
+        plan = Plan.objects.get(id=plan_id)
+    except Plan.DoesNotExist:
+        return JsonResponse({"error": f"Unknown plan id: {plan_id}."}, status=400)
+
+    with transaction.atomic():
+        if new_time == plan.start_time:
+            # Back on its normal time — drop any override so "no row = normal" holds.
+            PlanDay.objects.filter(plan=plan, date=target_date).delete()
+        else:
+            # Absolute set (not a delta): a second drop replaces the first.
+            PlanDay.objects.update_or_create(
+                plan=plan, date=target_date, defaults={"start_time": new_time}
+            )
+
+    return JsonResponse({"date": target_date, "plan": plan_id, "time": new_time})
 
 
 def _habit_detail(habit):

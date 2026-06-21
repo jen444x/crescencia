@@ -24,6 +24,7 @@ urlpatterns = [
     path("journal/<int:entry_id>/delete/", views.delete_journal, name="delete_journal"),
     path("schedules/reorder/", views.reorder_schedules, name="reorder_schedules"),
     path("plans/shift/", views.shift_plans, name="shift_plans"),
+    path("plans/retime/", views.retime_plan, name="retime_plan"),
     path("areas/", views.areas, name="areas"),
     path("areas/<int:area_id>/", views.area, name="area"),
 ]

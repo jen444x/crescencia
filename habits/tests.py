@@ -190,6 +190,71 @@ class ShiftPlansTests(TestCase):
         self.assertEqual(self._shift(minutes=10).status_code, 400)  # missing from_plan
 
 
+class RetimePlanTests(TestCase):
+    """Drag one cycle's time header to an absolute time — today only, no cascade
+    (the single-block companion to the 'running late' shift)."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.tomorrow = self.today + timedelta(days=1)
+        self.early = Plan.objects.create(start_time=time(8, 0))
+        self.mid = Plan.objects.create(start_time=time(9, 0))
+        self.late = Plan.objects.create(start_time=time(10, 0))
+        self.url = reverse("habits:retime_plan")
+
+    def _retime(self, **body):
+        return self.client.post(self.url, data=body, content_type="application/json")
+
+    def _plan_times(self, response):
+        """Map of plan id -> time string from a /plan/ payload (skips unscheduled)."""
+        groups = json.loads(response.content)
+        return {g["id"]: g["time"] for g in groups if g["id"] is not None}
+
+    def _today_times(self):
+        return self._plan_times(self.client.get(reverse("habits:plan")))
+
+    def test_moves_only_the_one_cycle(self):
+        response = self._retime(plan=self.mid.id, time="08:30")
+        self.assertEqual(response.status_code, 200)
+
+        times = self._today_times()
+        self.assertEqual(times[self.early.id], "08:00:00")  # untouched
+        self.assertEqual(times[self.mid.id], "08:30:00")    # moved to the absolute time
+        self.assertEqual(times[self.late.id], "10:00:00")   # NOT cascaded (unlike shift)
+        self.assertEqual(PlanDay.objects.filter(date=self.today).count(), 1)
+
+    def test_is_today_only(self):
+        self._retime(plan=self.mid.id, time="08:30")
+        tomorrow = self._plan_times(
+            self.client.get(reverse("habits:plan"), {"date": self.tomorrow.isoformat()})
+        )
+        self.assertEqual(tomorrow[self.mid.id], "09:00:00")  # recurring time intact
+
+    def test_repeated_retime_replaces_not_stacks(self):
+        self._retime(plan=self.mid.id, time="08:30")
+        self._retime(plan=self.mid.id, time="11:15")
+        # Absolute, so the second drop replaces the first (a shift would stack).
+        self.assertEqual(self._today_times()[self.mid.id], "11:15:00")
+        self.assertEqual(
+            PlanDay.objects.filter(plan=self.mid, date=self.today).count(), 1
+        )
+
+    def test_back_to_recurring_clears_the_override(self):
+        self._retime(plan=self.mid.id, time="08:30")   # create an override
+        self._retime(plan=self.mid.id, time="09:00")   # exactly its recurring time
+        self.assertFalse(
+            PlanDay.objects.filter(plan=self.mid, date=self.today).exists()
+        )
+        self.assertEqual(self._today_times()[self.mid.id], "09:00:00")
+
+    def test_rejects_bad_input(self):
+        self.assertEqual(self._retime(plan=999999, time="08:30").status_code, 400)  # unknown plan
+        self.assertEqual(self._retime(plan=self.mid.id, time="nope").status_code, 400)  # bad time
+        self.assertEqual(self._retime(plan=self.mid.id, time="25:00").status_code, 400)  # impossible
+        self.assertEqual(self._retime(time="08:30").status_code, 400)  # missing plan
+        self.assertEqual(self._retime(plan=self.mid.id).status_code, 400)  # missing time
+
+
 class SkipDayTests(TestCase):
     """Skip every habit for a whole day in one tap (e.g. out of town), without
     erasing anything you'd already completed."""
