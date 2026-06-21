@@ -5,6 +5,7 @@ import LandingPage from "./pages/LandingPage";
 import SignUpPage from "./pages/SignUpPage.tsx";
 // import LogInPage from "./pages/LogInPage.tsx";
 import PlanPage from "./pages/PlanPage.tsx";
+import JournalPage from "./pages/JournalPage.tsx";
 import AreasPage from "./pages/AreasPage.tsx";
 import AreaPage from "./pages/AreaPage.tsx";
 import AddHabitPage from "./pages/AddHabitPage.tsx";
@@ -18,6 +19,7 @@ function App() {
         <Route path="/signup" element={<SignUpPage />} />
         <Route element={<Layout />}>
           <Route path="/plan/" element={<PlanPage />} />
+          <Route path="/journal/" element={<JournalPage />} />
           <Route path="/habits/new" element={<AddHabitPage />} />
           <Route path="/habits/:id" element={<EditHabitPage />} />
           <Route path="/areas" element={<AreasPage />} />

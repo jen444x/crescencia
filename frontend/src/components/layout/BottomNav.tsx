@@ -32,6 +32,24 @@ function BottomNav() {
           <span className="text-xs font-medium">Plan</span>
         </NavLink>
 
+        <NavLink to="/journal/" className={tabClass}>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-6 w-6"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12 6.5C10.5 5 8 4.5 4 5v13c4-.5 6.5 0 8 1.5M12 6.5C13.5 5 16 4.5 20 5v13c-4-.5-6.5 0-8 1.5M12 6.5v13"
+            />
+          </svg>
+          <span className="text-xs font-medium">Journal</span>
+        </NavLink>
+
         <NavLink to="/habits/new" className={tabClass}>
           <svg
             xmlns="http://www.w3.org/2000/svg"
