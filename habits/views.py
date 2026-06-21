@@ -784,6 +784,16 @@ def create_journal(request):
     return JsonResponse(_journal_detail(entry), status=201)
 
 
+def day_journal(request):
+    """Every journal entry for a day (defaults today), oldest first (the model's
+    own ordering). Honors ?date=YYYY-MM-DD like /plan/ and /days/notes/ do."""
+    target_date, date_error = _resolve_date(request.GET.get("date"))
+    if date_error:
+        return date_error
+    entries = JournalEntry.objects.filter(date=target_date)
+    return JsonResponse([_journal_detail(e) for e in entries], safe=False)
+
+
 def logs(request):
     todays_logs = HabitLog.objects.filter(date=timezone.localdate()).order_by("time")
     data = [
