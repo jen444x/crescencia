@@ -812,6 +812,15 @@ def edit_journal(request, entry_id):
     return JsonResponse(_journal_detail(entry))
 
 
+@csrf_exempt
+@require_POST
+def delete_journal(request, entry_id):
+    """Delete one journal entry."""
+    entry = get_object_or_404(JournalEntry, id=entry_id)
+    entry.delete()
+    return JsonResponse({"deleted": entry_id})
+
+
 def logs(request):
     todays_logs = HabitLog.objects.filter(date=timezone.localdate()).order_by("time")
     data = [
