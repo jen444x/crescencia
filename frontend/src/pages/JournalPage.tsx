@@ -1,5 +1,6 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { useToast } from "../components/Toast";
+import ConfirmDialog from "../components/ConfirmDialog";
 
 // A daily journal entry (GET /days/journal/). Free-text about the DAY overall,
 // not tied to any habit — distinct from the per-habit Note model on the Plan
@@ -145,14 +146,93 @@ function DateNav({
   );
 }
 
-// One entry in the timeline: its time, then the body. (Edit/delete arrive in a
-// later step.)
-function EntryCard({ entry }: { entry: JournalEntry }) {
+// One entry in the timeline: its time, then the body, with Edit/Delete. Editing
+// is inline (textarea + Save/Cancel); deleting bubbles up to a confirm dialog at
+// the page level via onRequestDelete.
+function EntryCard({
+  entry,
+  onEdit,
+  onRequestDelete,
+}: {
+  entry: JournalEntry;
+  onEdit: (id: number, body: string) => Promise<boolean>;
+  onRequestDelete: (id: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(entry.body);
+  const [editSaving, setEditSaving] = useState(false);
+
+  async function save() {
+    if (editSaving) return;
+    setEditSaving(true);
+    const ok = await onEdit(entry.id, editText);
+    setEditSaving(false);
+    if (ok) setEditing(false); // on failure, stay open so the text isn't lost
+  }
+
+  if (editing) {
+    return (
+      <div className="rounded-2xl bg-white p-4 shadow-sm">
+        <textarea
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+          rows={3}
+          autoFocus
+          className="w-full resize-none rounded-xl border border-calm-200 bg-calm-50 px-3 py-2 text-sm text-stone-700 focus:border-calm-400 focus:outline-none"
+        />
+        <div className="mt-2 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setEditText(entry.body);
+              setEditing(false);
+            }}
+            className="rounded-xl border border-calm-200 px-3 py-1.5 text-sm font-medium text-calm-700 transition-colors hover:bg-calm-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={!editText.trim() || editSaving}
+            className="rounded-xl bg-calm-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+          >
+            {editSaving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-2xl bg-white p-4 shadow-sm">
-      <span className="text-[11px] font-medium uppercase tracking-wide text-calm-500">
-        {entryTime(entry.created_at)}
-      </span>
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-calm-500">
+          {entryTime(entry.created_at)}
+          {entry.updated_at !== entry.created_at && (
+            <span className="text-stone-400"> &middot; edited</span>
+          )}
+        </span>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              setEditText(entry.body);
+              setEditing(true);
+            }}
+            className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={() => onRequestDelete(entry.id)}
+            className="text-[11px] font-medium uppercase tracking-wide text-stone-400 transition-colors hover:text-rose-500"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
       <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-stone-700">
         {entry.body}
       </p>
@@ -175,28 +255,36 @@ function JournalPage() {
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // The entry pending a delete confirmation (null = dialog closed).
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+
   // Load the viewed day's entries. Today omits the ?date= suffix (like /plan/).
+  // `cancelled` guards against a stale response landing after the day changed.
   useEffect(() => {
     let cancelled = false;
-    const today = isSameDay(viewedDate, new Date());
-    const suffix = today ? "" : `?date=${toYMD(viewedDate)}`;
-    const url = `${import.meta.env.VITE_API_URL}/days/journal/${suffix}`;
 
-    setIsLoading(true);
-    setError("");
-    fetch(url, { method: "GET", headers: {} })
-      .then(async (res) => {
+    async function loadJournal() {
+      setIsLoading(true);
+      setError("");
+
+      const today = isSameDay(viewedDate, new Date());
+      const suffix = today ? "" : `?date=${toYMD(viewedDate)}`;
+      const url = `${import.meta.env.VITE_API_URL}/days/journal/${suffix}`;
+
+      try {
+        const res = await fetch(url, { method: "GET", headers: {} });
         if (!res.ok) throw new Error("Couldn't load your journal.");
         const data: JournalEntry[] = await res.json();
         if (!cancelled) setEntries(data);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err.message ?? "Something went wrong.");
-      })
-      .finally(() => {
+      } catch (err) {
+        if (!cancelled)
+          setError(err instanceof Error ? err.message : "Something went wrong.");
+      } finally {
         if (!cancelled) setIsLoading(false);
-      });
+      }
+    }
 
+    loadJournal();
     return () => {
       cancelled = true;
     };
@@ -228,6 +316,47 @@ function JournalPage() {
       toast("Couldn't save your entry.", { variant: "error" });
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Edit an entry's text. The server returns the updated entry; we swap it in.
+  // Returns whether it saved, so the card knows whether to leave edit mode.
+  async function editEntry(id: number, newBody: string): Promise<boolean> {
+    const body = newBody.trim();
+    if (!body) return false;
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/journal/${id}/edit/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body }),
+        },
+      );
+      if (!res.ok) throw new Error();
+      const updated: JournalEntry = await res.json();
+      setEntries((prev) => prev.map((e) => (e.id === id ? updated : e)));
+      return true;
+    } catch {
+      toast("Couldn't save your changes.", { variant: "error" });
+      return false;
+    }
+  }
+
+  // Delete an entry. Optimistic — drop it from the list now, and put it back if
+  // the request fails (snapshot rollback).
+  async function deleteEntry(id: number) {
+    const snapshot = entries;
+    setEntries((prev) => prev.filter((e) => e.id !== id));
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/journal/${id}/delete/`,
+        { method: "POST" },
+      );
+      if (!res.ok) throw new Error();
+    } catch {
+      setEntries(snapshot);
+      toast("Couldn't delete that entry.", { variant: "error" });
     }
   }
 
@@ -265,7 +394,12 @@ function JournalPage() {
         className={`space-y-3 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
       >
         {entries.map((entry) => (
-          <EntryCard key={entry.id} entry={entry} />
+          <EntryCard
+            key={entry.id}
+            entry={entry}
+            onEdit={editEntry}
+            onRequestDelete={setConfirmDeleteId}
+          />
         ))}
       </div>
     );
@@ -313,6 +447,19 @@ function JournalPage() {
           </button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        title="Delete entry?"
+        message="This journal entry will be removed for good."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          if (confirmDeleteId !== null) deleteEntry(confirmDeleteId);
+          setConfirmDeleteId(null);
+        }}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </div>
   );
 }
