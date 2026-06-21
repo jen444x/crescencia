@@ -67,6 +67,24 @@ type Habit = {
   // That day's notes from the new Note model, attached client-side from
   // /days/notes/ (see notesByHabit). A shared note appears on each of its habits.
   dayNotes?: DayNote[];
+  // Starred "one I care about completing" (vs a planning/helper habit). Drives a
+  // star + the "Important only" filter; nothing about tracking changes.
+  is_important?: boolean;
+  // This row is ONE tier-slot of a habit (a habit can have several at different
+  // times). Backend derives status/done_today per slot.
+  // tier != null  -> Case A: this row IS that tier-slot, at its own time. Show
+  //                  tier_name + tier_value; complete sends `tier`.
+  // tier == null + tiers non-empty -> Case B: a single same-time slot that carries
+  //                  the habit's whole ladder; the row shows the value for the
+  //                  highest tier <= dayTier and completes at that level.
+  // tier == null + tiers empty -> untiered: a plain card, no tier sent.
+  tier?: number | null;        // 1=Roots, 2=Growth; null = untiered OR Case B
+  tier_name?: string | null;
+  tier_value?: string | null;  // Case A only: this slot's value, e.g. "7:30"
+  // The habit's full tier list (every level it has). [] = untiered. Used to look
+  // up a value by level (Case A fallback) and to drive Case B's rung + stretch.
+  tiers?: { level: number; name: string; value: string }[];
+  achieved_tier?: number | null;
 };
 
 // A per-day note from the new Note model (GET /days/notes/). Unlike the legacy
@@ -81,6 +99,84 @@ type DayNote = {
   created_at: string;
   updated_at: string;
 };
+
+// The day-tier toggle's two settings. Roots = the hard/minimum day; Growth = the
+// everyday bar. Levels match the backend's tier levels.
+const ROOTS_LEVEL = 1;
+const GROWTH_LEVEL = 2;
+
+type SlotPlacement = "inline" | "stretch" | "hidden";
+
+// True when a row carries no tiers at all — a plain habit that renders and
+// completes exactly as it always has (no tier label, no tier sent).
+function isUntiered(habit: Habit): boolean {
+  return habit.tier == null && (habit.tiers?.length ?? 0) === 0;
+}
+
+// Case B: a single same-time slot (tier null) that still carries the habit's
+// ladder, so ONE row shows the rung for today and we synthesize stretch cards for
+// the harder rungs. (Untiered habits are tier null too, hence the tiers check.)
+function isCaseB(habit: Habit): boolean {
+  return habit.tier == null && (habit.tiers?.length ?? 0) > 0;
+}
+
+// Case B's "today" rung: the highest tier level <= dayTier, or null if the habit
+// has no rung at/below today (then its inline row is dropped — it only stretches).
+function caseBInlineLevel(habit: Habit, dayTier: number): number | null {
+  const at = (habit.tiers ?? [])
+    .map((t) => t.level)
+    .filter((lvl) => lvl <= dayTier);
+  return at.length ? Math.max(...at) : null;
+}
+
+// The value to print after a row's name (the lighter "· 5 min" span), per case:
+//   Case A: this slot's own value (tier_value, or look it up in tiers by level).
+//   Case B: the value of the highest rung <= dayTier (its "today" version).
+//   untiered: none.
+function rowDisplayValue(habit: Habit, dayTier: number): string | null {
+  if (habit.tier != null) {
+    if (habit.tier_value) return habit.tier_value;
+    return habit.tiers?.find((t) => t.level === habit.tier)?.value ?? null;
+  }
+  if (isCaseB(habit)) {
+    const level = caseBInlineLevel(habit, dayTier);
+    if (level == null) return null;
+    return habit.tiers?.find((t) => t.level === level)?.value ?? null;
+  }
+  return null;
+}
+
+// The tier level a row's complete button should send (undefined = send none):
+//   Case A: this slot's tier.
+//   Case B inline: the highest rung <= dayTier.
+//   untiered: undefined.
+function rowCompleteTier(habit: Habit, dayTier: number): number | undefined {
+  if (habit.tier != null) return habit.tier;
+  if (isCaseB(habit)) return caseBInlineLevel(habit, dayTier) ?? undefined;
+  return undefined;
+}
+
+// Where a slot renders for the chosen day-tier. inlineTierByHabit maps a habit id
+// to the highest Case-A slot level <= dayTier (its "today version"), or null.
+//   untiered -> always inline.
+//   Case A   -> inline at its habit's highest tier <= today; stretch if harder than
+//               today; otherwise hidden (a lower, cascade-covered rung).
+//   Case B   -> inline when it has a rung <= today (one row for the day); plus
+//               separate synthesized stretch cards for its harder rungs (built at
+//               the page level, not here). With no rung <= today it isn't inline.
+function slotPlacement(
+  habit: Habit,
+  inlineTierByHabit: Map<number, number | null>,
+  dayTier: number,
+): SlotPlacement {
+  if (isUntiered(habit)) return "inline";               // untiered slot, always shown
+  if (isCaseB(habit))
+    return caseBInlineLevel(habit, dayTier) != null ? "inline" : "stretch";
+  const inline = inlineTierByHabit.get(habit.id) ?? null;
+  if (habit.tier === inline) return "inline";           // the highest tier <= today
+  if ((habit.tier ?? 0) > dayTier) return "stretch";    // harder than today -> bottom
+  return "hidden";                                      // lower, cascade-covered
+}
 
 // Read a habit's state, tolerating an older payload that only had done_today.
 function isDone(habit: Habit) {
@@ -512,22 +608,67 @@ function RestoreIcon() {
   );
 }
 
+// Filled star marking an "important" habit. Filled (not outline) so it reads as
+// a clear marker at a glance next to the name.
+function StarIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      viewBox="0 0 20 20"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M9.05 2.93c.3-.92 1.6-.92 1.9 0l1.42 4.38a1 1 0 00.95.69h4.6c.97 0 1.37 1.24.59 1.81l-3.73 2.71a1 1 0 00-.36 1.12l1.42 4.38c.3.92-.75 1.69-1.54 1.12l-3.72-2.71a1 1 0 00-1.18 0l-3.72 2.71c-.79.57-1.84-.2-1.54-1.12l1.42-4.38a1 1 0 00-.36-1.12L1.48 9.81c-.78-.57-.38-1.81.59-1.81h4.6a1 1 0 00.95-.69L9.05 2.93z" />
+    </svg>
+  );
+}
+
 function HabitCard({
   habit,
+  dayTier,
+  completeTier,
   onStatus,
   onOpenNote,
   handle,
 }: {
   habit: Habit;
-  onStatus: (habitId: number, status: HabitStatus) => void;
+  // The day's chosen tier, so this card can compute its own display value
+  // (Case A: its own value; Case B: the value of the highest rung <= dayTier).
+  dayTier: number;
+  // The tier level this card's check should send, overriding the dayTier-derived
+  // one. Used by a stretch card so its check completes ITS (harder) rung, not the
+  // habit's "today" rung. undefined -> derive from the row + dayTier.
+  completeTier?: number;
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   // Open the per-day note editor for this habit.
   onOpenNote: (habit: Habit) => void;
   // Optional drag handle (a grip), rendered at the left inside the card.
   handle?: ReactNode;
 }) {
-  const done = isDone(habit);
   const skipped = isSkipped(habit);
   const missed = isMissed(habit);
+  // This card is one tier-slot of a habit. When it carries a tier value (e.g.
+  // "7:30" / "11am" / "5 min") we append it after the name so the slot reads as
+  // "Wake up · 7:30"; an untiered slot has none and renders exactly as before.
+  // A stretch card is pinned to one rung (completeTier), so it shows that rung's
+  // value; otherwise the value follows the case + dayTier.
+  const tierValue =
+    completeTier != null
+      ? (habit.tiers?.find((t) => t.level === completeTier)?.value ?? null)
+      : rowDisplayValue(habit, dayTier);
+  // The level this card completes at: an explicit override (stretch card) or the
+  // row's own dayTier-derived level (Case A: its tier; Case B inline: rung <=
+  // today; untiered: none).
+  const tierToSend = completeTier ?? rowCompleteTier(habit, dayTier);
+  // Done is per-RUNG, not per-habit: a tiered card reads done when the habit's
+  // achieved_tier reaches THIS card's rung — so completing the easy version never
+  // ticks the harder stretch card, and completing the hard one cascades to mark
+  // the easier ones done. Untiered cards fall back to the plain log status.
+  const done =
+    tierToSend != null
+      ? habit.achieved_tier != null && habit.achieved_tier >= tierToSend
+      : isDone(habit);
   // Notes come from the new Note model; fall back to the legacy per-habit string
   // while /days/notes/ rolls out. `hasNotes` drives the note button's accent
   // (the notes themselves are viewed on the habit detail page).
@@ -536,7 +677,7 @@ function HabitCard({
   const hasNotes = dayNotes.length > 0 || legacyNote !== "";
   return (
     <div
-      className={`group flex items-center gap-3 rounded-xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
+      className={`group flex flex-col rounded-xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
         done
           ? "bg-calm-50"
           : skipped
@@ -546,7 +687,18 @@ function HabitCard({
               : "bg-white"
       }`}
     >
+      <div className="flex items-center gap-3">
       {handle}
+      {/* Star marks an "important" habit (one she cares about completing). Dimmed
+          once the habit is done so it doesn't compete with the struck-out name. */}
+      {habit.is_important && (
+        <span className={`shrink-0 ${done ? "text-amber-300" : "text-amber-400"}`}>
+          <StarIcon />
+        </span>
+      )}
+      {/* The name is a plain heading again, so a normal tap bubbles up and opens
+          the habit detail page. A tier-slot appends its value (e.g. "· 7:30") in
+          a lighter span, dimmed further once the slot is done. */}
       <div className="min-w-0 flex-1">
         <h3
           className={`break-words font-medium ${
@@ -560,6 +712,16 @@ function HabitCard({
           }`}
         >
           {habit.name}
+          {tierValue && (
+            <span
+              className={`font-normal ${
+                done ? "text-calm-300" : "text-stone-400"
+              }`}
+            >
+              {" · "}
+              {tierValue}
+            </span>
+          )}
         </h3>
       </div>
 
@@ -623,7 +785,14 @@ function HabitCard({
           aria-pressed={done}
           onClick={(e) => {
             e.stopPropagation();
-            onStatus(habit.id, done ? "PENDING" : "COMPLETED");
+            // Complete THIS card at its own level (Case A: its tier; Case B inline:
+            // the rung <= today; stretch card: its pinned rung). An untiered card
+            // sends no `tier`, exactly as before.
+            onStatus(
+              habit.id,
+              done ? "PENDING" : "COMPLETED",
+              done ? undefined : tierToSend,
+            );
           }}
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
             done
@@ -634,6 +803,7 @@ function HabitCard({
           <CheckIcon />
         </button>
       )}
+      </div>
     </div>
   );
 }
@@ -647,12 +817,16 @@ const SWIPE_MAX = 110; // px the card is allowed to follow your finger
 
 function SwipeableCard({
   habit,
+  dayTier,
+  completeTier,
   onStatus,
   onOpenNote,
   handle,
 }: {
   habit: Habit;
-  onStatus: (habitId: number, status: HabitStatus) => void;
+  dayTier: number;
+  completeTier?: number;
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   onOpenNote: (habit: Habit) => void;
   handle?: ReactNode;
 }) {
@@ -736,6 +910,8 @@ function SwipeableCard({
       >
         <HabitCard
           habit={habit}
+          dayTier={dayTier}
+          completeTier={completeTier}
           onStatus={onStatus}
           onOpenNote={onOpenNote}
           handle={handle}
@@ -750,6 +926,7 @@ function SwipeableCard({
 // Standalone habits have no rail, so their card spans the full width.
 function RowLayout({
   habit,
+  dayTier,
   stepNumber,
   connectBelow,
   onStatus,
@@ -759,9 +936,11 @@ function RowLayout({
   style,
 }: {
   habit: Habit;
+  // Threaded to the card so it can compute its own per-case display value.
+  dayTier: number;
   stepNumber: number | null;
   connectBelow: boolean;
-  onStatus: (habitId: number, status: HabitStatus) => void;
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   onOpenNote: (habit: Habit) => void;
   handle?: ReactNode;
   nodeRef?: (node: HTMLElement | null) => void;
@@ -782,6 +961,7 @@ function RowLayout({
       <div className="min-w-0 flex-1 pb-1.5">
         <SwipeableCard
           habit={habit}
+          dayTier={dayTier}
           onStatus={onStatus}
           onOpenNote={onOpenNote}
           handle={handle}
@@ -795,15 +975,17 @@ function RowLayout({
 // also show their number in the left rail (label only).
 function SortableRow({
   habit,
+  dayTier,
   stepNumber,
   connectBelow,
   onStatus,
   onOpenNote,
 }: {
   habit: Habit;
+  dayTier: number;
   stepNumber: number | null;
   connectBelow: boolean;
-  onStatus: (habitId: number, status: HabitStatus) => void;
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   onOpenNote: (habit: Habit) => void;
 }) {
   const {
@@ -838,6 +1020,7 @@ function SortableRow({
   return (
     <RowLayout
       habit={habit}
+      dayTier={dayTier}
       stepNumber={stepNumber}
       connectBelow={connectBelow}
       onStatus={onStatus}
@@ -857,7 +1040,7 @@ function CompletedRow({
   onOpenNote,
 }: {
   habit: Habit;
-  onStatus: (habitId: number, status: HabitStatus) => void;
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   onOpenNote: (habit: Habit) => void;
 }) {
   const navigate = useNavigate();
@@ -914,7 +1097,7 @@ function CompletedTray({
   onOpenNote,
 }: {
   habits: Habit[];
-  onStatus: (habitId: number, status: HabitStatus) => void;
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   onOpenNote: (habit: Habit) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -975,6 +1158,7 @@ function RoutineBlock({
   routineId,
   name,
   habits,
+  dayTier,
   stepNumber,
   connectBelow,
   onStatus,
@@ -985,11 +1169,13 @@ function RoutineBlock({
   routineId: number;
   name: string;
   habits: Habit[];
+  // The day's chosen tier, threaded to member cards for their shown rung/ladder.
+  dayTier: number;
   // Chain step number + connector, when the routine sits inside a cycle. null
   // step = standalone (no chain), and the block spans the full width.
   stepNumber: number | null;
   connectBelow: boolean;
-  onStatus: (habitId: number, status: HabitStatus) => void;
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   onOpenNote: (habit: Habit) => void;
   onRoutineLog: (routineId: number, status: HabitStatus) => void;
   onEdit: () => void;
@@ -1082,6 +1268,7 @@ function RoutineBlock({
               <li key={habit.id}>
                 <RowLayout
                   habit={habit}
+                  dayTier={dayTier}
                   stepNumber={null}
                   connectBelow={false}
                   onStatus={onStatus}
@@ -1103,6 +1290,9 @@ function RoutineBlock({
 // stays put inside its cycle), not lifted out of the order.
 function PlanBoard({
   plan,
+  dayTier,
+  inlineTierByHabit,
+  importantOnly,
   onStatus,
   onOpenNote,
   onReorder,
@@ -1111,7 +1301,16 @@ function PlanBoard({
   interactive,
 }: {
   plan: Plan;
-  onStatus: (habitId: number, status: HabitStatus) => void;
+  // The day's chosen tier (Roots=1 / Growth=2). Tiered habits with no rung at or
+  // below it are hidden for the day; threaded to each card for its shown rung.
+  dayTier: number;
+  // habit id -> its highest Case-A slot level <= dayTier (its "today" version), or
+  // null. Drives which tier-slot renders inline vs. stretches vs. hides.
+  inlineTierByHabit: Map<number, number | null>;
+  // "Important only" view: when on, non-important habits are hidden too (still
+  // kept in place during reorder, like tier-hidden ones — never dropped).
+  importantOnly: boolean;
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   onOpenNote: (habit: Habit) => void;
   onReorder: (planId: number, orderedHabits: Habit[]) => void;
   onRoutineLog: (routineId: number, status: HabitStatus) => void;
@@ -1129,7 +1328,18 @@ function PlanBoard({
   );
 
   const planId = plan.id;
-  const habits = plan.habits;
+  // Keep only the rows that belong INLINE for the day: untiered rows, the one
+  // Case-A slot at the habit's highest tier <= today, and a Case-B row that has a
+  // rung <= today. Stretch/hidden slots are simply absent here (their harder
+  // versions surface in the Stretch section). "Important only" narrows further.
+  // They're dropped from DISPLAY only — every list below (segments, active set,
+  // drag rebuild) is built from this set, so reorder only touches what's shown;
+  // the hidden ones are re-inserted in place when persisting (see handleDragEnd).
+  const habits = plan.habits.filter(
+    (habit) =>
+      slotPlacement(habit, inlineTierByHabit, dayTier) === "inline" &&
+      (!importantOnly || habit.is_important),
+  );
 
   // Not reorderable when it's the "Anytime" group (no schedule rows) or any day
   // that isn't today (see `interactive` above).
@@ -1162,6 +1372,7 @@ function PlanBoard({
         routineId={seg.routineId}
         name={seg.name}
         habits={seg.habits}
+        dayTier={dayTier}
         stepNumber={seg.stepNumber}
         connectBelow={seg.connectBelow}
         onStatus={onStatus}
@@ -1185,6 +1396,7 @@ function PlanBoard({
               {/* Non-draggable, but still shows chain step numbers/connectors. */}
               <RowLayout
                 habit={seg.row.habit}
+                dayTier={dayTier}
                 stepNumber={seg.row.stepNumber}
                 connectBelow={seg.row.connectBelow}
                 onStatus={onStatus}
@@ -1212,8 +1424,18 @@ function PlanBoard({
 
     const newActive = arrayMove(activeHabits, from, to);
     let next = 0;
+    // Rebuild the FULL list so the persisted order stays coherent: routine and
+    // done members keep their spot, non-inline slots (stretch/hidden) and
+    // important-only-hidden rows stay put (not shown, not reordered, but must NOT
+    // be dropped from the order), and the loose visible actives take their new
+    // order. The condition mirrors the `habits` display filter above.
     const newFull = plan.habits.map((habit) =>
-      habit.routine != null || isDone(habit) ? habit : newActive[next++],
+      habit.routine != null ||
+      isDone(habit) ||
+      slotPlacement(habit, inlineTierByHabit, dayTier) !== "inline" ||
+      (importantOnly && !habit.is_important)
+        ? habit
+        : newActive[next++],
     );
     onReorder(planId, newFull);
   }
@@ -1235,6 +1457,7 @@ function PlanBoard({
               <li key={seg.row.habit.id}>
                 <SortableRow
                   habit={seg.row.habit}
+                  dayTier={dayTier}
                   stepNumber={seg.row.stepNumber}
                   connectBelow={seg.row.connectBelow}
                   onStatus={onStatus}
@@ -2398,6 +2621,27 @@ function PlansPage() {
   const [viewedDate, setViewedDate] = useState(() => startOfDay(new Date()));
   const isViewingToday = isSameDay(viewedDate, new Date());
 
+  // The day's chosen tier (Roots=1 / Growth=2), the bar every tiered habit is
+  // shown + completed at. Defaults to Growth and persists across reloads, so the
+  // toggle stays where you left it. A tiered habit shows its highest rung at or
+  // below this; one with no qualifying rung is hidden for the day.
+  const [dayTier, setDayTier] = useState<number>(
+    () => Number(localStorage.getItem("dayTier")) || GROWTH_LEVEL,
+  );
+  useEffect(() => {
+    localStorage.setItem("dayTier", String(dayTier));
+  }, [dayTier]);
+
+  // "Important only" view: when on, the plan hides every non-important habit (a
+  // low-energy day where you just want the few that matter). Pure display filter
+  // — no refetch, nothing logged differently. Persisted like the day-tier.
+  const [importantOnly, setImportantOnly] = useState(
+    () => localStorage.getItem("importantOnly") === "1",
+  );
+  useEffect(() => {
+    localStorage.setItem("importantOnly", importantOnly ? "1" : "0");
+  }, [importantOnly]);
+
   // Bump to force a re-fetch of the current day (e.g. after a "running late" shift).
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -2495,11 +2739,25 @@ function PlansPage() {
   // Set a habit's status for today (complete / skip / reset). We update the UI
   // FIRST (optimistic) so it feels instant, then tell the backend. If the
   // request fails we restore the snapshot, so the UI never lies.
-  async function setHabitStatus(habitId: number, status: HabitStatus) {
+  async function setHabitStatus(
+    habitId: number,
+    status: HabitStatus,
+    tier?: number,
+  ) {
     const snapshot = plans;
     setPlans((prev) => applyStatus(prev, habitId, status));
 
     try {
+      // Build the body, then add the optional `tier` only on a tiered completion
+      // (the backend honors it just with COMPLETED). Untiered habits pass no
+      // tier and POST exactly as before.
+      const body: {
+        status: HabitStatus;
+        date?: string;
+        tier?: number;
+      } = isViewingToday ? { status } : { status, date: toYMD(viewedDate) };
+      if (status === "COMPLETED" && tier != null) body.tier = tier;
+
       const res = await fetch(
         `${import.meta.env.VITE_API_URL}/habits/${habitId}/log/`,
         {
@@ -2507,9 +2765,7 @@ function PlansPage() {
           headers: { "Content-Type": "application/json" },
           // Omit date on today so the server stamps its own "today" (its call to
           // make, per the contract); send it only when logging another day.
-          body: JSON.stringify(
-            isViewingToday ? { status } : { status, date: toYMD(viewedDate) },
-          ),
+          body: JSON.stringify(body),
         },
       );
       if (!res.ok) throw new Error("Request failed");
@@ -3034,16 +3290,102 @@ function PlansPage() {
     [plans, notesByHabit],
   );
 
+  // habit id -> the highest Case-A tier-slot level (h.tier, the non-null ones)
+  // that is <= dayTier, or null when none qualify. This picks which of a habit's
+  // several tier-slots is its "today" version: the one that renders inline, while
+  // lower slots are cascade-hidden and higher ones stretch. Untiered + Case-B
+  // rows aren't in here (they carry no per-slot tier); slotPlacement handles them.
+  const inlineTierByHabit = useMemo(() => {
+    const byHabit = new Map<number, number[]>();
+    for (const plan of visiblePlans)
+      for (const h of plan.habits)
+        if (h.tier != null) {
+          const a = byHabit.get(h.id) ?? [];
+          a.push(h.tier);
+          byHabit.set(h.id, a);
+        }
+    const inline = new Map<number, number | null>();
+    for (const [hid, tiers] of byHabit) {
+      const ok = tiers.filter((t) => t <= dayTier);
+      inline.set(hid, ok.length ? Math.max(...ok) : null);
+    }
+    return inline;
+  }, [visiblePlans, dayTier]);
+
+  // The same plans, but keeping only the rows that render INLINE for the day:
+  // untiered rows, each habit's one Case-A slot at its highest tier <= today, and
+  // a Case-B row with a rung <= today. Stretch/hidden slots are dropped; any cycle
+  // thereby emptied is removed. This is what we COUNT and decide emptiness from, so
+  // headers, the skip-day logic, and the empty state all match what the cards
+  // render. PlanBoard still gets the FULL `visiblePlans` list (it filters for
+  // display itself) so a reorder never drops a hidden habit from state — only what
+  // shows is affected, never what's stored.
+  const tierVisiblePlans = useMemo(
+    () =>
+      visiblePlans
+        .map((plan) => ({
+          ...plan,
+          habits: plan.habits.filter(
+            (habit) =>
+              slotPlacement(habit, inlineTierByHabit, dayTier) === "inline",
+          ),
+        }))
+        .filter((plan) => plan.habits.length > 0),
+    [visiblePlans, inlineTierByHabit, dayTier],
+  );
+
+  // What actually renders: the tier-visible plans, further narrowed to important
+  // habits when "Important only" is on (empty groups dropped). A pure view filter
+  // layered on top of the tier filter — the skip-day/empty logic below still uses
+  // the full `tierVisiblePlans`, so the toggle never changes what's stored.
+  const shownPlans = useMemo(
+    () =>
+      !importantOnly
+        ? tierVisiblePlans
+        : tierVisiblePlans
+            .map((plan) => ({
+              ...plan,
+              habits: plan.habits.filter((habit) => habit.is_important),
+            }))
+            .filter((plan) => plan.habits.length > 0),
+    [tierVisiblePlans, importantOnly],
+  );
+
+  // The "Stretch" section: harder versions she can opt into. Two sources, in plan
+  // order: (1) Case-A slots that placed as "stretch" (a tier above today that lives
+  // at its own time), each completed at its own `tier`; (2) synthesized entries for
+  // every Case-B rung ABOVE today (level > dayTier) — same habit, that rung's value,
+  // completed at that level. `level` is the tier each card shows + sends. Honors
+  // "Important only" like the inline groups.
+  const stretchSlots = useMemo(() => {
+    const out: { habit: Habit; level: number }[] = [];
+    for (const plan of visiblePlans) {
+      for (const habit of plan.habits) {
+        if (importantOnly && !habit.is_important) continue;
+        if (habit.tier != null) {
+          // Case A: this slot stretches when it's a harder tier than today.
+          if (slotPlacement(habit, inlineTierByHabit, dayTier) === "stretch")
+            out.push({ habit, level: habit.tier });
+        } else if (isCaseB(habit)) {
+          // Case B: one synthesized card per rung above today ("do more").
+          for (const t of habit.tiers ?? [])
+            if (t.level > dayTier) out.push({ habit, level: t.level });
+        }
+      }
+    }
+    return out;
+  }, [visiblePlans, inlineTierByHabit, dayTier, importantOnly]);
+
   // Has the whole day been skipped? (every habit resolved to skipped or done,
   // with at least one skip). If so, the day-level control flips from "Skip day"
   // to a persistent "Reset day" undo — so you can un-skip even after the toast
   // has faded, not just in the few seconds it's on screen.
-  const anySkipped = visiblePlans.some((plan) =>
+  const anySkipped = tierVisiblePlans.some((plan) =>
     plan.habits.some((habit) => isSkipped(habit)),
   );
   const dayFullySkipped =
     anySkipped &&
-    visiblePlans.every((plan) =>
+    tierVisiblePlans.every((plan) =>
       plan.habits.every((habit) => isSkipped(habit) || isDone(habit)),
     );
 
@@ -3063,7 +3405,7 @@ function PlansPage() {
         <p className="text-red-500 text-sm">{error}</p>
       </div>
     );
-  } else if (visiblePlans.length === 0) {
+  } else if (tierVisiblePlans.length === 0 && stretchSlots.length === 0) {
     body = (
       <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
         <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-accent-100 flex items-center justify-center">
@@ -3084,7 +3426,7 @@ function PlansPage() {
       <div
         className={`space-y-6 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
       >
-        {visiblePlans.map((plan) => {
+        {shownPlans.map((plan) => {
           const key = plan.id ?? "anytime";
           const isNow =
             isViewingToday && plan.id != null && plan.id === nowBlockId;
@@ -3092,18 +3434,29 @@ function PlansPage() {
           // its time + progress in the header. Default expanded.
           const collapsed = collapsedCycles.has(String(key));
           // Progress for the collapsed header — a member counts as handled when
-          // it's done OR skipped (same rule RoutineBlock uses).
+          // it's done OR skipped (same rule RoutineBlock uses). Counts the
+          // shown habits, so the header matches the cards (a Roots day excludes
+          // hidden Growth; "Important only" excludes the rest).
           const total = plan.habits.length;
           const handled = plan.habits.filter(
             (h) => isDone(h) || isSkipped(h),
           ).length;
+          // PlanBoard renders from the FULL plan (all this cycle's habits, hidden
+          // ones included) and does its own tier filtering for display — so a
+          // reorder rebuilds the whole list and never drops a hidden habit from
+          // state. Fall back to the tier-filtered `plan` if no full match (can't
+          // happen, but keeps the type non-null).
+          const fullPlan = visiblePlans.find((p) => p.id === plan.id) ?? plan;
           // The habit list is identical whether or not the block is retime-able;
           // build it once and drop it into the right wrapper below. Drag the grip
           // to reorder, swipe a card left to skip, tap the circle to complete,
           // tap the note icon to jot a day note; completed ones collapse in place.
           const planBoard = (
             <PlanBoard
-              plan={plan}
+              plan={fullPlan}
+              dayTier={dayTier}
+              inlineTierByHabit={inlineTierByHabit}
+              importantOnly={importantOnly}
               onStatus={setHabitStatus}
               onOpenNote={setEditingNote}
               onReorder={reorderPlan}
@@ -3226,6 +3579,37 @@ function PlansPage() {
             </section>
           );
         })}
+
+        {/* Stretch: the day's harder versions, gathered at the bottom. A Case-A
+            slot above today plus each Case-B rung above today shows here as a
+            standalone card — swipe to skip, star, tap to open, and a check that
+            completes THAT rung (completeTier). Only rendered when there's at least
+            one, so a plain day shows nothing extra. */}
+        {stretchSlots.length > 0 && (
+          <section className="pt-1">
+            <div className="mb-2 flex items-baseline gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                Stretch
+              </span>
+              <span className="text-[11px] text-stone-300">
+                harder versions — do more if you want
+              </span>
+            </div>
+            <ul className="space-y-1.5">
+              {stretchSlots.map(({ habit, level }) => (
+                <li key={`stretch-${habit.id}-${level}`}>
+                  <SwipeableCard
+                    habit={habit}
+                    dayTier={dayTier}
+                    completeTier={level}
+                    onStatus={setHabitStatus}
+                    onOpenNote={setEditingNote}
+                  />
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     );
   }
@@ -3253,6 +3637,51 @@ function PlansPage() {
                 className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
               >
                 + New routine
+              </button>
+              {/* Day-tier toggle: Roots = the hard/minimum day, Growth = the
+                  everyday bar. Sets which rung every tiered habit shows + logs
+                  at; a Growth-only habit hides on a Roots day. The active side is
+                  highlighted; same small uppercase chrome as the row's controls. */}
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => setDayTier(ROOTS_LEVEL)}
+                  aria-pressed={dayTier === ROOTS_LEVEL}
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide transition-colors ${
+                    dayTier === ROOTS_LEVEL
+                      ? "bg-calm-100 text-calm-700"
+                      : "text-calm-400 hover:text-calm-600"
+                  }`}
+                >
+                  Roots
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDayTier(GROWTH_LEVEL)}
+                  aria-pressed={dayTier === GROWTH_LEVEL}
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide transition-colors ${
+                    dayTier === GROWTH_LEVEL
+                      ? "bg-calm-100 text-calm-700"
+                      : "text-calm-400 hover:text-calm-600"
+                  }`}
+                >
+                  Growth
+                </button>
+              </div>
+              {/* "Important only": hide everything except starred habits, for a
+                  low-energy day when you just want the few that matter. Pure view
+                  filter — toggles instantly, persists, changes nothing stored. */}
+              <button
+                type="button"
+                onClick={() => setImportantOnly((v) => !v)}
+                aria-pressed={importantOnly}
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide transition-colors ${
+                  importantOnly
+                    ? "bg-amber-100 text-amber-700"
+                    : "text-calm-400 hover:text-calm-600"
+                }`}
+              >
+                Important only
               </button>
               {/* Only today is reorderable, so only offer the reset there, and
                   only once something has actually moved from the load order. */}
