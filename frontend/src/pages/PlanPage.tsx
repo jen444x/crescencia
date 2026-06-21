@@ -2433,6 +2433,21 @@ function PlansPage() {
     [plans],
   );
 
+  // Section keys (plan id, or "anytime") that are collapsed to just their time
+  // header. Session-only: plain state, so it resets on reload. Default expanded.
+  const [collapsedCycles, setCollapsedCycles] = useState<Set<string>>(
+    new Set(),
+  );
+  // Toggle one section collapsed/expanded. Build a NEW Set so React re-renders.
+  function toggleCollapsed(key: string) {
+    setCollapsedCycles((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   // One DOM node per section, so we can scroll the current block into view.
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
   // Only auto-scroll once (on first load) — not every time a toggle re-renders.
@@ -3073,6 +3088,15 @@ function PlansPage() {
           const key = plan.id ?? "anytime";
           const isNow =
             isViewingToday && plan.id != null && plan.id === nowBlockId;
+          // Session-only collapse: hide this cycle's habit list and show just
+          // its time + progress in the header. Default expanded.
+          const collapsed = collapsedCycles.has(String(key));
+          // Progress for the collapsed header — a member counts as handled when
+          // it's done OR skipped (same rule RoutineBlock uses).
+          const total = plan.habits.length;
+          const handled = plan.habits.filter(
+            (h) => isDone(h) || isSkipped(h),
+          ).length;
           // The habit list is identical whether or not the block is retime-able;
           // build it once and drop it into the right wrapper below. Drag the grip
           // to reorder, swipe a card left to skip, tap the circle to complete,
@@ -3119,6 +3143,22 @@ function PlansPage() {
                   onRetime={retimePlan}
                   header={
                     <div className="flex items-center gap-3 mb-2">
+                      {/* Collapse/expand this cycle. Carries data-no-retime so
+                          tapping it toggles instead of starting a time-drag. */}
+                      <button
+                        type="button"
+                        data-no-retime
+                        onClick={() => toggleCollapsed(String(key))}
+                        aria-expanded={!collapsed}
+                        aria-label={
+                          collapsed
+                            ? `Expand ${formatTime(plan.time)}`
+                            : `Collapse ${formatTime(plan.time)}`
+                        }
+                        className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
+                      >
+                        <ChevronIcon open={!collapsed} />
+                      </button>
                       {/* Time label + a drag hint; the whole strip is grabbable. */}
                       <span
                         className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
@@ -3126,9 +3166,15 @@ function PlansPage() {
                         }`}
                       >
                         {formatTime(plan.time)}
-                        <span className="text-calm-300">
-                          <RetimeHandleIcon />
-                        </span>
+                        {collapsed ? (
+                          <span className="normal-case tracking-normal text-calm-400">
+                            · {handled}/{total} done
+                          </span>
+                        ) : (
+                          <span className="text-calm-300">
+                            <RetimeHandleIcon />
+                          </span>
+                        )}
                       </span>
                       {isNow && (
                         <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
@@ -3144,18 +3190,37 @@ function PlansPage() {
                     </div>
                   }
                 >
-                  {planBoard}
+                  {collapsed ? null : planBoard}
                 </RetimeBlock>
               ) : (
                 // "Anytime" group: no time, so nothing to retime.
                 <>
                   <div className="flex items-center gap-3 mb-2">
-                    <span className="text-xs font-medium uppercase tracking-wide text-calm-600">
+                    {/* Collapse/expand toggle (no retime here, so no opt-out). */}
+                    <button
+                      type="button"
+                      onClick={() => toggleCollapsed(String(key))}
+                      aria-expanded={!collapsed}
+                      aria-label={
+                        collapsed
+                          ? `Expand ${formatTime(plan.time)}`
+                          : `Collapse ${formatTime(plan.time)}`
+                      }
+                      className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
+                    >
+                      <ChevronIcon open={!collapsed} />
+                    </button>
+                    <span className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-calm-600">
                       {formatTime(plan.time)}
+                      {collapsed && (
+                        <span className="normal-case tracking-normal text-calm-400">
+                          · {handled}/{total} done
+                        </span>
+                      )}
                     </span>
                     <div className="flex-1 h-px bg-calm-200" />
                   </div>
-                  {planBoard}
+                  {!collapsed && planBoard}
                 </>
               )}
             </section>
