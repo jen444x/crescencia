@@ -673,6 +673,18 @@ def day_notes(request):
     return JsonResponse([_note_detail(n) for n in notes], safe=False)
 
 
+def habit_notes(request, habit_id):
+    """Every note for one habit on a day (defaults today). Powers the habit
+    detail page's notes section, where a date picker lets you browse any day.
+    Honors ?date=YYYY-MM-DD like /days/notes/ does."""
+    target_date, date_error = _resolve_date(request.GET.get("date"))
+    if date_error:
+        return date_error
+    habit = get_object_or_404(Habit, id=habit_id)
+    notes = Note.objects.filter(habits=habit, date=target_date).prefetch_related("habits")
+    return JsonResponse([_note_detail(n) for n in notes], safe=False)
+
+
 @csrf_exempt
 @require_POST
 def create_note(request):
