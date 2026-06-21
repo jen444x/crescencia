@@ -1726,23 +1726,40 @@ function RetimeBlock({
 
 // Floating bottom-right controls: "Now" jumps to the current time block (the page
 // auto-scrolls there on load, but you can re-center anytime), and "↑" goes back
-// to the top. "Now" only shows on today's view; "↑" appears once you've scrolled
-// down.
-function FloatingControls({ onGoToNow }: { onGoToNow?: () => void }) {
+// to the top. "Now" only shows on today's view, and hides once you're already
+// parked on the now block (the same way "↑" hides at the top); "↑" appears once
+// you've scrolled down.
+function FloatingControls({
+  onGoToNow,
+  getNowTop,
+}: {
+  onGoToNow?: () => void;
+  getNowTop?: () => number | null;
+}) {
   const [scrolled, setScrolled] = useState(false);
+  const [atNow, setAtNow] = useState(false);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 300);
+    const onScroll = () => {
+      setScrolled(window.scrollY > 300);
+      // We're "at now" once the now block's top sits at/near the viewport top —
+      // the analogue of "at top" for the "↑" button. scrollToNow lands the block
+      // at the top with a ~24px scroll-mt-6 offset, so a small threshold above
+      // that absorbs that gap plus sub-pixel rounding.
+      const nowTop = getNowTop?.() ?? null;
+      setAtNow(nowTop != null && nowTop <= 80);
+    };
     onScroll(); // we may already be scrolled (auto-scroll-to-now ran on load)
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [getNowTop]);
 
-  if (!onGoToNow && !scrolled) return null;
+  const showNow = !!onGoToNow && !atNow;
+  if (!showNow && !scrolled) return null;
 
   return (
     <div className="fixed bottom-28 right-6 z-20 flex flex-col items-end gap-2">
-      {onGoToNow && (
+      {showNow && (
         <button
           type="button"
           onClick={onGoToNow}
@@ -3132,6 +3149,12 @@ function PlansPage() {
       <FloatingControls
         onGoToNow={
           isViewingToday && nowBlockId != null ? scrollToNow : undefined
+        }
+        getNowTop={() =>
+          nowBlockId != null
+            ? sectionRefs.current[String(nowBlockId)]?.getBoundingClientRect()
+                .top ?? null
+            : null
         }
       />
 
