@@ -794,6 +794,24 @@ def day_journal(request):
     return JsonResponse([_journal_detail(e) for e in entries], safe=False)
 
 
+@csrf_exempt
+@require_POST
+def edit_journal(request, entry_id):
+    """Edit one journal entry's text. Body: {"body": "..."}."""
+    entry = get_object_or_404(JournalEntry, id=entry_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    text = body.get("body")
+    if not isinstance(text, str) or not text.strip():
+        return JsonResponse({"error": "'body' is required."}, status=400)
+    entry.body = text.strip()
+    entry.save()
+    return JsonResponse(_journal_detail(entry))
+
+
 def logs(request):
     todays_logs = HabitLog.objects.filter(date=timezone.localdate()).order_by("time")
     data = [
