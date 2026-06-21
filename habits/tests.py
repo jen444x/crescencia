@@ -5,7 +5,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from .models import Habit, HabitLog, Note, Plan, PlanDay, Schedule
+from .models import Habit, HabitLog, Note, Plan, PlanDay, Routine, Schedule
 
 
 class BrowseDaysTests(TestCase):
@@ -523,3 +523,220 @@ class NoteApiTests(TestCase):
         data = json.loads(resp.content)
         self.assertTrue(data["note_deleted"])  # last habit removed -> note gone
         self.assertEqual(Note.objects.count(), 0)
+
+
+class RoutineApiTests(TestCase):
+    """Create / list / rename / delete a routine, manage its membership, and
+    confirm `/plan/` and reorder expose the routine tag."""
+
+    def setUp(self):
+        self.plan = Plan.objects.create()
+        self.brush = Habit.objects.create(name="Brush teeth")
+        self.wash = Habit.objects.create(name="Wash face")
+        self.s_brush = Schedule.objects.create(habit=self.brush, plan=self.plan, order=1)
+        self.s_wash = Schedule.objects.create(habit=self.wash, plan=self.plan, order=2)
+
+    def _create(self, **body):
+        return self.client.post(
+            reverse("habits:create_routine"),
+            data=body, content_type="application/json",
+        )
+
+    def test_create_empty_routine(self):
+        resp = self._create(name="Morning routine")
+        self.assertEqual(resp.status_code, 201)
+        data = json.loads(resp.content)
+        self.assertEqual(data["name"], "Morning routine")
+        self.assertEqual(data["schedules"], [])
+        self.assertEqual(Routine.objects.count(), 1)
+
+    def test_create_with_initial_members(self):
+        resp = self._create(name="Morning", schedules=[self.s_brush.id, self.s_wash.id])
+        self.assertEqual(resp.status_code, 201)
+        data = json.loads(resp.content)
+        self.assertCountEqual(data["schedules"], [self.s_brush.id, self.s_wash.id])
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.routine_id, data["id"])
+
+    def test_create_requires_name(self):
+        self.assertEqual(self._create(name="   ").status_code, 400)
+        self.assertEqual(self._create(schedules=[self.s_brush.id]).status_code, 400)
+
+    def test_create_rejects_long_name(self):
+        self.assertEqual(self._create(name="x" * 101).status_code, 400)
+
+    def test_create_rejects_unknown_schedule(self):
+        resp = self._create(name="Morning", schedules=[999999])
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(Routine.objects.count(), 0)  # nothing created on failure
+
+    def test_list_routines(self):
+        Routine.objects.create(name="Night")
+        Routine.objects.create(name="Gym")
+        data = json.loads(self.client.get(reverse("habits:routines")).content)
+        self.assertEqual([r["name"] for r in data], ["Gym", "Night"])  # name-sorted
+
+    def test_edit_renames(self):
+        r = Routine.objects.create(name="Mrning")
+        resp = self.client.post(
+            reverse("habits:edit_routine", args=[r.id]),
+            data={"name": "Morning"}, content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        r.refresh_from_db()
+        self.assertEqual(r.name, "Morning")
+
+    def test_edit_rejects_blank(self):
+        r = Routine.objects.create(name="Morning")
+        resp = self.client.post(
+            reverse("habits:edit_routine", args=[r.id]),
+            data={"name": ""}, content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_delete_ungroups_members_but_keeps_habits(self):
+        r = Routine.objects.create(name="Morning")
+        Schedule.objects.filter(id=self.s_brush.id).update(routine=r)
+        resp = self.client.post(reverse("habits:delete_routine", args=[r.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.content)["ungrouped"], 1)
+        self.assertEqual(Routine.objects.count(), 0)
+        self.s_brush.refresh_from_db()
+        self.assertIsNone(self.s_brush.routine_id)        # ungrouped...
+        self.assertTrue(Schedule.objects.filter(id=self.s_brush.id).exists())  # ...not deleted
+        self.assertTrue(Habit.objects.filter(id=self.brush.id).exists())
+
+    def test_members_add_and_remove(self):
+        r = Routine.objects.create(name="Morning")
+        url = reverse("habits:routine_members", args=[r.id])
+        self.client.post(
+            url, data={"add": [self.s_brush.id, self.s_wash.id]},
+            content_type="application/json",
+        )
+        self.s_brush.refresh_from_db(); self.s_wash.refresh_from_db()
+        self.assertEqual(self.s_brush.routine_id, r.id)
+        self.assertEqual(self.s_wash.routine_id, r.id)
+
+        self.client.post(
+            url, data={"remove": [self.s_brush.id]}, content_type="application/json",
+        )
+        self.s_brush.refresh_from_db()
+        self.assertIsNone(self.s_brush.routine_id)
+
+    def test_members_remove_only_from_this_routine(self):
+        # s_brush belongs to routine A; removing it via routine B must not touch it.
+        a = Routine.objects.create(name="A")
+        b = Routine.objects.create(name="B")
+        Schedule.objects.filter(id=self.s_brush.id).update(routine=a)
+        self.client.post(
+            reverse("habits:routine_members", args=[b.id]),
+            data={"remove": [self.s_brush.id]}, content_type="application/json",
+        )
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.routine_id, a.id)  # still in A
+
+    def test_members_requires_something(self):
+        r = Routine.objects.create(name="Morning")
+        resp = self.client.post(
+            reverse("habits:routine_members", args=[r.id]),
+            data={}, content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_plan_exposes_routine_fields(self):
+        r = Routine.objects.create(name="Morning routine")
+        Schedule.objects.filter(id=self.s_brush.id).update(routine=r)
+        groups = json.loads(self.client.get(reverse("habits:plan")).content)
+        by_id = {h["id"]: h for g in groups for h in g["habits"]}
+        self.assertEqual(by_id[self.brush.id]["routine"], r.id)
+        self.assertEqual(by_id[self.brush.id]["routine_name"], "Morning routine")
+        self.assertIsNone(by_id[self.wash.id]["routine"])        # ungrouped habit
+        self.assertIsNone(by_id[self.wash.id]["routine_name"])
+
+    def test_reorder_can_set_routine(self):
+        r = Routine.objects.create(name="Morning")
+        resp = self.client.post(
+            reverse("habits:reorder_schedules"),
+            data={"items": [{"id": self.s_brush.id, "order": 1, "routine": r.id}]},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.content)["updated"][0]["routine"], r.id)
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.routine_id, r.id)
+
+    def test_reorder_rejects_unknown_routine(self):
+        resp = self.client.post(
+            reverse("habits:reorder_schedules"),
+            data={"items": [{"id": self.s_brush.id, "order": 1, "routine": 999999}]},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+
+class RoutineLogTests(TestCase):
+    """`routines/<id>/log/` fans one status out to every member habit — the
+    block's complete / skip / undo action."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        self.plan = Plan.objects.create()
+        self.routine = Routine.objects.create(name="Morning")
+        self.brush = Habit.objects.create(name="Brush teeth")
+        self.wash = Habit.objects.create(name="Wash face")
+        Schedule.objects.create(habit=self.brush, plan=self.plan, order=1, routine=self.routine)
+        Schedule.objects.create(habit=self.wash, plan=self.plan, order=2, routine=self.routine)
+        self.url = reverse("habits:log_routine", args=[self.routine.id])
+
+    def _log(self, **body):
+        return self.client.post(self.url, data=body, content_type="application/json")
+
+    def _status(self, habit, date=None):
+        return HabitLog.objects.get(habit=habit, date=date or self.today).status
+
+    def test_complete_block_marks_all_completed(self):
+        resp = self._log(status="COMPLETED")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.content)["updated"], 2)
+        self.assertEqual(self._status(self.brush), "COMPLETED")
+        self.assertEqual(self._status(self.wash), "COMPLETED")
+
+    def test_skip_block_marks_all_skipped(self):
+        self._log(status="SKIPPED")
+        self.assertEqual(self._status(self.brush), "SKIPPED")
+        self.assertEqual(self._status(self.wash), "SKIPPED")
+
+    def test_undo_block_resets_all_pending(self):
+        self._log(status="COMPLETED")
+        self._log(status="PENDING")
+        self.assertEqual(self._status(self.brush), "PENDING")
+        self.assertEqual(self._status(self.wash), "PENDING")
+
+    def test_complete_overwrites_existing_member_log(self):
+        HabitLog.objects.create(habit=self.brush, date=self.today, status="SKIPPED")
+        self._log(status="COMPLETED")
+        self.assertEqual(self._status(self.brush), "COMPLETED")
+
+    def test_log_upserts_one_per_habit_per_day(self):
+        self._log(status="COMPLETED")
+        self._log(status="SKIPPED")
+        self.assertEqual(HabitLog.objects.filter(date=self.today).count(), 2)
+
+    def test_log_targets_the_given_day(self):
+        self._log(status="COMPLETED", date=self.yesterday.isoformat())
+        self.assertEqual(self._status(self.brush, self.yesterday), "COMPLETED")
+        self.assertFalse(HabitLog.objects.filter(habit=self.brush, date=self.today).exists())
+
+    def test_rejects_bad_status(self):
+        self.assertEqual(self._log(status="MISSED").status_code, 400)
+        self.assertEqual(self._log(status="bogus").status_code, 400)
+
+    def test_empty_routine_is_a_noop(self):
+        empty = Routine.objects.create(name="Empty")
+        resp = self.client.post(
+            reverse("habits:log_routine", args=[empty.id]),
+            data={"status": "COMPLETED"}, content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.content)["updated"], 0)

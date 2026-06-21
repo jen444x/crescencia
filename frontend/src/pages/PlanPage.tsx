@@ -48,6 +48,11 @@ type Habit = {
   schedule_id?: number | null;
   name: string;
   chain?: number | null;
+  // The Routine (group) this habit belongs to + its display name, for the
+  // collapsible block on the Plan page. null when the habit isn't grouped.
+  // Independent of `chain`: a habit can be in a routine, a chain, both, or neither.
+  routine?: number | null;
+  routine_name?: string | null;
   order?: number;
   // The day's status from the backend. `done_today` is the convenience boolean
   // (status === "COMPLETED"); we keep both since the API sends both. Can be
@@ -204,38 +209,71 @@ type Row = {
   connectBelow: boolean;
 };
 
-// Walk a plan's habits (already in display order) and tag each one with its
-// chain step number + whether it links to the next row.
-function buildRows(habits: Habit[]): Row[] {
-  const counts = new Map<number, number>(); // chain id -> steps seen so far
-  return habits.map((habit, i) => {
-    let stepNumber: number | null = null;
-    if (habit.chain != null) {
-      const n = (counts.get(habit.chain) ?? 0) + 1;
-      counts.set(habit.chain, n);
-      stepNumber = n;
-    }
-    const next = habits[i + 1];
-    const connectBelow =
-      habit.chain != null && next != null && next.chain === habit.chain;
-    return { habit, stepNumber, connectBelow };
-  });
-}
-
-// A time block renders as an ordered list of segments: either a single active
-// (not-yet-completed) habit, or a "done" group — a RUN of consecutive completed
-// habits collapsed together IN PLACE. So finishing the top 3 makes one "3 done"
-// group at the top; if a pending habit sits between completed ones, you get two
-// separate groups in their own spots (they don't merge across the gap).
+// A time block renders as an ordered list of segments, IN PLACE (display order):
+//   - "active":  a single not-yet-completed habit
+//   - "done":    a RUN of consecutive completed habits, collapsed into one chip
+//   - "routine": a RUN of consecutive habits sharing a routine, shown as one
+//     collapsible block — so a routine stays put inside its cycle (e.g. between
+//     "shower" and "lotion") instead of being lifted out of the order.
+// A routine counts as ONE step in its chain, so step numbers stay sensible
+// (shower 1 · morning routine 2 · lotion 3), and completed routine members stay
+// in their block rather than collapsing into the "done" chip.
 type Segment =
   | { kind: "active"; row: Row }
-  | { kind: "done"; key: string; habits: Habit[] };
+  | { kind: "done"; key: string; habits: Habit[] }
+  | {
+      kind: "routine";
+      key: string;
+      routineId: number;
+      name: string;
+      stepNumber: number | null;
+      connectBelow: boolean;
+      habits: Habit[];
+    };
 
 function buildSegments(habits: Habit[]): Segment[] {
-  const rows = buildRows(habits); // true step numbers, over the full list
-  const segments: Segment[] = [];
-  let run: Habit[] = []; // the completed habits piling up since the last active one
+  // 1) Collapse into ordered "units": consecutive habits sharing a routine
+  //    become one routine unit; every other habit is its own unit.
+  type Unit =
+    | { type: "habit"; habit: Habit }
+    | { type: "routine"; routineId: number; name: string; habits: Habit[] };
+  const units: Unit[] = [];
+  for (const habit of habits) {
+    const last = units[units.length - 1];
+    if (habit.routine != null) {
+      if (last && last.type === "routine" && last.routineId === habit.routine) {
+        last.habits.push(habit);
+      } else {
+        units.push({
+          type: "routine",
+          routineId: habit.routine,
+          name: habit.routine_name ?? "Routine",
+          habits: [habit],
+        });
+      }
+    } else {
+      units.push({ type: "habit", habit });
+    }
+  }
 
+  // A unit's chain is its (first) habit's chain — for step numbers + connectors.
+  const unitChain = (u: Unit): number | null =>
+    (u.type === "habit" ? u.habit.chain : u.habits[0].chain) ?? null;
+
+  // 2) Chain step numbers, counting a whole routine unit as a single step.
+  const counts = new Map<number, number>();
+  const stepNumbers = units.map((u) => {
+    const chain = unitChain(u);
+    if (chain == null) return null;
+    const n = (counts.get(chain) ?? 0) + 1;
+    counts.set(chain, n);
+    return n;
+  });
+
+  // 3) Emit segments in order, grouping consecutive completed single habits into
+  //    one "done" chip. Routine units never collapse.
+  const segments: Segment[] = [];
+  let run: Habit[] = [];
   const flushRun = () => {
     if (run.length > 0) {
       segments.push({ kind: "done", key: `done-${run[0].id}`, habits: run });
@@ -243,22 +281,40 @@ function buildSegments(habits: Habit[]): Segment[] {
     }
   };
 
-  rows.forEach((row, i) => {
-    if (isDone(row.habit)) {
-      run.push(row.habit);
+  units.forEach((u, i) => {
+    const chain = unitChain(u);
+    const next = units[i + 1];
+    // Connect down to the next unit only when it's the immediately-following step
+    // of the same chain and not a collapsed done habit (so a line never dangles).
+    const connectBelow =
+      chain != null &&
+      next != null &&
+      unitChain(next) === chain &&
+      !(next.type === "habit" && isDone(next.habit));
+
+    if (u.type === "routine") {
+      flushRun();
+      segments.push({
+        kind: "routine",
+        key: `routine-${u.routineId}-${u.habits[0].id}`,
+        routineId: u.routineId,
+        name: u.name,
+        stepNumber: stepNumbers[i],
+        connectBelow,
+        habits: u.habits,
+      });
+      return;
+    }
+
+    if (isDone(u.habit)) {
+      run.push(u.habit);
       return;
     }
     flushRun();
-    // Only connect down to the next habit when it's the immediately-following,
-    // still-active step of the same chain — so the connector never dangles into
-    // a collapsed group below it.
-    const next = habits[i + 1];
-    const connectBelow =
-      row.habit.chain != null &&
-      next != null &&
-      !isDone(next) &&
-      next.chain === row.habit.chain;
-    segments.push({ kind: "active", row: { ...row, connectBelow } });
+    segments.push({
+      kind: "active",
+      row: { habit: u.habit, stepNumber: stepNumbers[i], connectBelow },
+    });
   });
   flushRun();
 
@@ -351,6 +407,25 @@ function ChevronIcon({ open }: { open: boolean }) {
         strokeLinejoin="round"
         strokeWidth={2.5}
         d="M9 5l7 7-7 7"
+      />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M15.232 5.232l3.536 3.536M9 11l6.232-6.232a2 2 0 112.828 2.828L11.828 14H9v-3z"
       />
     </svg>
   );
@@ -902,20 +977,156 @@ function CompletedTray({
   );
 }
 
+// A routine: a named group of habits shown as ONE collapsible block. Its "done"
+// state is DERIVED, never stored — the block reads as done once every member is
+// COMPLETED or SKIPPED. The big circle completes the whole block in one tap (and
+// undoes it when it's already done); expand to tick members off one at a time,
+// which fills the block in on its own.
+function RoutineBlock({
+  routineId,
+  name,
+  habits,
+  stepNumber,
+  connectBelow,
+  onStatus,
+  onOpenNote,
+  onRoutineLog,
+  onEdit,
+}: {
+  routineId: number;
+  name: string;
+  habits: Habit[];
+  // Chain step number + connector, when the routine sits inside a cycle. null
+  // step = standalone (no chain), and the block spans the full width.
+  stepNumber: number | null;
+  connectBelow: boolean;
+  onStatus: (habitId: number, status: HabitStatus) => void;
+  onOpenNote: (habit: Habit) => void;
+  onRoutineLog: (routineId: number, status: HabitStatus) => void;
+  onEdit: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const total = habits.length;
+  // A member counts as handled when it's done OR skipped — both clear the block.
+  const handled = habits.filter((h) => isDone(h) || isSkipped(h)).length;
+  const allDone = total > 0 && handled === total;
+
+  return (
+    <div className="flex gap-3">
+      {/* Left rail: chain step badge + connector, so the routine reads as one
+          step in the cycle (e.g. between shower and lotion). Null step = the
+          routine isn't in a chain, and the block spans the full width. */}
+      {stepNumber != null && (
+        <div className="flex flex-col items-center">
+          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-calm-600 text-[11px] font-medium text-white">
+            {stepNumber}
+          </span>
+          {connectBelow && <span className="w-px grow bg-calm-300" />}
+        </div>
+      )}
+      <div className="min-w-0 flex-1 pb-1.5">
+        {/* Header reads as a habit card (same chrome): name on the left, the
+            complete circle on the right. A chevron marks that it expands into its
+            members; the pencil opens the manage sheet. */}
+        <div
+          className={`flex items-center gap-3 rounded-xl px-4 py-3 shadow-sm transition-shadow hover:shadow-md ${
+            allDone ? "bg-calm-50" : "bg-white"
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            <span className="shrink-0 text-calm-400">
+              <ChevronIcon open={open} />
+            </span>
+            <span className="min-w-0">
+              <span
+                className={`block break-words font-medium ${
+                  allDone ? "text-calm-400 line-through" : "text-calm-900"
+                }`}
+              >
+                {name}
+              </span>
+              <span className="block text-xs text-stone-400">
+                {handled} of {total} done
+              </span>
+            </span>
+          </button>
+
+          {/* Edit: rename, add/remove habits, or delete the routine. */}
+          <button
+            type="button"
+            aria-label={`Edit ${name}`}
+            onClick={onEdit}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-calm-300 transition-colors hover:bg-calm-50 hover:text-calm-500"
+          >
+            <PencilIcon />
+          </button>
+
+          {/* Complete-the-block circle (right, like a habit's): fills every
+              member in one tap; tapping a done block undoes it. */}
+          <button
+            type="button"
+            aria-label={allDone ? `Undo ${name}` : `Complete ${name}`}
+            aria-pressed={allDone}
+            onClick={() =>
+              onRoutineLog(routineId, allDone ? "PENDING" : "COMPLETED")
+            }
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
+              allDone
+                ? "border-calm-600 bg-calm-600 text-white"
+                : "border-calm-300 text-transparent hover:border-calm-500"
+            }`}
+          >
+            <CheckIcon />
+          </button>
+        </div>
+
+        {/* Members: their own habit cards, indented under the header so you can
+            do the routine one habit at a time. */}
+        {open && (
+          <ul className="mt-1.5 space-y-1.5 pl-3">
+            {habits.map((habit) => (
+              <li key={habit.id}>
+                <RowLayout
+                  habit={habit}
+                  stepNumber={null}
+                  connectBelow={false}
+                  onStatus={onStatus}
+                  onOpenNote={onOpenNote}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // All of one plan's habits. Not-yet-completed habits show as the active list (a
 // drag-to-reorder list for scheduled plans; a plain list for "Anytime"), and
 // completed habits collapse into the tray below so they stop taking up space.
+// Routine-tagged habits render as a collapsible block IN PLACE (so a routine
+// stays put inside its cycle), not lifted out of the order.
 function PlanBoard({
   plan,
   onStatus,
   onOpenNote,
   onReorder,
+  onRoutineLog,
+  onEditRoutine,
   interactive,
 }: {
   plan: Plan;
   onStatus: (habitId: number, status: HabitStatus) => void;
   onOpenNote: (habit: Habit) => void;
   onReorder: (planId: number, orderedHabits: Habit[]) => void;
+  onRoutineLog: (routineId: number, status: HabitStatus) => void;
+  onEditRoutine: (routineId: number, name: string) => void;
   // Only today is reorderable: dragging writes the *recurring* order (the
   // reorder API has no date), so we don't let it happen while you're looking at
   // another day — otherwise re-sorting "yesterday" would silently rearrange
@@ -930,15 +1141,19 @@ function PlanBoard({
 
   const planId = plan.id;
   const habits = plan.habits;
+
   // Not reorderable when it's the "Anytime" group (no schedule rows) or any day
   // that isn't today (see `interactive` above).
   const canReorder = planId != null && interactive;
 
-  // Split the block into ordered segments: single active habits + in-place
-  // "done" groups (runs of consecutive completed habits). Drag still reorders
-  // only the active habits; completed ones keep their exact spot.
+  // Ordered segments: single active habits, in-place "done" groups, and routine
+  // blocks — each rendered WHERE it sits in the order, so a routine stays inside
+  // its cycle. Drag reorders only the loose active habits; done + routine units
+  // keep their exact spot.
   const segments = buildSegments(habits);
-  const activeHabits = habits.filter((habit) => !isDone(habit));
+  const activeHabits = habits.filter(
+    (habit) => !isDone(habit) && habit.routine == null,
+  );
 
   // Renders one collapsed done-group; shared by both branches below.
   const doneItem = (seg: Extract<Segment, { kind: "done" }>) => (
@@ -951,12 +1166,31 @@ function PlanBoard({
     </li>
   );
 
+  // Renders one routine block in place; shared by both branches below.
+  const routineItem = (seg: Extract<Segment, { kind: "routine" }>) => (
+    <li key={seg.key}>
+      <RoutineBlock
+        routineId={seg.routineId}
+        name={seg.name}
+        habits={seg.habits}
+        stepNumber={seg.stepNumber}
+        connectBelow={seg.connectBelow}
+        onStatus={onStatus}
+        onOpenNote={onOpenNote}
+        onRoutineLog={onRoutineLog}
+        onEdit={() => onEditRoutine(seg.routineId, seg.name)}
+      />
+    </li>
+  );
+
   if (!canReorder) {
     return (
       <ul>
         {segments.map((seg) =>
           seg.kind === "done" ? (
             doneItem(seg)
+          ) : seg.kind === "routine" ? (
+            routineItem(seg)
           ) : (
             <li key={seg.row.habit.id}>
               {/* Non-draggable, but still shows chain step numbers/connectors. */}
@@ -976,9 +1210,9 @@ function PlanBoard({
 
   const activeIds = activeHabits.map((habit) => habit.id);
 
-  // On drop we rebuild the FULL list — active habits in their new order,
-  // completed ones left exactly where they were — so reorderPlan can renumber
-  // and persist the whole block in one POST.
+  // On drop we rebuild the FULL list — active habits in their new order, while
+  // completed and routine-grouped habits stay exactly where they were — so
+  // reorderPlan can renumber and persist the whole block in one POST.
   function handleDragEnd(event: DragEndEvent) {
     if (planId == null) return;
     const { active, over } = event;
@@ -989,8 +1223,8 @@ function PlanBoard({
 
     const newActive = arrayMove(activeHabits, from, to);
     let next = 0;
-    const newFull = habits.map((habit) =>
-      isDone(habit) ? habit : newActive[next++],
+    const newFull = plan.habits.map((habit) =>
+      habit.routine != null || isDone(habit) ? habit : newActive[next++],
     );
     onReorder(planId, newFull);
   }
@@ -1006,6 +1240,8 @@ function PlanBoard({
           {segments.map((seg) =>
             seg.kind === "done" ? (
               doneItem(seg)
+            ) : seg.kind === "routine" ? (
+              routineItem(seg)
             ) : (
               <li key={seg.row.habit.id}>
                 <SortableRow
@@ -1912,6 +2148,237 @@ function NoteSheet({
   );
 }
 
+// A bottom-sheet to create OR edit a routine: set its name and check which
+// scheduled habits belong to it. In edit mode it can also delete the routine
+// (members are ungrouped, never deleted). `habits` is every scheduled habit with
+// its current routine, so we pre-check this routine's members and offer the loose
+// (ungrouped) ones to add. Mirrors NoteSheet's overlay/keyboard handling.
+function RoutineSheet({
+  routine,
+  habits,
+  onCreate,
+  onSave,
+  onDelete,
+  onClose,
+}: {
+  routine: { id: number; name: string } | null; // null = create mode
+  habits: { scheduleId: number; name: string; routineId: number | null }[];
+  onCreate: (name: string, scheduleIds: number[]) => Promise<boolean>;
+  onSave: (
+    routineId: number,
+    name: string,
+    addIds: number[],
+    removeIds: number[],
+  ) => Promise<boolean>;
+  onDelete: (routineId: number) => void;
+  onClose: () => void;
+}) {
+  // Schedule ids currently in THIS routine (edit mode): pre-checked, always shown.
+  const currentMemberIds = useMemo(
+    () =>
+      routine
+        ? habits
+            .filter((h) => h.routineId === routine.id)
+            .map((h) => h.scheduleId)
+        : [],
+    [habits, routine],
+  );
+
+  const [name, setName] = useState(routine?.name ?? "");
+  const [selected, setSelected] = useState<Set<number>>(
+    () => new Set(currentMemberIds),
+  );
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  // Habits you can put in this routine: its own members plus any loose
+  // (ungrouped) ones. Habits already in a DIFFERENT routine are left out — it's
+  // one routine per habit, so you'd remove them from the other one first.
+  const choices = habits.filter(
+    (h) => h.routineId == null || (routine != null && h.routineId === routine.id),
+  );
+
+  // Keep the sheet above the on-screen keyboard (same approach as NoteSheet).
+  const [viewport, setViewport] = useState(() => {
+    const vv = window.visualViewport;
+    return vv ? { height: vv.height, offsetTop: vv.offsetTop } : null;
+  });
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () =>
+      setViewport({ height: vv.height, offsetTop: vv.offsetTop });
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    nameRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function toggle(scheduleId: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(scheduleId)) next.delete(scheduleId);
+      else next.add(scheduleId);
+      return next;
+    });
+  }
+
+  async function save() {
+    const trimmed = name.trim();
+    if (!trimmed || saving) return;
+    setSaving(true);
+    let ok: boolean;
+    if (routine) {
+      const current = new Set(currentMemberIds);
+      const addIds = [...selected].filter((id) => !current.has(id));
+      const removeIds = currentMemberIds.filter((id) => !selected.has(id));
+      ok = await onSave(routine.id, trimmed, addIds, removeIds);
+    } else {
+      ok = await onCreate(trimmed, [...selected]);
+    }
+    setSaving(false);
+    if (ok) onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-x-0 z-50 flex items-end justify-center sm:items-center"
+      style={{
+        top: viewport?.offsetTop ?? 0,
+        height: viewport?.height ?? "100dvh",
+      }}
+    >
+      <div
+        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={routine ? `Edit ${routine.name}` : "New routine"}
+        className="animate-sheet-in relative max-h-full w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 pb-8 shadow-xl sm:rounded-3xl"
+      >
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-calm-200 sm:hidden" />
+        <h2 className="font-heading text-2xl text-calm-900">
+          {routine ? "Edit routine" : "New routine"}
+        </h2>
+        <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wide text-calm-500">
+          A group of habits, done in any order
+        </p>
+
+        <label className="mt-4 block text-xs font-medium text-calm-600">
+          Name
+        </label>
+        <input
+          ref={nameRef}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Morning routine"
+          maxLength={100}
+          className="mt-1 w-full rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none"
+        />
+
+        <p className="mt-4 text-xs font-medium text-calm-600">
+          Habits{selected.size > 0 ? ` · ${selected.size} selected` : ""}
+        </p>
+        {choices.length > 0 ? (
+          <ul className="mt-2 space-y-1">
+            {choices.map((h) => {
+              const on = selected.has(h.scheduleId);
+              return (
+                <li key={h.scheduleId}>
+                  <button
+                    type="button"
+                    onClick={() => toggle(h.scheduleId)}
+                    aria-pressed={on}
+                    className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                      on
+                        ? "border-calm-300 bg-calm-50 text-calm-900"
+                        : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"
+                    }`}
+                  >
+                    <span
+                      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 ${
+                        on
+                          ? "border-calm-600 bg-calm-600 text-white"
+                          : "border-stone-300 text-transparent"
+                      }`}
+                    >
+                      <CheckIcon />
+                    </span>
+                    <span className="truncate">{h.name}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="mt-2 text-sm text-stone-400">
+            No scheduled habits to add yet — put a habit on your plan first.
+          </p>
+        )}
+
+        <div className="mt-6 flex items-center justify-between gap-2">
+          {/* Delete (edit only) — two taps so it can't fire by accident. Members
+              are ungrouped, not deleted. */}
+          {routine ? (
+            confirmDelete ? (
+              <button
+                type="button"
+                onClick={() => onDelete(routine.id)}
+                className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-rose-700"
+              >
+                Tap to confirm
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(true)}
+                className="rounded-lg px-3 py-2 text-xs font-medium text-rose-500 transition-colors hover:bg-rose-50"
+              >
+                Delete
+              </button>
+            )
+          ) : (
+            <span />
+          )}
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg px-3 py-2 text-sm font-medium text-calm-600 transition-colors hover:bg-calm-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={name.trim() === "" || saving}
+              className="rounded-lg bg-calm-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+            >
+              {routine ? "Save" : "Create"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PlansPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   // The viewed day's notes from the new Note model (GET /days/notes/). Source of
@@ -1967,6 +2434,32 @@ function PlansPage() {
   // whether the "Skip day" confirmation dialog is open.
   const [editingNote, setEditingNote] = useState<Habit | null>(null);
   const [skipDayOpen, setSkipDayOpen] = useState(false);
+  // The routine sheet: { mode: "create" } to make a new one, or
+  // { mode: "edit", id, name } to manage an existing one; null = closed.
+  const [routineSheet, setRoutineSheet] = useState<
+    { mode: "create" } | { mode: "edit"; id: number; name: string } | null
+  >(null);
+
+  // Every scheduled habit (with its current routine) — the pool the routine
+  // sheet picks members from. Unscheduled "Anytime" habits have no Schedule row
+  // to tag, so they can't join a routine and are left out.
+  const scheduledHabits = useMemo(
+    () =>
+      plans
+        .flatMap((plan) => plan.habits)
+        .flatMap((h) =>
+          h.schedule_id != null
+            ? [
+                {
+                  scheduleId: h.schedule_id,
+                  name: h.name,
+                  routineId: h.routine ?? null,
+                },
+              ]
+            : [],
+        ),
+    [plans],
+  );
 
   // Set a habit's status for today (complete / skip / reset). We update the UI
   // FIRST (optimistic) so it feels instant, then tell the backend. If the
@@ -1991,6 +2484,109 @@ function PlansPage() {
       if (!res.ok) throw new Error("Request failed");
     } catch {
       setPlans(snapshot);
+    }
+  }
+
+  // Complete / skip / undo a whole routine block in one tap. The backend fans
+  // the status out to every member habit for the viewed day; many habits change
+  // at once, so we re-fetch instead of patching each one optimistically.
+  async function setRoutineStatus(routineId: number, status: HabitStatus) {
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/routines/${routineId}/log/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            isViewingToday ? { status } : { status, date: toYMD(viewedDate) },
+          ),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      setReloadToken((token) => token + 1);
+    } catch {
+      toast("Couldn't update the routine", { variant: "error" });
+    }
+  }
+
+  // Create a routine from the sheet (name + the habits checked in it). Re-fetch
+  // so the new block appears. Returns true so the sheet can close on success.
+  async function createRoutine(
+    name: string,
+    scheduleIds: number[],
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/routines/create/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, schedules: scheduleIds }),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      setReloadToken((token) => token + 1);
+      toast(`Created "${name}"`, { variant: "success" });
+      return true;
+    } catch {
+      toast("Couldn't create the routine", { variant: "error" });
+      return false;
+    }
+  }
+
+  // Save edits from the sheet: rename, then apply membership changes (the sheet
+  // diffs checked-vs-current into add/remove). We skip the members call when
+  // nothing moved, since the endpoint requires a non-empty change.
+  async function saveRoutine(
+    routineId: number,
+    name: string,
+    addIds: number[],
+    removeIds: number[],
+  ): Promise<boolean> {
+    try {
+      const editRes = await fetch(
+        `${import.meta.env.VITE_API_URL}/routines/${routineId}/edit/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        },
+      );
+      if (!editRes.ok) throw new Error("Request failed");
+
+      if (addIds.length > 0 || removeIds.length > 0) {
+        const memRes = await fetch(
+          `${import.meta.env.VITE_API_URL}/routines/${routineId}/members/`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ add: addIds, remove: removeIds }),
+          },
+        );
+        if (!memRes.ok) throw new Error("Request failed");
+      }
+      setReloadToken((token) => token + 1);
+      return true;
+    } catch {
+      toast("Couldn't save the routine", { variant: "error" });
+      return false;
+    }
+  }
+
+  // Delete a routine — its habits are ungrouped (SET_NULL), not deleted. Close
+  // the sheet and re-fetch.
+  async function deleteRoutine(routineId: number) {
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/routines/${routineId}/delete/`,
+        { method: "POST", headers: { "Content-Type": "application/json" } },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      setRoutineSheet(null);
+      setReloadToken((token) => token + 1);
+      toast("Routine deleted", { variant: "info" });
+    } catch {
+      toast("Couldn't delete the routine", { variant: "error" });
     }
   }
 
@@ -2406,6 +3002,10 @@ function PlansPage() {
               onStatus={setHabitStatus}
               onOpenNote={setEditingNote}
               onReorder={reorderPlan}
+              onRoutineLog={setRoutineStatus}
+              onEditRoutine={(id, name) =>
+                setRoutineSheet({ mode: "edit", id, name })
+              }
               interactive={isViewingToday}
             />
           );
@@ -2499,7 +3099,14 @@ function PlansPage() {
             skipped — a persistent "Reset day" to undo it (no time limit, unlike
             the toast). Per-habit skip is still the swipe gesture. */}
         {visiblePlans.length > 0 && (
-          <div className="-mt-2 mb-4 flex justify-end">
+          <div className="-mt-2 mb-4 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setRoutineSheet({ mode: "create" })}
+              className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
+            >
+              + New routine
+            </button>
             {dayFullySkipped ? (
               <button
                 type="button"
@@ -2544,6 +3151,24 @@ function PlansPage() {
             deleteNote(noteId, editingNote.id, scope)
           }
           onClose={() => setEditingNote(null)}
+        />
+      )}
+
+      {/* Create / edit a routine (bottom sheet). Keyed so switching between
+          create and a specific routine remounts with fresh state. */}
+      {routineSheet && (
+        <RoutineSheet
+          key={routineSheet.mode === "edit" ? `r${routineSheet.id}` : "new"}
+          routine={
+            routineSheet.mode === "edit"
+              ? { id: routineSheet.id, name: routineSheet.name }
+              : null
+          }
+          habits={scheduledHabits}
+          onCreate={createRoutine}
+          onSave={saveRoutine}
+          onDelete={deleteRoutine}
+          onClose={() => setRoutineSheet(null)}
         />
       )}
 

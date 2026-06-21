@@ -116,7 +116,7 @@ def plan(request):
     # add today shouldn't appear when you scroll back to last week, since it
     # didn't exist then. (For today/future days this filter matches everything,
     # so it's a no-op there.)
-    ordered_schedules = Schedule.objects.select_related("habit").filter(
+    ordered_schedules = Schedule.objects.select_related("habit", "routine").filter(
         habit__date_added__date__lte=target_date
     ).order_by(F("order").asc(nulls_last=True), "id")
     plans = Plan.objects.prefetch_related(
@@ -132,6 +132,8 @@ def plan(request):
                 schedule.habit,
                 schedule_id=schedule.id,
                 chain=schedule.chain_id,
+                routine=schedule.routine_id,
+                routine_name=schedule.routine.name if schedule.routine_id else None,
                 order=schedule.order,
             )
             for schedule in plan.schedule_set.all()
@@ -357,6 +359,8 @@ def reorder_schedules(request):
         entry = {"id": sid, "order": order}
         if "chain" in item:
             entry["chain"] = item["chain"]   # None or a chain id
+        if "routine" in item:
+            entry["routine"] = item["routine"]   # None or a routine id
         cleaned.append(entry)
 
     schedules = Schedule.objects.in_bulk([e["id"] for e in cleaned])
@@ -372,6 +376,13 @@ def reorder_schedules(request):
         if unknown:
             return JsonResponse({"error": f"Unknown chain ids: {unknown}."}, status=400)
 
+    routine_ids = {e["routine"] for e in cleaned if e.get("routine") is not None}
+    if routine_ids:
+        known = set(Routine.objects.filter(id__in=routine_ids).values_list("id", flat=True))
+        unknown = sorted(routine_ids - known)
+        if unknown:
+            return JsonResponse({"error": f"Unknown routine ids: {unknown}."}, status=400)
+
     fields = {"order"}
     for e in cleaned:
         schedule = schedules[e["id"]]
@@ -379,13 +390,16 @@ def reorder_schedules(request):
         if "chain" in e:
             schedule.chain_id = e["chain"]
             fields.add("chain")
+        if "routine" in e:
+            schedule.routine_id = e["routine"]
+            fields.add("routine")
 
     # One UPDATE for the whole batch, all-or-nothing.
     with transaction.atomic():
         Schedule.objects.bulk_update(schedules.values(), list(fields))
 
     updated = [
-        {"id": s.id, "order": s.order, "chain": s.chain_id}
+        {"id": s.id, "order": s.order, "chain": s.chain_id, "routine": s.routine_id}
         for s in sorted(schedules.values(), key=lambda s: s.order)
     ]
     return JsonResponse({"updated": updated})
@@ -884,6 +898,222 @@ def delete_journal(request, entry_id):
     entry = get_object_or_404(JournalEntry, id=entry_id)
     entry.delete()
     return JsonResponse({"deleted": entry_id})
+
+
+# --- Routines (Routine model) -----------------------------------------------
+# A Routine is a named group of habits that the Plan page renders as ONE
+# collapsible block (e.g. "Morning routine"). Membership lives on
+# `Schedule.routine`, exactly like `Schedule.chain` — a habit can be in a
+# routine, a chain, both, or neither. A routine's "done" state is NEVER stored:
+# the block reads as done because its member habits' HabitLogs do (the frontend
+# derives it). `log_routine` is just a fan-out that writes one status to every
+# member — there is no routine-level log row.
+
+def _routine_detail(routine):
+    """Shape of a Routine in responses, with its current member schedule ids."""
+    return {
+        "id": routine.id,
+        "name": routine.name,
+        "schedules": list(
+            Schedule.objects.filter(routine=routine).values_list("id", flat=True)
+        ),
+    }
+
+
+def _routine_name_error(name, *, blank_word="required"):
+    """None if `name` is a usable routine name, else a 400 response. `blank_word`
+    tailors the message: 'required' on create, 'blank' on edit."""
+    if not isinstance(name, str) or not name.strip():
+        return JsonResponse({"error": f"'name' is {blank_word}."}, status=400)
+    if len(name.strip()) > 100:
+        return JsonResponse({"error": "'name' must be at most 100 characters."}, status=400)
+    return None
+
+
+def _check_schedule_ids(ids):
+    """Validate a list of schedule ids. Returns (set_of_ids, None) when every id
+    is a real Schedule, or (None, error_response) otherwise."""
+    if not isinstance(ids, list):
+        return None, JsonResponse(
+            {"error": "Expected a list of schedule ids."}, status=400
+        )
+    if not all(_valid_id(sid) for sid in ids):
+        return None, JsonResponse(
+            {"error": "Each schedule id must be an integer."}, status=400
+        )
+    wanted = set(ids)
+    if wanted:
+        found = set(Schedule.objects.filter(id__in=wanted).values_list("id", flat=True))
+        missing = sorted(wanted - found)
+        if missing:
+            return None, JsonResponse(
+                {"error": f"Unknown schedule ids: {missing}."}, status=400
+            )
+    return wanted, None
+
+
+def routines(request):
+    """Every routine (id + name), for an "add to routine" picker."""
+    return JsonResponse(
+        list(Routine.objects.order_by("name").values("id", "name")), safe=False
+    )
+
+
+@csrf_exempt
+@require_POST
+def create_routine(request):
+    """Create a routine. Body: {"name", "schedules"?: [schedule_id, ...]}.
+
+    `schedules` (optional) tags those existing Schedule rows into the new routine
+    immediately, so you can build "Morning routine" from habits already on the
+    plan in one step. Omit it to start an empty routine and add habits later.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    name_error = _routine_name_error(body.get("name"))
+    if name_error:
+        return name_error
+
+    wanted, sched_error = _check_schedule_ids(body.get("schedules", []))
+    if sched_error:
+        return sched_error
+
+    with transaction.atomic():
+        routine = Routine.objects.create(name=body["name"].strip())
+        if wanted:
+            Schedule.objects.filter(id__in=wanted).update(routine=routine)
+    return JsonResponse(_routine_detail(routine), status=201)
+
+
+@csrf_exempt
+@require_POST
+def edit_routine(request, routine_id):
+    """Rename a routine. Body: {"name"}."""
+    routine = get_object_or_404(Routine, id=routine_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    name_error = _routine_name_error(body.get("name"), blank_word="blank")
+    if name_error:
+        return name_error
+
+    routine.name = body["name"].strip()
+    routine.save()
+    return JsonResponse(_routine_detail(routine))
+
+
+@csrf_exempt
+@require_POST
+def delete_routine(request, routine_id):
+    """Delete a routine. Its member habits STAY on the plan as standalone rows
+    (Schedule.routine is SET_NULL), so deleting a group never deletes habits."""
+    routine = get_object_or_404(Routine, id=routine_id)
+    ungrouped = Schedule.objects.filter(routine=routine).count()
+    routine.delete()
+    return JsonResponse(
+        {"routine_id": routine_id, "deleted": True, "ungrouped": ungrouped}
+    )
+
+
+@csrf_exempt
+@require_POST
+def routine_members(request, routine_id):
+    """Add and/or remove habits from a routine — "add habits over time".
+
+    Body: {"add"?: [schedule_id, ...], "remove"?: [schedule_id, ...]}.
+      - add:    tags those Schedule rows into this routine.
+      - remove: clears the routine on those rows, but only ones currently in THIS
+        routine, so a remove can't yank a habit out of a different group.
+    Send either or both.
+    """
+    routine = get_object_or_404(Routine, id=routine_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    add, remove = body.get("add", []), body.get("remove", [])
+    if not add and not remove:
+        return JsonResponse({"error": "Send 'add' and/or 'remove'."}, status=400)
+
+    add_ids, add_error = _check_schedule_ids(add)
+    if add_error:
+        return add_error
+    remove_ids, remove_error = _check_schedule_ids(remove)
+    if remove_error:
+        return remove_error
+
+    with transaction.atomic():
+        if add_ids:
+            Schedule.objects.filter(id__in=add_ids).update(routine=routine)
+        if remove_ids:
+            Schedule.objects.filter(id__in=remove_ids, routine=routine).update(
+                routine=None
+            )
+    return JsonResponse(_routine_detail(routine))
+
+
+@csrf_exempt
+@require_POST
+def log_routine(request, routine_id):
+    """Apply ONE status to every habit in a routine for a day — the block's
+    "complete" (and skip / undo) action.
+
+    Body: {"status": COMPLETED|SKIPPED|PENDING, "date"?: "YYYY-MM-DD"}.
+      - COMPLETED: write a COMPLETED log for every member (the block checkbox).
+      - SKIPPED:   mark every member skipped.
+      - PENDING:   reset every member to pending (undo the block).
+    Uniform and explicit: unlike /days/skip/, this overwrites members that were
+    already completed/skipped, since you tapped the block on purpose. One log per
+    habit per day, so each member's log is upserted. Nothing about "done" is
+    stored on the routine — the block reads as done because its members do.
+    """
+    routine = get_object_or_404(Routine, id=routine_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    status = body.get("status")
+    if status not in HabitLog.Status.values:
+        return JsonResponse(
+            {"error": f"'status' must be one of {HabitLog.Status.values}."}, status=400
+        )
+
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+
+    habit_ids = list(
+        Schedule.objects.filter(routine=routine).values_list("habit_id", flat=True)
+    )
+    # Only a completion has a meaningful "time done".
+    log_time = timezone.localtime().time() if status == HabitLog.Status.COMPLETED else None
+
+    with transaction.atomic():
+        existing_ids = set(
+            HabitLog.objects.filter(habit_id__in=habit_ids, date=target_date)
+            .values_list("habit_id", flat=True)
+        )
+        HabitLog.objects.filter(habit_id__in=habit_ids, date=target_date).update(
+            status=status, time=log_time
+        )
+        HabitLog.objects.bulk_create([
+            HabitLog(habit_id=hid, date=target_date, status=status, time=log_time)
+            for hid in habit_ids if hid not in existing_ids
+        ])
+
+    return JsonResponse({
+        "routine_id": routine.id,
+        "date": target_date,
+        "status": status,
+        "updated": len(habit_ids),
+    })
 
 
 def logs(request):
