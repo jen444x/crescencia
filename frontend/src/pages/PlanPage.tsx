@@ -2382,6 +2382,10 @@ function PlansPage() {
   // Bump to force a re-fetch of the current day (e.g. after a "running late" shift).
   const [reloadToken, setReloadToken] = useState(0);
 
+  // The habit order the viewed day loaded with — the target "Reset order"
+  // returns to ("back to before" = how the day looked when you opened it).
+  const [baselineOrder, setBaselineOrder] = useState<Plan[] | null>(null);
+
   // The time block happening right now — used to badge it "Now" and to scroll
   // the page there on first load.
   const nowBlockId = useMemo(() => currentBlockId(plans), [plans]);
@@ -2414,6 +2418,12 @@ function PlansPage() {
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
   // Only auto-scroll once (on first load) — not every time a toggle re-renders.
   const didAutoScroll = useRef(false);
+  // Latest plans, mirrored into a ref so a delayed callback (a toast's Undo,
+  // fired seconds after the action) reads current state, not a stale closure.
+  const plansRef = useRef(plans);
+  useEffect(() => {
+    plansRef.current = plans;
+  }, [plans]);
 
   const toast = useToast();
 
@@ -2694,12 +2704,11 @@ function PlansPage() {
     }
   }
 
-  // Persist a plan's new habit order after a drag. `orderedHabits` is the
-  // plan's habits in their new order. Optimistic, with a snapshot we restore
-  // if the save fails.
-  async function reorderPlan(planId: number, orderedHabits: Habit[]) {
+  // Persist a plan's habit order (no toast). Optimistic, with a snapshot we
+  // restore if the save fails. Shared by a drag, its Undo, and Reset order.
+  async function postReorder(planId: number, orderedHabits: Habit[]) {
     if (orderedHabits.length === 0) return;
-    const snapshot = plans;
+    const snapshot = plansRef.current;
     setPlans((prev) => applyPlanOrder(prev, planId, orderedHabits));
 
     // Backend keys on schedule_id (NOT habit id) and wants the whole list
@@ -2724,6 +2733,70 @@ function PlansPage() {
       setPlans(snapshot);
     }
   }
+
+  // Drag entry point: remember the block's order *before* the move, apply it,
+  // then offer a one-tap Undo (the app's standard toast pattern, same as retime)
+  // that puts the habit back where it was.
+  async function reorderPlan(planId: number, orderedHabits: Habit[]) {
+    if (orderedHabits.length === 0) return;
+    const previousHabits = plans.find((p) => p.id === planId)?.habits ?? [];
+    await postReorder(planId, orderedHabits);
+    if (previousHabits.length === 0) return;
+    toast("Habit moved", {
+      action: {
+        label: "Undo",
+        onClick: () => postReorder(planId, previousHabits),
+      },
+    });
+  }
+
+  // Reorder every schedulable plan to match a template's order, mapping the
+  // CURRENT habit objects (so statuses/notes set since aren't clobbered) onto
+  // the template's id order. Persists only the plans that actually changed.
+  async function applyOrderTemplate(template: Plan[]) {
+    for (const plan of plansRef.current) {
+      if (plan.id == null) continue; // "Anytime" has no schedule rows to order
+      const tpl = template.find((p) => p.id === plan.id);
+      if (!tpl) continue;
+      const order = tpl.habits.map((h) => h.id);
+      const reordered = [...plan.habits].sort(
+        (a, b) => order.indexOf(a.id) - order.indexOf(b.id),
+      );
+      const changed = reordered.some((h, i) => h.id !== plan.habits[i].id);
+      if (changed) await postReorder(plan.id, reordered);
+    }
+  }
+
+  // "Reset order": return the whole day to the order it loaded with ("be like
+  // before"), with its own Undo back to the pre-reset arrangement.
+  async function resetOrder() {
+    const baseline = baselineOrder;
+    if (!baseline) return;
+    const beforeReset = plansRef.current;
+    await applyOrderTemplate(baseline);
+    toast("Order reset", {
+      action: {
+        label: "Undo",
+        onClick: () => applyOrderTemplate(beforeReset),
+      },
+    });
+  }
+
+  // Has the user reordered anything away from the day's load-time order? Drives
+  // whether the "Reset order" control shows. Recomputes with plans; the baseline
+  // ref only changes alongside a fetch (which also updates plans).
+  const orderChanged = useMemo(() => {
+    const baseline = baselineOrder;
+    if (!baseline) return false;
+    return plans.some((plan) => {
+      if (plan.id == null) return false;
+      const tpl = baseline.find((p) => p.id === plan.id);
+      if (!tpl) return false;
+      const now = plan.habits.map((h) => h.id);
+      const was = tpl.habits.map((h) => h.id);
+      return now.length !== was.length || now.some((id, i) => id !== was[i]);
+    });
+  }, [plans, baselineOrder]);
 
   useEffect(() => {
     async function fetchPlans() {
@@ -2751,6 +2824,8 @@ function PlansPage() {
           return;
         }
         setPlans(data);
+        // The order this day loaded with — what "Reset order" returns to.
+        setBaselineOrder(data);
 
         // Notes are additive: if the endpoint isn't live yet or errors, fall back
         // to the legacy per-habit string by clearing the new-model notes.
@@ -3087,13 +3162,26 @@ function PlansPage() {
             the toast). Per-habit skip is still the swipe gesture. */}
         {visiblePlans.length > 0 && (
           <div className="-mt-2 mb-4 flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => setRoutineSheet({ mode: "create" })}
-              className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
-            >
-              + New routine
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setRoutineSheet({ mode: "create" })}
+                className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
+              >
+                + New routine
+              </button>
+              {/* Only today is reorderable, so only offer the reset there, and
+                  only once something has actually moved from the load order. */}
+              {isViewingToday && orderChanged && (
+                <button
+                  type="button"
+                  onClick={resetOrder}
+                  className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
+                >
+                  Reset order
+                </button>
+              )}
+            </div>
             {dayFullySkipped ? (
               <button
                 type="button"
