@@ -1,9 +1,4 @@
-import {
-  useState,
-  useEffect,
-  type CSSProperties,
-  type ReactNode,
-} from "react";
+import { useState, useEffect, type CSSProperties, type ReactNode } from "react";
 import Header from "../components/layout/Header";
 import { useToast } from "../components/Toast";
 import {
@@ -22,16 +17,15 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-// The statuses we can WRITE for a habit's day. Matches the backend's
-// HabitLog.Status (the log endpoint only accepts these three).
+// The statuses we can WRITE for a habit's day (matches the backend HabitLog).
 type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED";
 
-// One tier of a habit's ladder (e.g. Roots / Growth), low -> high by level.
+// One tier of a habit (e.g. Roots / Growth) with its current target value.
 type HabitTier = { level: number; name: string; value: string };
 
-// A habit as returned by GET /habits/ : the habit plus today's tracking state.
-// `tiers` is [] for an untiered habit; `achieved_tier` is today's highest
-// completed tier level (the cascade truth), null when nothing's done.
+// A habit from GET /habits/ : the habit plus today's tracking state. `tiers` is
+// [] for an untiered habit; `achieved_tier` is today's highest completed tier
+// level (the cascade truth) — null when nothing's done.
 type HabitRow = {
   id: number;
   name: string;
@@ -43,21 +37,18 @@ type HabitRow = {
   achieved_tier: number | null;
 };
 
-// Filled star marking an "important" habit. Filled (not outline) so it reads as
-// a clear marker at a glance next to the name. Mirrors PlanPage's StarIcon.
-function StarIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M9.05 2.93c.3-.92 1.6-.92 1.9 0l1.42 4.38a1 1 0 00.95.69h4.6c.97 0 1.37 1.24.59 1.81l-3.73 2.71a1 1 0 00-.36 1.12l1.42 4.38c.3.92-.75 1.69-1.54 1.12l-3.72-2.71a1 1 0 00-1.18 0l-3.72 2.71c-.79.57-1.84-.2-1.54-1.12l1.42-4.38a1 1 0 00-.36-1.12L1.48 9.81c-.78-.57-.38-1.81.59-1.81h4.6a1 1 0 00.95-.69L9.05 2.93z" />
-    </svg>
-  );
-}
+// Which tier sits on top. Both tiers always render; this only moves the picked
+// one to the front (GROWTH on top by default; pick ROOTS to flip the order).
+type TierFocus = "ROOTS" | "GROWTH";
+
+const ROOTS = 1;
+const GROWTH = 2;
+
+// Tier section labels + colors, mirroring the old Habit-Tracker dashboard.
+const TIER_META: Record<number, { label: string; color: string }> = {
+  1: { label: "Roots", color: "text-amber-700" },
+  2: { label: "Growth", color: "text-green-600" },
+};
 
 function CheckIcon() {
   return (
@@ -74,6 +65,20 @@ function CheckIcon() {
         strokeWidth={3}
         d="M5 13l4 4L19 7"
       />
+    </svg>
+  );
+}
+
+function StarIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      viewBox="0 0 20 20"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M9.05 2.93c.3-.92 1.6-.92 1.9 0l1.42 4.38a1 1 0 00.95.69h4.6c.97 0 1.37 1.24.59 1.81l-3.73 2.71a1 1 0 00-.36 1.12l1.42 4.38c.3.92-.75 1.69-1.54 1.12l-3.72-2.71a1 1 0 00-1.18 0l-3.72 2.71c-.79.57-1.84-.2-1.54-1.12l1.42-4.38a1 1 0 00-.36-1.12L1.48 9.81c-.78-.57-.38-1.81.59-1.81h4.6a1 1 0 00.95-.69L9.05 2.93z" />
     </svg>
   );
 }
@@ -99,36 +104,45 @@ function GripIcon() {
   );
 }
 
-// One tier row inside a habit card. A tier reads "done" when the habit's
-// achieved_tier has reached THIS tier's level (so completing Growth cascades to
-// mark Roots done too). Tapping a not-done tier completes at its level; tapping
-// a done tier sends the habit back to PENDING (undo the whole day).
-function TierRow({
-  tier,
-  done,
-  onComplete,
-  onUndo,
+// One row inside a tier section: the habit's name + this tier's target value +
+// a complete/undo control. Reads "done" when the habit's achieved_tier has
+// reached this tier's level, so completing Growth cascades to mark Roots done.
+// `handle` is the drag grip when the section is sortable (omitted otherwise).
+function HabitTierRow({
+  habit,
+  level,
+  onLog,
+  handle,
 }: {
-  tier: HabitTier;
-  done: boolean;
-  onComplete: () => void;
-  onUndo: () => void;
+  habit: HabitRow;
+  level: number;
+  onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
+  handle?: ReactNode;
 }) {
+  const tier = habit.tiers.find((t) => t.level === level);
+  const done = habit.achieved_tier != null && habit.achieved_tier >= level;
+
   return (
     <div
       className={`flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${
-        done ? "bg-calm-50" : "bg-stone-50"
+        done ? "bg-calm-50" : "bg-white shadow-sm"
       }`}
     >
+      {handle}
+      {habit.is_important && (
+        <span className="shrink-0 text-amber-400">
+          <StarIcon />
+        </span>
+      )}
       <div className="min-w-0 flex-1">
         <span
           className={`block break-words text-sm font-medium ${
             done ? "text-calm-400 line-through" : "text-calm-900"
           }`}
         >
-          {tier.name}
+          {habit.name}
         </span>
-        {tier.value && (
+        {tier?.value && (
           <span
             className={`block text-xs ${done ? "text-calm-300" : "text-stone-400"}`}
           >
@@ -139,9 +153,11 @@ function TierRow({
 
       <button
         type="button"
-        aria-label={done ? `Undo ${tier.name}` : `Complete ${tier.name}`}
+        aria-label={done ? `Undo ${habit.name}` : `Complete ${habit.name}`}
         aria-pressed={done}
-        onClick={done ? onUndo : onComplete}
+        onClick={() =>
+          done ? onLog(habit.id, "PENDING") : onLog(habit.id, "COMPLETED", level)
+        }
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
           done
             ? "border-calm-600 bg-calm-600 text-white"
@@ -154,105 +170,15 @@ function TierRow({
   );
 }
 
-// One habit as a card: name + optional star + area label, then either its tier
-// stack (higher tier on top) or a single complete control when untiered.
-function HabitCard({
+// A drag-to-reorder wrapper around HabitTierRow. Only the grip carries the drag
+// listeners, so tapping a row's complete button never starts a drag.
+function SortableHabitTierRow({
   habit,
-  onLog,
-  handle,
-}: {
-  habit: HabitRow;
-  onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
-  // The drag grip, when the card is sortable. Omitted (filtered view) = no grip.
-  handle?: ReactNode;
-}) {
-  const tiered = habit.tiers.length > 0;
-  // Untiered: a plain done state from the log status.
-  const untieredDone = habit.status === "COMPLETED";
-
-  return (
-    <div className="bg-white rounded-2xl p-4 shadow-sm">
-      <div className="flex items-center gap-2 mb-3">
-        {handle}
-        {habit.is_important && (
-          <span className="shrink-0 text-amber-400">
-            <StarIcon />
-          </span>
-        )}
-        <h3 className="min-w-0 flex-1 break-words font-medium text-stone-900">
-          {habit.name}
-        </h3>
-        {habit.area_name && (
-          <span className="shrink-0 rounded-full bg-accent-100 px-2 py-0.5 text-[11px] font-medium text-stone-500">
-            {habit.area_name}
-          </span>
-        )}
-      </div>
-
-      {tiered ? (
-        // Stacked tiers, HIGHER tier on top (render reversed: tiers come low->high).
-        <div className="space-y-1.5">
-          {[...habit.tiers]
-            .sort((a, b) => b.level - a.level)
-            .map((tier) => (
-              <TierRow
-                key={tier.level}
-                tier={tier}
-                // Cascade: done when achieved_tier reaches this tier's level.
-                done={
-                  habit.achieved_tier != null &&
-                  habit.achieved_tier >= tier.level
-                }
-                onComplete={() => onLog(habit.id, "COMPLETED", tier.level)}
-                onUndo={() => onLog(habit.id, "PENDING")}
-              />
-            ))}
-        </div>
-      ) : (
-        // Untiered: a single complete/undo control driven by the log status.
-        <button
-          type="button"
-          aria-label={
-            untieredDone ? "Mark as not done today" : "Mark as done today"
-          }
-          aria-pressed={untieredDone}
-          onClick={() =>
-            onLog(habit.id, untieredDone ? "PENDING" : "COMPLETED")
-          }
-          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${
-            untieredDone ? "bg-calm-50" : "bg-stone-50 hover:bg-stone-100"
-          }`}
-        >
-          <span
-            className={`flex-1 text-left text-sm font-medium ${
-              untieredDone ? "text-calm-400 line-through" : "text-calm-900"
-            }`}
-          >
-            {untieredDone ? "Done today" : "Mark done"}
-          </span>
-          <span
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
-              untieredDone
-                ? "border-calm-600 bg-calm-600 text-white"
-                : "border-calm-300 text-transparent"
-            }`}
-          >
-            <CheckIcon />
-          </span>
-        </button>
-      )}
-    </div>
-  );
-}
-
-// A drag-to-reorder wrapper around HabitCard. The grip (and only the grip)
-// carries the drag listeners, so tapping a tier's complete button never starts
-// a drag. Uses @dnd-kit, same as the Plan page.
-function SortableHabitCard({
-  habit,
+  level,
   onLog,
 }: {
   habit: HabitRow;
+  level: number;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
 }) {
   const {
@@ -281,7 +207,77 @@ function SortableHabitCard({
   );
   return (
     <div ref={setNodeRef} style={style}>
-      <HabitCard habit={habit} onLog={onLog} handle={handle} />
+      <HabitTierRow habit={habit} level={level} onLog={onLog} handle={handle} />
+    </div>
+  );
+}
+
+// A whole tier section: a colored header + divider, then a row per habit that
+// has this tier. Renders nothing when no habit has the tier. When `sortable`,
+// each row gets a drag grip and a drag reorders the habits (persisted globally
+// via onReorder); otherwise rows are plain (the filtered "important" view).
+function TierSection({
+  level,
+  habits,
+  onLog,
+  sortable,
+  sensors,
+  onReorder,
+}: {
+  level: number;
+  habits: HabitRow[];
+  onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
+  sortable: boolean;
+  sensors: ReturnType<typeof useSensors>;
+  onReorder: (level: number, activeId: number, overId: number) => void;
+}) {
+  const rows = habits.filter((h) => h.tiers.some((t) => t.level === level));
+  if (rows.length === 0) return null;
+
+  const meta = TIER_META[level];
+
+  const body = sortable ? (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={(event: DragEndEvent) => {
+        const { active, over } = event;
+        if (over && active.id !== over.id) {
+          onReorder(level, Number(active.id), Number(over.id));
+        }
+      }}
+    >
+      <SortableContext
+        items={rows.map((h) => h.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        <div className="space-y-1.5">
+          {rows.map((habit) => (
+            <SortableHabitTierRow
+              key={habit.id}
+              habit={habit}
+              level={level}
+              onLog={onLog}
+            />
+          ))}
+        </div>
+      </SortableContext>
+    </DndContext>
+  ) : (
+    <div className="space-y-1.5">
+      {rows.map((habit) => (
+        <HabitTierRow key={habit.id} habit={habit} level={level} onLog={onLog} />
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="mb-6">
+      <div className="mb-3 flex items-center gap-3">
+        <h3 className={`text-sm font-medium ${meta.color}`}>{meta.label}</h3>
+        <div className="h-px flex-1 bg-calm-200" />
+      </div>
+      {body}
     </div>
   );
 }
@@ -292,10 +288,11 @@ function HabitsPage() {
   const [isLoading, setIsLoading] = useState(false);
   // "Important only" filter, off by default (show all habits).
   const [importantOnly, setImportantOnly] = useState(false);
+  // Which tier sits on top (both always show). Growth on top by default (your
+  // aim); pick Roots to put Roots above Growth.
+  const [focus, setFocus] = useState<TierFocus>("GROWTH");
   const toast = useToast();
 
-  // Initial load (with the spinner). Defined INSIDE the effect — mirrors
-  // AreasPage, and keeps the setState off the effect's synchronous path.
   useEffect(() => {
     async function fetchHabits() {
       setIsLoading(true);
@@ -321,9 +318,8 @@ function HabitsPage() {
     fetchHabits();
   }, []);
 
-  // A quiet re-fetch (no spinner) used after a log POST, so the cascaded
-  // achieved_tier truth comes straight from the backend rather than us guessing
-  // it client-side. Reliability over cleverness.
+  // A quiet re-fetch (no spinner) after a log POST, so the cascaded
+  // achieved_tier truth comes straight from the backend.
   async function reloadHabits() {
     const res = await fetch(`${import.meta.env.VITE_API_URL}/habits/`, {
       method: "GET",
@@ -334,13 +330,9 @@ function HabitsPage() {
     setHabits(data);
   }
 
-  // Complete / undo a habit (optionally at a tier), then re-fetch GET /habits/
-  // to pick up the cascade across the whole tier stack.
-  async function logHabit(
-    habitId: number,
-    status: HabitStatus,
-    tier?: number,
-  ) {
+  // Complete / undo a habit (optionally at a tier), then re-fetch so the cascade
+  // across tiers shows.
+  async function logHabit(habitId: number, status: HabitStatus, tier?: number) {
     try {
       const body: { status: HabitStatus; tier?: number } = { status };
       if (status === "COMPLETED" && tier != null) body.tier = tier;
@@ -366,23 +358,28 @@ function HabitsPage() {
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );
 
-  // Drag finished: move the habit, show the new order at once (optimistic), then
-  // persist. Only the unfiltered view is draggable, so `habits` is exactly the
-  // on-screen list and the indices line up.
-  function handleDragEnd(event: DragEndEvent) {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const from = habits.findIndex((h) => h.id === Number(active.id));
-    const to = habits.findIndex((h) => h.id === Number(over.id));
+  // A row was dragged within a tier section. The section is only a SUBSET of all
+  // habits (those that have this tier), so we reorder that subset and splice it
+  // back into the single global order — Habit.order is one position per habit,
+  // shared across sections — then persist the whole list.
+  function handleReorder(level: number, activeId: number, overId: number) {
+    const inSection = (h: HabitRow) => h.tiers.some((t) => t.level === level);
+    const section = habits.filter(inSection);
+    const from = section.findIndex((h) => h.id === activeId);
+    const to = section.findIndex((h) => h.id === overId);
     if (from < 0 || to < 0) return;
-    const next = arrayMove(habits, from, to);
+
+    const reordered = arrayMove(section, from, to);
+    // Refill each global slot a section member occupied, in the new order; rows
+    // outside this section keep their place.
+    let k = 0;
+    const next = habits.map((h) => (inSection(h) ? reordered[k++] : h));
     setHabits(next);
     void persistOrder(next);
   }
 
   // Save the whole list's positions in one POST (id -> its index). On failure,
-  // tell the user and reload the server's order so the screen can't drift from
-  // the truth.
+  // tell the user and reload the server's order so the screen can't drift.
   async function persistOrder(ordered: HabitRow[]) {
     try {
       const items = ordered.map((habit, index) => ({
@@ -450,12 +447,34 @@ function HabitsPage() {
     ? habits.filter((habit) => habit.is_important)
     : habits;
 
+  // Drag only on the full list: reordering a filtered subset is ambiguous since
+  // the saved order is global.
+  const sortable = !importantOnly;
+
   return (
     <>
       <Header title="Habits" body="" />
       <div className="max-w-md mx-auto">
-        {/* "Important only" filter, off by default. */}
-        <div className="mb-4 flex items-center justify-end">
+        {/* Controls: which-tier-on-top picker (left), Important filter (right). */}
+        <div className="mb-5 flex items-center justify-between gap-2">
+          <div className="inline-flex rounded-full bg-white p-0.5 shadow-sm">
+            {(["GROWTH", "ROOTS"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setFocus(option)}
+                aria-pressed={focus === option}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                  focus === option
+                    ? "bg-calm-600 text-white"
+                    : "text-stone-400 hover:text-stone-600"
+                }`}
+              >
+                {option === "ROOTS" ? "Roots" : "Growth"}
+              </button>
+            ))}
+          </div>
+
           <button
             type="button"
             onClick={() => setImportantOnly((on) => !on)}
@@ -471,43 +490,20 @@ function HabitsPage() {
           </button>
         </div>
 
-        {visible.length === 0 ? (
-          <div className="bg-white rounded-2xl p-8 text-center shadow-sm">
-            <p className="text-stone-400 text-sm">
-              No important habits yet. Star a habit to see it here.
-            </p>
-          </div>
-        ) : importantOnly ? (
-          // Filtered view: a plain list. Reordering a subset is ambiguous (the
-          // saved order is global), so drag is only offered on the full list.
-          <ul className="space-y-3">
-            {visible.map((habit) => (
-              <li key={habit.id}>
-                <HabitCard habit={habit} onLog={logHabit} />
-              </li>
-            ))}
-          </ul>
-        ) : (
-          // Full list: drag a card by its grip to set your own order.
-          <DndContext
+        {/* Both tiers always render; the picker just chooses which sits on top.
+            TierSection returns null for a tier no habit has, so mapping over
+            both is safe. */}
+        {(focus === "ROOTS" ? [ROOTS, GROWTH] : [GROWTH, ROOTS]).map((level) => (
+          <TierSection
+            key={level}
+            level={level}
+            habits={visible}
+            onLog={logHabit}
+            sortable={sortable}
             sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
-          >
-            <SortableContext
-              items={visible.map((habit) => habit.id)}
-              strategy={verticalListSortingStrategy}
-            >
-              <ul className="space-y-3">
-                {visible.map((habit) => (
-                  <li key={habit.id}>
-                    <SortableHabitCard habit={habit} onLog={logHabit} />
-                  </li>
-                ))}
-              </ul>
-            </SortableContext>
-          </DndContext>
-        )}
+            onReorder={handleReorder}
+          />
+        ))}
       </div>
     </>
   );
