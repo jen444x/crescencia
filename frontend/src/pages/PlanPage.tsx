@@ -27,156 +27,24 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-// The statuses we can WRITE for a day. Matches the backend's HabitLog.Status.
-type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED";
-// What the server can REPORT: adds MISSED — a derived, read-only state the
-// backend returns for a *past* day's untouched habit. We render it but never
-// send it (the log endpoint only accepts the three writable statuses above).
-type ReadStatus = HabitStatus | "MISSED";
-
-type Plan = {
-  // null for the "Anytime" group (habits with no schedule) — that group
-  // can't be reordered.
-  id: number | null;
-  time: string | null;
-  habits: Habit[];
-};
-type Habit = {
-  id: number;
-  // The Schedule row that holds this habit's position (order + chain).
-  // It's what we send to /schedules/reorder/ when the habit is dragged.
-  schedule_id?: number | null;
-  name: string;
-  chain?: number | null;
-  // The Routine (group) this habit belongs to + its display name, for the
-  // collapsible block on the Plan page. null when the habit isn't grouped.
-  // Independent of `chain`: a habit can be in a routine, a chain, both, or neither.
-  routine?: number | null;
-  routine_name?: string | null;
-  order?: number;
-  // The day's status from the backend. `done_today` is the convenience boolean
-  // (status === "COMPLETED"); we keep both since the API sends both. Can be
-  // "MISSED" on past days, which we render but never send back.
-  status?: ReadStatus;
-  done_today?: boolean;
-  // LEGACY: that day's free-text note (HabitLog.notes), "" when none. Superseded
-  // by the new Note model (`dayNotes` below); kept as a fallback while the
-  // /days/notes/ endpoint rolls out. Per-DAY, distinct from the habit's own
-  // permanent `notes` edited on the habit page.
-  notes?: string;
-  // That day's notes from the new Note model, attached client-side from
-  // /days/notes/ (see notesByHabit). A shared note appears on each of its habits.
-  dayNotes?: DayNote[];
-  // Starred "one I care about completing" (vs a planning/helper habit). Drives a
-  // star + the "Important only" filter; nothing about tracking changes.
-  is_important?: boolean;
-  // This row is ONE tier-slot of a habit (a habit can have several at different
-  // times). Backend derives status/done_today per slot.
-  // tier != null  -> Case A: this row IS that tier-slot, at its own time. Show
-  //                  tier_name + tier_value; complete sends `tier`.
-  // tier == null + tiers non-empty -> Case B: a single same-time slot that carries
-  //                  the habit's whole ladder; the row shows the value for the
-  //                  highest tier <= dayTier and completes at that level.
-  // tier == null + tiers empty -> untiered: a plain card, no tier sent.
-  tier?: number | null;        // 1=Roots, 2=Growth; null = untiered OR Case B
-  tier_name?: string | null;
-  tier_value?: string | null;  // Case A only: this slot's value, e.g. "7:30"
-  // The habit's full tier list (every level it has). [] = untiered. Used to look
-  // up a value by level (Case A fallback) and to drive Case B's rung + stretch.
-  tiers?: { level: number; name: string; value: string }[];
-  achieved_tier?: number | null;
-};
-
-// A per-day note from the new Note model (GET /days/notes/). Unlike the legacy
-// `Habit.notes` string, it has its own id, can carry several habits, and can be
-// shared across them (`shared` === habits.length > 1).
-type DayNote = {
-  id: number;
-  body: string;
-  date: string;
-  habits: number[];
-  shared: boolean;
-  created_at: string;
-  updated_at: string;
-};
-
-// The day-tier toggle's two settings. Roots = the hard/minimum day; Growth = the
-// everyday bar. Levels match the backend's tier levels.
-const ROOTS_LEVEL = 1;
-const GROWTH_LEVEL = 2;
-
-type SlotPlacement = "inline" | "stretch" | "hidden";
-
-// True when a row carries no tiers at all — a plain habit that renders and
-// completes exactly as it always has (no tier label, no tier sent).
-function isUntiered(habit: Habit): boolean {
-  return habit.tier == null && (habit.tiers?.length ?? 0) === 0;
-}
-
-// Case B: a single same-time slot (tier null) that still carries the habit's
-// ladder, so ONE row shows the rung for today and we synthesize stretch cards for
-// the harder rungs. (Untiered habits are tier null too, hence the tiers check.)
-function isCaseB(habit: Habit): boolean {
-  return habit.tier == null && (habit.tiers?.length ?? 0) > 0;
-}
-
-// Case B's "today" rung: the highest tier level <= dayTier, or null if the habit
-// has no rung at/below today (then its inline row is dropped — it only stretches).
-function caseBInlineLevel(habit: Habit, dayTier: number): number | null {
-  const at = (habit.tiers ?? [])
-    .map((t) => t.level)
-    .filter((lvl) => lvl <= dayTier);
-  return at.length ? Math.max(...at) : null;
-}
-
-// The value to print after a row's name (the lighter "· 5 min" span), per case:
-//   Case A: this slot's own value (tier_value, or look it up in tiers by level).
-//   Case B: the value of the highest rung <= dayTier (its "today" version).
-//   untiered: none.
-function rowDisplayValue(habit: Habit, dayTier: number): string | null {
-  if (habit.tier != null) {
-    if (habit.tier_value) return habit.tier_value;
-    return habit.tiers?.find((t) => t.level === habit.tier)?.value ?? null;
-  }
-  if (isCaseB(habit)) {
-    const level = caseBInlineLevel(habit, dayTier);
-    if (level == null) return null;
-    return habit.tiers?.find((t) => t.level === level)?.value ?? null;
-  }
-  return null;
-}
-
-// The tier level a row's complete button should send (undefined = send none):
-//   Case A: this slot's tier.
-//   Case B inline: the highest rung <= dayTier.
-//   untiered: undefined.
-function rowCompleteTier(habit: Habit, dayTier: number): number | undefined {
-  if (habit.tier != null) return habit.tier;
-  if (isCaseB(habit)) return caseBInlineLevel(habit, dayTier) ?? undefined;
-  return undefined;
-}
-
-// Where a slot renders for the chosen day-tier. inlineTierByHabit maps a habit id
-// to the highest Case-A slot level <= dayTier (its "today version"), or null.
-//   untiered -> always inline.
-//   Case A   -> inline at its habit's highest tier <= today; stretch if harder than
-//               today; otherwise hidden (a lower, cascade-covered rung).
-//   Case B   -> inline when it has a rung <= today (one row for the day); plus
-//               separate synthesized stretch cards for its harder rungs (built at
-//               the page level, not here). With no rung <= today it isn't inline.
-function slotPlacement(
-  habit: Habit,
-  inlineTierByHabit: Map<number, number | null>,
-  dayTier: number,
-): SlotPlacement {
-  if (isUntiered(habit)) return "inline";               // untiered slot, always shown
-  if (isCaseB(habit))
-    return caseBInlineLevel(habit, dayTier) != null ? "inline" : "stretch";
-  const inline = inlineTierByHabit.get(habit.id) ?? null;
-  if (habit.tier === inline) return "inline";           // the highest tier <= today
-  if ((habit.tier ?? 0) > dayTier) return "stretch";    // harder than today -> bottom
-  return "hidden";                                      // lower, cascade-covered
-}
+// Plan-page domain types and tier logic now live in ./plan/* so the toolbar and
+// (future) sub-components can share them. The tier helpers are unchanged — only
+// their home moved — and DAY_TIERS drives the new tier dropdown.
+import type {
+  HabitStatus,
+  Plan,
+  Habit,
+  DayNote,
+  Segment,
+} from "./plan/types";
+import {
+  GROWTH_LEVEL,
+  isCaseB,
+  rowDisplayValue,
+  rowCompleteTier,
+  slotPlacement,
+} from "./plan/tier";
+import PlanToolbar from "./plan/PlanToolbar";
 
 // Read a habit's state, tolerating an older payload that only had done_today.
 function isDone(habit: Habit) {
@@ -296,37 +164,9 @@ function dayLabel(date: Date): string {
   });
 }
 
-// A row to render for one habit. `stepNumber` is its position within a chain
-// (1, 2, 3...) or null if it's a standalone habit. `connectBelow` draws the
-// little connector line down to the next step when they're in the same chain.
-type Row = {
-  habit: Habit;
-  stepNumber: number | null;
-  connectBelow: boolean;
-};
-
-// A time block renders as an ordered list of segments, IN PLACE (display order):
-//   - "active":  a single not-yet-completed habit
-//   - "done":    a RUN of consecutive completed habits, collapsed into one chip
-//   - "routine": a RUN of consecutive habits sharing a routine, shown as one
-//     collapsible block — so a routine stays put inside its cycle (e.g. between
-//     "shower" and "lotion") instead of being lifted out of the order.
-// A routine counts as ONE step in its chain, so step numbers stay sensible
-// (shower 1 · morning routine 2 · lotion 3), and completed routine members stay
-// in their block rather than collapsing into the "done" chip.
-type Segment =
-  | { kind: "active"; row: Row }
-  | { kind: "done"; key: string; habits: Habit[] }
-  | {
-      kind: "routine";
-      key: string;
-      routineId: number;
-      name: string;
-      stepNumber: number | null;
-      connectBelow: boolean;
-      habits: Habit[];
-    };
-
+// Row + Segment types now live in ./plan/types. buildSegments turns a plan's
+// habits into the ordered segments a time block renders (active rows, collapsed
+// "done" runs, and in-place routine blocks).
 function buildSegments(habits: Habit[]): Segment[] {
   // 1) Collapse into ordered "units": consecutive habits sharing a routine
   //    become one routine unit; every other habit is its own unit.
@@ -677,7 +517,7 @@ function HabitCard({
   const hasNotes = dayNotes.length > 0 || legacyNote !== "";
   return (
     <div
-      className={`group flex flex-col rounded-xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
+      className={`group flex flex-col rounded-xl px-4 py-2 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
         done
           ? "bg-calm-50"
           : skipped
@@ -747,7 +587,7 @@ function HabitCard({
           e.stopPropagation();
           onOpenNote(habit);
         }}
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors ${
           hasNotes
             ? "text-calm-600 hover:bg-calm-100"
             : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
@@ -769,7 +609,7 @@ function HabitCard({
             e.stopPropagation();
             onStatus(habit.id, "PENDING");
           }}
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
             skipped
               ? "border-stone-300 text-stone-400 hover:border-stone-500 hover:text-stone-600"
               : "border-rose-300 text-rose-400 hover:border-rose-500 hover:text-rose-600"
@@ -794,7 +634,7 @@ function HabitCard({
               done ? undefined : tierToSend,
             );
           }}
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
             done
               ? "border-calm-600 bg-calm-600 text-white"
               : "border-calm-300 text-transparent hover:border-calm-500"
@@ -950,15 +790,15 @@ function RowLayout({
     <div ref={nodeRef} style={style} className="flex gap-3">
       {stepNumber != null && (
         <div className="flex flex-col items-center">
-          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-calm-600 text-[11px] font-medium text-white">
+          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-calm-300 bg-calm-50 text-[10px] font-medium text-calm-500">
             {stepNumber}
           </span>
-          {connectBelow && <span className="w-px grow bg-calm-300" />}
+          {connectBelow && <span className="w-px grow bg-calm-200" />}
         </div>
       )}
       {/* min-w-0 lets this column shrink below the note's width so the note can
           truncate instead of pushing the card (and its ✓ button) off-screen. */}
-      <div className="min-w-0 flex-1 pb-1.5">
+      <div className="min-w-0 flex-1">
         <SwipeableCard
           habit={habit}
           dayTier={dayTier}
@@ -1193,18 +1033,18 @@ function RoutineBlock({
           routine isn't in a chain, and the block spans the full width. */}
       {stepNumber != null && (
         <div className="flex flex-col items-center">
-          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-calm-600 text-[11px] font-medium text-white">
+          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-calm-300 bg-calm-50 text-[10px] font-medium text-calm-500">
             {stepNumber}
           </span>
-          {connectBelow && <span className="w-px grow bg-calm-300" />}
+          {connectBelow && <span className="w-px grow bg-calm-200" />}
         </div>
       )}
-      <div className="min-w-0 flex-1 pb-1.5">
+      <div className="min-w-0 flex-1">
         {/* Header reads as a habit card (same chrome): name on the left, the
             complete circle on the right. A chevron marks that it expands into its
             members; the pencil opens the manage sheet. */}
         <div
-          className={`flex items-center gap-3 rounded-xl px-4 py-3 shadow-sm transition-shadow hover:shadow-md ${
+          className={`flex items-center gap-3 rounded-xl px-4 py-2 shadow-sm transition-shadow hover:shadow-md ${
             allDone ? "bg-calm-50" : "bg-white"
           }`}
         >
@@ -1236,7 +1076,7 @@ function RoutineBlock({
             type="button"
             aria-label={`Edit ${name}`}
             onClick={onEdit}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-calm-300 transition-colors hover:bg-calm-50 hover:text-calm-500"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-calm-300 transition-colors hover:bg-calm-50 hover:text-calm-500"
           >
             <PencilIcon />
           </button>
@@ -1250,7 +1090,7 @@ function RoutineBlock({
             onClick={() =>
               onRoutineLog(routineId, allDone ? "PENDING" : "COMPLETED")
             }
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
               allDone
                 ? "border-calm-600 bg-calm-600 text-white"
                 : "border-calm-300 text-transparent hover:border-calm-500"
@@ -1385,7 +1225,7 @@ function PlanBoard({
 
   if (!canReorder) {
     return (
-      <ul>
+      <ul className="space-y-1.5">
         {segments.map((seg) =>
           seg.kind === "done" ? (
             doneItem(seg)
@@ -1447,7 +1287,7 @@ function PlanBoard({
       onDragEnd={handleDragEnd}
     >
       <SortableContext items={activeIds} strategy={verticalListSortingStrategy}>
-        <ul>
+        <ul className="space-y-1.5">
           {segments.map((seg) =>
             seg.kind === "done" ? (
               doneItem(seg)
@@ -1488,7 +1328,7 @@ function DateNav({
 }) {
   const viewingToday = isSameDay(date, new Date());
   return (
-    <div className="mb-6 flex items-center justify-between">
+    <div className="mb-4 flex items-center justify-between">
       <button
         type="button"
         onClick={onPrev}
@@ -1512,7 +1352,7 @@ function DateNav({
       </button>
 
       <div className="flex flex-col items-center">
-        <span className="font-heading text-2xl leading-tight text-calm-900">
+        <span className="font-heading text-xl leading-tight text-calm-900">
           {dayLabel(date)}
         </span>
         {!viewingToday && (
@@ -3625,94 +3465,22 @@ function PlansPage() {
           onNext={() => setViewedDate((d) => addDays(d, 1))}
           onToday={() => setViewedDate(startOfDay(new Date()))}
         />
-        {/* Day-level control. Skip the whole day at once, or — once it's
-            skipped — a persistent "Reset day" to undo it (no time limit, unlike
-            the toast). Per-habit skip is still the swipe gesture. */}
+        {/* Day-level controls: the tier picker, the important-only filter, and
+            the rare actions (new routine / skip day / reset), grouped into one
+            compact bar. See ./plan/PlanToolbar. */}
         {visiblePlans.length > 0 && (
-          <div className="-mt-2 mb-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setRoutineSheet({ mode: "create" })}
-                className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
-              >
-                + New routine
-              </button>
-              {/* Day-tier toggle: Roots = the hard/minimum day, Growth = the
-                  everyday bar. Sets which rung every tiered habit shows + logs
-                  at; a Growth-only habit hides on a Roots day. The active side is
-                  highlighted; same small uppercase chrome as the row's controls. */}
-              <div className="flex items-center gap-0.5">
-                <button
-                  type="button"
-                  onClick={() => setDayTier(ROOTS_LEVEL)}
-                  aria-pressed={dayTier === ROOTS_LEVEL}
-                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide transition-colors ${
-                    dayTier === ROOTS_LEVEL
-                      ? "bg-calm-100 text-calm-700"
-                      : "text-calm-400 hover:text-calm-600"
-                  }`}
-                >
-                  Roots
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDayTier(GROWTH_LEVEL)}
-                  aria-pressed={dayTier === GROWTH_LEVEL}
-                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide transition-colors ${
-                    dayTier === GROWTH_LEVEL
-                      ? "bg-calm-100 text-calm-700"
-                      : "text-calm-400 hover:text-calm-600"
-                  }`}
-                >
-                  Growth
-                </button>
-              </div>
-              {/* "Important only": hide everything except starred habits, for a
-                  low-energy day when you just want the few that matter. Pure view
-                  filter — toggles instantly, persists, changes nothing stored. */}
-              <button
-                type="button"
-                onClick={() => setImportantOnly((v) => !v)}
-                aria-pressed={importantOnly}
-                className={`rounded-full px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide transition-colors ${
-                  importantOnly
-                    ? "bg-amber-100 text-amber-700"
-                    : "text-calm-400 hover:text-calm-600"
-                }`}
-              >
-                Important only
-              </button>
-              {/* Only today is reorderable, so only offer the reset there, and
-                  only once something has actually moved from the load order. */}
-              {isViewingToday && orderChanged && (
-                <button
-                  type="button"
-                  onClick={resetOrder}
-                  className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
-                >
-                  Reset order
-                </button>
-              )}
-            </div>
-            {dayFullySkipped ? (
-              <button
-                type="button"
-                onClick={() => clearDay(viewedDate)}
-                className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
-              >
-                Reset day
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setSkipDayOpen(true)}
-                className="text-[11px] font-medium uppercase tracking-wide text-stone-400 transition-colors hover:text-rose-500"
-              >
-                Skip day
-              </button>
-            )}
-          </div>
+          <PlanToolbar
+            dayTier={dayTier}
+            onTierChange={setDayTier}
+            importantOnly={importantOnly}
+            onToggleImportant={() => setImportantOnly((v) => !v)}
+            onNewRoutine={() => setRoutineSheet({ mode: "create" })}
+            showResetOrder={isViewingToday && orderChanged}
+            onResetOrder={resetOrder}
+            dayFullySkipped={dayFullySkipped}
+            onSkipDay={() => setSkipDayOpen(true)}
+            onResetDay={() => clearDay(viewedDate)}
+          />
         )}
         {body}
       </div>
