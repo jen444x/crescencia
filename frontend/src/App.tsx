@@ -10,6 +10,7 @@ import AreasPage from "./pages/AreasPage.tsx";
 import AreaPage from "./pages/AreaPage.tsx";
 import AddHabitPage from "./pages/AddHabitPage.tsx";
 import EditHabitPage from "./pages/EditHabitPage.tsx";
+import HabitsPage from "./pages/HabitsPage.tsx";
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
         <Route path="/signup" element={<SignUpPage />} />
         <Route element={<Layout />}>
           <Route path="/plan/" element={<PlanPage />} />
+          <Route path="/habits" element={<HabitsPage />} />
           <Route path="/journal/" element={<JournalPage />} />
           <Route path="/habits/new" element={<AddHabitPage />} />
           <Route path="/habits/:id" element={<EditHabitPage />} />
