@@ -1,6 +1,26 @@
-import { useState, useEffect } from "react";
+import {
+  useState,
+  useEffect,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import Header from "../components/layout/Header";
 import { useToast } from "../components/Toast";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 // The statuses we can WRITE for a habit's day. Matches the backend's
 // HabitLog.Status (the log endpoint only accepts these three).
@@ -54,6 +74,27 @@ function CheckIcon() {
         strokeWidth={3}
         d="M5 13l4 4L19 7"
       />
+    </svg>
+  );
+}
+
+// Drag-handle grip (six dots). Same icon as the Plan page's reorder handle, so
+// "grab here to drag" reads the same across the app.
+function GripIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <circle cx="9" cy="6" r="1.6" />
+      <circle cx="15" cy="6" r="1.6" />
+      <circle cx="9" cy="12" r="1.6" />
+      <circle cx="15" cy="12" r="1.6" />
+      <circle cx="9" cy="18" r="1.6" />
+      <circle cx="15" cy="18" r="1.6" />
     </svg>
   );
 }
@@ -118,9 +159,12 @@ function TierRow({
 function HabitCard({
   habit,
   onLog,
+  handle,
 }: {
   habit: HabitRow;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
+  // The drag grip, when the card is sortable. Omitted (filtered view) = no grip.
+  handle?: ReactNode;
 }) {
   const tiered = habit.tiers.length > 0;
   // Untiered: a plain done state from the log status.
@@ -129,6 +173,7 @@ function HabitCard({
   return (
     <div className="bg-white rounded-2xl p-4 shadow-sm">
       <div className="flex items-center gap-2 mb-3">
+        {handle}
         {habit.is_important && (
           <span className="shrink-0 text-amber-400">
             <StarIcon />
@@ -196,6 +241,47 @@ function HabitCard({
           </span>
         </button>
       )}
+    </div>
+  );
+}
+
+// A drag-to-reorder wrapper around HabitCard. The grip (and only the grip)
+// carries the drag listeners, so tapping a tier's complete button never starts
+// a drag. Uses @dnd-kit, same as the Plan page.
+function SortableHabitCard({
+  habit,
+  onLog,
+}: {
+  habit: HabitRow;
+  onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: habit.id });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+  const handle = (
+    <button
+      type="button"
+      aria-label="Drag to reorder"
+      {...attributes}
+      {...listeners}
+      className="shrink-0 cursor-grab touch-none text-calm-300 hover:text-calm-500 active:cursor-grabbing"
+    >
+      <GripIcon />
+    </button>
+  );
+  return (
+    <div ref={setNodeRef} style={style}>
+      <HabitCard habit={habit} onLog={onLog} handle={handle} />
     </div>
   );
 }
@@ -274,6 +360,50 @@ function HabitsPage() {
     }
   }
 
+  // Pointer drag with a small threshold so a tap (to complete) isn't misread as
+  // the start of a drag.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+
+  // Drag finished: move the habit, show the new order at once (optimistic), then
+  // persist. Only the unfiltered view is draggable, so `habits` is exactly the
+  // on-screen list and the indices line up.
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const from = habits.findIndex((h) => h.id === Number(active.id));
+    const to = habits.findIndex((h) => h.id === Number(over.id));
+    if (from < 0 || to < 0) return;
+    const next = arrayMove(habits, from, to);
+    setHabits(next);
+    void persistOrder(next);
+  }
+
+  // Save the whole list's positions in one POST (id -> its index). On failure,
+  // tell the user and reload the server's order so the screen can't drift from
+  // the truth.
+  async function persistOrder(ordered: HabitRow[]) {
+    try {
+      const items = ordered.map((habit, index) => ({
+        id: habit.id,
+        order: index,
+      }));
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/habits/reorder/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+    } catch {
+      toast("Couldn't save the new order", { variant: "error" });
+      reloadHabits().catch(() => {});
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="max-w-md mx-auto">
@@ -347,7 +477,9 @@ function HabitsPage() {
               No important habits yet. Star a habit to see it here.
             </p>
           </div>
-        ) : (
+        ) : importantOnly ? (
+          // Filtered view: a plain list. Reordering a subset is ambiguous (the
+          // saved order is global), so drag is only offered on the full list.
           <ul className="space-y-3">
             {visible.map((habit) => (
               <li key={habit.id}>
@@ -355,6 +487,26 @@ function HabitsPage() {
               </li>
             ))}
           </ul>
+        ) : (
+          // Full list: drag a card by its grip to set your own order.
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={visible.map((habit) => habit.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <ul className="space-y-3">
+                {visible.map((habit) => (
+                  <li key={habit.id}>
+                    <SortableHabitCard habit={habit} onLog={logHabit} />
+                  </li>
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
         )}
       </div>
     </>

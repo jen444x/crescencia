@@ -863,3 +863,71 @@ class HabitsListTests(TestCase):
         self.assertEqual(
             names, [("Body", "Lift"), ("Body", "Run"), ("Mind", "Meditate")]
         )
+
+
+class ReorderHabitsTests(TestCase):
+    """POST /habits/reorder/ persists a hand-picked order on Habit.order, which
+    drives the Habits page list order: placed habits first (by order), unplaced
+    (null) ones last by name."""
+
+    def setUp(self):
+        # Created out of alphabetical order; with no order set they fall back to
+        # name ordering, so a custom order is observable against that baseline.
+        self.a = Habit.objects.create(name="Apple")
+        self.b = Habit.objects.create(name="Banana")
+        self.c = Habit.objects.create(name="Cherry")
+
+    def _reorder(self, items):
+        return self.client.post(
+            reverse("habits:reorder_habits"),
+            data=json.dumps({"items": items}),
+            content_type="application/json",
+        )
+
+    def _list_names(self):
+        resp = self.client.get(reverse("habits:habits_list"))
+        self.assertEqual(resp.status_code, 200)
+        return [h["name"] for h in json.loads(resp.content)]
+
+    def test_baseline_is_name_order_before_any_reorder(self):
+        self.assertEqual(self._list_names(), ["Apple", "Banana", "Cherry"])
+
+    def test_reorder_sets_order_and_list_reflects_it(self):
+        resp = self._reorder([
+            {"id": self.c.id, "order": 0},
+            {"id": self.a.id, "order": 1},
+            {"id": self.b.id, "order": 2},
+        ])
+        self.assertEqual(resp.status_code, 200)
+        for h in (self.a, self.b, self.c):
+            h.refresh_from_db()
+        self.assertEqual((self.c.order, self.a.order, self.b.order), (0, 1, 2))
+        self.assertEqual(self._list_names(), ["Cherry", "Apple", "Banana"])
+
+    def test_unplaced_habits_sort_after_placed_ones(self):
+        # Only place Cherry; Apple/Banana stay null and sort after it, by name.
+        self._reorder([{"id": self.c.id, "order": 0}])
+        self.assertEqual(self._list_names(), ["Cherry", "Apple", "Banana"])
+
+    def test_items_must_be_a_non_empty_list(self):
+        for bad in ({}, [], "x"):
+            resp = self.client.post(
+                reverse("habits:reorder_habits"),
+                data=json.dumps({"items": bad}),
+                content_type="application/json",
+            )
+            self.assertEqual(resp.status_code, 400)
+
+    def test_item_needs_integer_id_and_order(self):
+        self.assertEqual(self._reorder([{"id": self.a.id, "order": "1"}]).status_code, 400)
+        # bool is a subclass of int, so it must be rejected explicitly.
+        self.assertEqual(self._reorder([{"id": True, "order": 0}]).status_code, 400)
+
+    def test_unknown_habit_id_is_400_and_changes_nothing(self):
+        resp = self._reorder([
+            {"id": self.a.id, "order": 0},
+            {"id": 999999, "order": 1},
+        ])
+        self.assertEqual(resp.status_code, 400)
+        self.a.refresh_from_db()
+        self.assertIsNone(self.a.order)   # all-or-nothing: nothing applied

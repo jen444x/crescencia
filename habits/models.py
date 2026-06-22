@@ -28,6 +28,11 @@ class Habit(models.Model):
     # that just structures the day). Display-only: drives a star + the "Important
     # only" filter. Nothing about tracking changes — helpers still get logged.
     is_important = models.BooleanField(default=False)
+    # Hand-picked position on the Habits page (drag-to-reorder). null = never
+    # placed → those sort last (by name). Distinct from Schedule.order, which is
+    # a habit's position WITHIN a time-slot on the Plan page; this orders the
+    # flat all-habits list. Set in bulk by reorder_habits.
+    order = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         # Default sort by the related plan's start time

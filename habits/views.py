@@ -1340,9 +1340,13 @@ def habits_list(request):
         ).values_list("habit_id", "status", "achieved_tier__level")
     }
 
-    # Override the model's default ordering (which JOINs Schedule -> duplicates);
-    # ordering by area__name/name drops that join so each habit appears once.
-    habits = Habit.objects.select_related("area").order_by("area__name", "name")
+    # Override the model's default ordering (which JOINs Schedule -> duplicates):
+    # hand-picked Habit.order first (unplaced habits are null -> sort last), then
+    # area/name as the stable fallback. Ordering by Habit fields drops that join,
+    # so each habit still appears exactly once.
+    habits = Habit.objects.select_related("area").order_by(
+        F("order").asc(nulls_last=True), "area__name", "name"
+    )
 
     data = []
     for habit in habits:
@@ -1361,6 +1365,60 @@ def habits_list(request):
         })
 
     return JsonResponse(data, safe=False)
+
+
+@csrf_exempt
+@require_POST
+def reorder_habits(request):
+    """Persist a new top-to-bottom order for the Habits page in one shot.
+
+    Body: {"items": [{"id": <habit_id>, "order": <n>}, ...]} — the whole list
+    with each habit's new position. Sending the full list (not "move X up one")
+    keeps it idempotent and avoids renumbering neighbours one at a time. Mirrors
+    reorder_schedules, but the position lives on Habit, because the Habits page
+    lists habits, not schedule slots.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        return JsonResponse({"error": "'items' must be a non-empty list."}, status=400)
+
+    # Validate everything before touching the DB, so a bad item can't leave a
+    # half-applied order behind.
+    cleaned = []
+    for item in items:
+        if not isinstance(item, dict):
+            return JsonResponse({"error": "Each item must be an object."}, status=400)
+        hid, order = item.get("id"), item.get("order")
+        # bool is a subclass of int, so reject it explicitly.
+        if not isinstance(hid, int) or isinstance(hid, bool) \
+                or not isinstance(order, int) or isinstance(order, bool):
+            return JsonResponse(
+                {"error": "Each item needs an integer 'id' and 'order'."}, status=400
+            )
+        cleaned.append({"id": hid, "order": order})
+
+    habits = Habit.objects.in_bulk([e["id"] for e in cleaned])
+    missing = [e["id"] for e in cleaned if e["id"] not in habits]
+    if missing:
+        return JsonResponse({"error": f"Unknown habit ids: {missing}."}, status=400)
+
+    for e in cleaned:
+        habits[e["id"]].order = e["order"]
+
+    # One UPDATE for the whole batch, all-or-nothing.
+    with transaction.atomic():
+        Habit.objects.bulk_update(habits.values(), ["order"])
+
+    updated = [
+        {"id": h.id, "order": h.order}
+        for h in sorted(habits.values(), key=lambda h: h.order)
+    ]
+    return JsonResponse({"updated": updated})
 
 
 def areas(request):
