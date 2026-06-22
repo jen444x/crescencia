@@ -1783,9 +1783,11 @@ function RetimeBlock({
 // you've scrolled down.
 function FloatingControls({
   onGoToNow,
+  onGoToTop,
   getNowTop,
 }: {
   onGoToNow?: () => void;
+  onGoToTop: () => void;
   getNowTop?: () => number | null;
 }) {
   const [scrolled, setScrolled] = useState(false);
@@ -1825,7 +1827,7 @@ function FloatingControls({
       {scrolled && (
         <button
           type="button"
-          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          onClick={onGoToTop}
           aria-label="Scroll to top"
           className="flex h-10 w-10 items-center justify-center rounded-full border border-calm-200 bg-white text-calm-600 shadow-lg transition-colors hover:bg-calm-50"
         >
@@ -2482,6 +2484,16 @@ function PlansPage() {
     localStorage.setItem("importantOnly", importantOnly ? "1" : "0");
   }, [importantOnly]);
 
+  // Where the plan opens (and where the floating control parks you): at "now" (the
+  // current time block, the default) or at the top. Set by whichever floating
+  // button you last tapped, and persisted — so the app reopens where you left it.
+  const [landingPref, setLandingPref] = useState<"now" | "top">(() =>
+    localStorage.getItem("planLanding") === "top" ? "top" : "now",
+  );
+  useEffect(() => {
+    localStorage.setItem("planLanding", landingPref);
+  }, [landingPref]);
+
   // Bump to force a re-fetch of the current day (e.g. after a "running late" shift).
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -3088,10 +3100,16 @@ function PlansPage() {
     }
   }
 
-  // After the first load, open the page at the time block happening now, so the
-  // user doesn't scroll past the whole morning to reach their current habits.
+  // After the first load, open the page where you last left the floating control:
+  // at the time block happening now (default), or at the top — so "now" users land
+  // on their current habits, and "top" users start at the beginning of the day.
   useEffect(() => {
     if (didAutoScroll.current || isLoading || plans.length === 0) return;
+    // "top" preference: nothing to scroll — the page already loads at the top.
+    if (landingPref === "top") {
+      didAutoScroll.current = true;
+      return;
+    }
     // "Now" only means anything on today's view.
     if (!isViewingToday || nowBlockId == null) return;
     const el = sectionRefs.current[String(nowBlockId)];
@@ -3099,7 +3117,7 @@ function PlansPage() {
       el.scrollIntoView({ block: "start" });
       didAutoScroll.current = true;
     }
-  }, [plans, isLoading, nowBlockId, isViewingToday]);
+  }, [plans, isLoading, nowBlockId, isViewingToday, landingPref]);
 
   // Re-center on the current time block (the "Now" button).
   function scrollToNow() {
@@ -3487,8 +3505,17 @@ function PlansPage() {
 
       <FloatingControls
         onGoToNow={
-          isViewingToday && nowBlockId != null ? scrollToNow : undefined
+          isViewingToday && nowBlockId != null
+            ? () => {
+                setLandingPref("now");
+                scrollToNow();
+              }
+            : undefined
         }
+        onGoToTop={() => {
+          setLandingPref("top");
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }}
         getNowTop={() =>
           nowBlockId != null
             ? sectionRefs.current[String(nowBlockId)]?.getBoundingClientRect()
