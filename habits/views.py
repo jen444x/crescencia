@@ -1316,6 +1316,53 @@ def logs(request):
     return JsonResponse(data, safe=False)
 
 
+def habits_list(request):
+    """Every habit with its tiers and today's completion status — powers the
+    Habits overview page.
+
+    Returns a flat array, one object per habit, ordered by area name then habit
+    name. Unlike /plan/ (which emits a row per Schedule slot), this lists each
+    habit ONCE: we order_by("area__name", "name") instead of relying on the
+    model's default ordering, which JOINs Schedule and would duplicate a habit
+    that sits in several time-slots.
+
+    Each habit carries its tier ladder (`_habit_tiers`, low->high, [] if
+    untiered) and TODAY's HabitLog status/achieved tier (PENDING with no log).
+    """
+    today = timezone.localdate()
+
+    # One query for today's logs: habit id -> (status, achieved tier level).
+    # achieved_tier__level is null when the habit isn't completed/untiered.
+    logs_by_habit = {
+        hid: (status, achieved_level)
+        for hid, status, achieved_level in HabitLog.objects.filter(
+            date=today
+        ).values_list("habit_id", "status", "achieved_tier__level")
+    }
+
+    # Override the model's default ordering (which JOINs Schedule -> duplicates);
+    # ordering by area__name/name drops that join so each habit appears once.
+    habits = Habit.objects.select_related("area").order_by("area__name", "name")
+
+    data = []
+    for habit in habits:
+        status, achieved_level = logs_by_habit.get(
+            habit.id, (HabitLog.Status.PENDING, None)
+        )
+        data.append({
+            "id": habit.id,
+            "name": habit.name,
+            "area": habit.area_id,
+            "area_name": habit.area.name if habit.area_id else None,
+            "is_important": habit.is_important,
+            "tiers": _habit_tiers(habit),          # low->high, [] if untiered
+            "status": status,                      # today's status, PENDING if no log
+            "achieved_tier": achieved_level,       # today's highest tier level, or null
+        })
+
+    return JsonResponse(data, safe=False)
+
+
 def areas(request):
     areas = Area.objects.all().order_by('name')
     data = list(areas.values('id', 'name'))

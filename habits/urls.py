@@ -8,6 +8,7 @@ urlpatterns = [
     path("", views.index, name="index"),
     path("plan/", views.plan, name="plan"),
     path("logs/", views.logs, name="logs"),
+    path("habits/", views.habits_list, name="habits_list"),
     path("habits/create/", views.create_habit, name="create_habit"),
     path("habits/<int:habit_id>/", views.habit, name="habit"),
     path("habits/<int:habit_id>/edit/", views.edit_habit, name="edit_habit"),
