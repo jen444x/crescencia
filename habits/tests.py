@@ -5,7 +5,10 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from .models import Habit, HabitLog, Note, Plan, PlanDay, Routine, Schedule
+from .models import (
+    Area, Habit, HabitLog, HabitTier, Note, Plan, PlanDay, Routine, Schedule,
+    Tier, TierValue,
+)
 
 
 class BrowseDaysTests(TestCase):
@@ -740,3 +743,123 @@ class RoutineLogTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(json.loads(resp.content)["updated"], 0)
+
+
+class HabitsListTests(TestCase):
+    """`/habits/` lists ALL habits with their tiers and today's status — the
+    Habits overview page. One row per habit (never per Schedule slot)."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        # Two areas, deliberately out of alphabetical creation order so the
+        # name-ordering assertion is meaningful.
+        self.mind = Area.objects.create(name="Mind")
+        self.body = Area.objects.create(name="Body")
+
+        # A tiered habit (Meditate) in Mind: Roots -> Growth, with values.
+        self.meditate = Habit.objects.create(
+            name="Meditate", area=self.mind, is_important=True
+        )
+        self._add_tier(self.meditate, level=1, value="2 min")
+        self._add_tier(self.meditate, level=2, value="10 min")
+
+        # An untiered habit (Run) in Body.
+        self.run = Habit.objects.create(name="Run", area=self.body)
+
+    def _add_tier(self, habit, *, level, value):
+        """Mirror add_habit_tier: ensure the HabitTier exists and append a value
+        dated today (the newest TierValue is the current value)."""
+        tier, _ = Tier.objects.get_or_create(level=level)
+        habit_tier, _ = HabitTier.objects.get_or_create(habit=habit, tier=tier)
+        TierValue.objects.create(
+            habit_tier=habit_tier, value=value, started=self.today
+        )
+
+    def _get(self):
+        resp = self.client.get(reverse("habits:habits_list"))
+        self.assertEqual(resp.status_code, 200)
+        return json.loads(resp.content)
+
+    def _by_id(self, data):
+        return {h["id"]: h for h in data}
+
+    def test_returns_all_habits_with_correct_shape(self):
+        data = self._get()
+        self.assertEqual(len(data), 2)
+        row = self._by_id(data)[self.meditate.id]
+        self.assertEqual(
+            set(row.keys()),
+            {"id", "name", "area", "area_name", "is_important",
+             "tiers", "status", "achieved_tier"},
+        )
+        self.assertEqual(row["id"], self.meditate.id)
+        self.assertEqual(row["name"], "Meditate")
+        self.assertEqual(row["area"], self.mind.id)
+        self.assertEqual(row["area_name"], "Mind")
+        self.assertTrue(row["is_important"])
+
+    def test_untiered_habit_has_empty_tiers(self):
+        row = self._by_id(self._get())[self.run.id]
+        self.assertEqual(row["tiers"], [])
+
+    def test_tiered_habit_lists_tiers_low_to_high_with_current_values(self):
+        row = self._by_id(self._get())[self.meditate.id]
+        self.assertEqual(
+            row["tiers"],
+            [
+                {"level": 1, "name": "Roots", "value": "2 min"},
+                {"level": 2, "name": "Growth", "value": "10 min"},
+            ],
+        )
+
+    def test_tier_value_uses_the_newest_tiervalue(self):
+        # Bump Roots to a new value; the newest started date wins.
+        self._add_tier(self.meditate, level=1, value="5 min")
+        roots = next(
+            t for t in self._by_id(self._get())[self.meditate.id]["tiers"]
+            if t["level"] == 1
+        )
+        self.assertEqual(roots["value"], "5 min")
+
+    def test_completed_habit_reflects_today_status_and_tier(self):
+        tier2 = Tier.objects.get(level=2)
+        HabitLog.objects.create(
+            habit=self.meditate, date=self.today,
+            status=HabitLog.Status.COMPLETED, achieved_tier=tier2,
+        )
+        row = self._by_id(self._get())[self.meditate.id]
+        self.assertEqual(row["status"], "COMPLETED")
+        self.assertEqual(row["achieved_tier"], 2)
+
+    def test_no_log_today_is_pending_with_null_tier(self):
+        row = self._by_id(self._get())[self.run.id]
+        self.assertEqual(row["status"], "PENDING")
+        self.assertIsNone(row["achieved_tier"])
+
+    def test_habit_with_two_schedule_rows_appears_once(self):
+        # Two tier-slots for the same habit at two times -> two Schedule rows.
+        # The list must still show the habit exactly once (the duplicate guard).
+        plan_a = Plan.objects.create(start_time=time(7, 0))
+        plan_b = Plan.objects.create(start_time=time(11, 0))
+        Schedule.objects.create(habit=self.meditate, plan=plan_a, order=1)
+        Schedule.objects.create(habit=self.meditate, plan=plan_b, order=1)
+
+        data = self._get()
+        ids = [h["id"] for h in data]
+        self.assertEqual(ids.count(self.meditate.id), 1)
+        self.assertEqual(len(data), 2)
+
+    def test_habit_with_no_area_has_null_area_fields(self):
+        Habit.objects.create(name="Floating")
+        row = next(h for h in self._get() if h["name"] == "Floating")
+        self.assertIsNone(row["area"])
+        self.assertIsNone(row["area_name"])
+
+    def test_ordered_by_area_name_then_habit_name(self):
+        # Add a second Body habit that sorts before "Run" by name.
+        Habit.objects.create(name="Lift", area=self.body)
+        names = [(h["area_name"], h["name"]) for h in self._get()]
+        # Body (B) before Mind (M); within Body, Lift before Run.
+        self.assertEqual(
+            names, [("Body", "Lift"), ("Body", "Run"), ("Mind", "Meditate")]
+        )
