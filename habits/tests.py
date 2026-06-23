@@ -676,6 +676,39 @@ class RoutineApiTests(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_reorder_can_move_to_another_plan(self):
+        # Cross-block drag: send the moved row with its new `plan`.
+        other = Plan.objects.create()
+        resp = self.client.post(
+            reverse("habits:reorder_schedules"),
+            data={"items": [{"id": self.s_brush.id, "order": 1, "plan": other.id}]},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.content)["updated"][0]["plan"], other.id)
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.plan_id, other.id)
+
+    def test_reorder_rejects_unknown_plan(self):
+        resp = self.client.post(
+            reverse("habits:reorder_schedules"),
+            data={"items": [{"id": self.s_brush.id, "order": 1, "plan": 999999}]},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.plan_id, self.plan.id)  # unchanged on failure
+
+    def test_reorder_omitting_plan_keeps_block(self):
+        resp = self.client.post(
+            reverse("habits:reorder_schedules"),
+            data={"items": [{"id": self.s_brush.id, "order": 5}]},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.plan_id, self.plan.id)  # block unchanged
+
 
 class RoutineLogTests(TestCase):
     """`routines/<id>/log/` fans one status out to every member habit — the

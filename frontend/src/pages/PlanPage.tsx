@@ -13,10 +13,12 @@ import { useToast } from "../components/Toast";
 import { useNavigate } from "react-router-dom";
 import {
   DndContext,
-  closestCenter,
+  DragOverlay,
+  closestCorners,
   PointerSensor,
   useSensor,
   useSensors,
+  useDroppable,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import {
@@ -812,7 +814,10 @@ function SortableRow({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: habit.id });
+    // Keyed by the SCHEDULE row, not the habit: a habit can sit in several
+    // blocks (tier-slots at different times), so habit.id isn't unique across
+    // the page-wide drag context. schedule_id is always set on a draggable row.
+  } = useSortable({ id: habit.schedule_id ?? habit.id });
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -1112,7 +1117,6 @@ function PlanBoard({
   mainOnly,
   onStatus,
   onOpenNote,
-  onReorder,
   onRoutineLog,
   onEditRoutine,
   interactive,
@@ -1129,7 +1133,6 @@ function PlanBoard({
   mainOnly: boolean;
   onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   onOpenNote: (habit: Habit) => void;
-  onReorder: (planId: number, orderedHabits: Habit[]) => void;
   onRoutineLog: (routineId: number, status: HabitStatus) => void;
   onEditRoutine: (routineId: number, name: string) => void;
   // Only today is reorderable: dragging writes the *recurring* order (the
@@ -1138,13 +1141,13 @@ function PlanBoard({
   // every day's routine.
   interactive: boolean;
 }) {
-  // Require a 6px drag before a pointer-down counts as a drag, so a plain tap
-  // still works as a click (toggle / open detail).
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-  );
-
   const planId = plan.id;
+  // Register this block as a drop target so a row dragged out of another block
+  // can land here — including on the empty space below the rows. The page-level
+  // DndContext (in the main component) runs the actual move on drop.
+  const { setNodeRef: setDropRef } = useDroppable({
+    id: `plan-${planId ?? "anytime"}`,
+  });
   // Keep only the rows that belong INLINE for the day: untiered rows, the one
   // Case-A slot at the habit's highest tier <= today, and a Case-B row that has a
   // rung <= today. Stretch/hidden slots are simply absent here (their harder
@@ -1226,66 +1229,34 @@ function PlanBoard({
     );
   }
 
-  const activeIds = activeHabits.map((habit) => habit.id);
-
-  // On drop we rebuild the FULL list — active habits in their new order, while
-  // completed and routine-grouped habits stay exactly where they were — so
-  // reorderPlan can renumber and persist the whole block in one POST.
-  function handleDragEnd(event: DragEndEvent) {
-    if (planId == null) return;
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const from = activeHabits.findIndex((h) => h.id === Number(active.id));
-    const to = activeHabits.findIndex((h) => h.id === Number(over.id));
-    if (from < 0 || to < 0) return;
-
-    const newActive = arrayMove(activeHabits, from, to);
-    let next = 0;
-    // Rebuild the FULL list so the persisted order stays coherent: routine and
-    // done members keep their spot, non-inline slots (stretch/hidden) and
-    // main-only-hidden rows stay put (not shown, not reordered, but must NOT
-    // be dropped from the order), and the loose visible actives take their new
-    // order. The condition mirrors the `habits` display filter above.
-    const newFull = plan.habits.map((habit) =>
-      habit.routine != null ||
-      isDone(habit) ||
-      slotPlacement(habit, inlineTierByHabit, dayTier) !== "inline" ||
-      (mainOnly && habit.is_support)
-        ? habit
-        : newActive[next++],
-    );
-    onReorder(planId, newFull);
-  }
+  // Drag ids are schedule ids (unique page-wide). The drop logic lives in the
+  // main component's page-level DndContext, which can see every block at once —
+  // both within-block reorder and a move into another block.
+  const activeIds = activeHabits.map((habit) => habit.schedule_id ?? habit.id);
 
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragEnd={handleDragEnd}
-    >
-      <SortableContext items={activeIds} strategy={verticalListSortingStrategy}>
-        <ul className="space-y-1.5">
-          {segments.map((seg) =>
-            seg.kind === "done" ? (
-              doneItem(seg)
-            ) : seg.kind === "routine" ? (
-              routineItem(seg)
-            ) : (
-              <li key={seg.row.habit.id}>
-                <SortableRow
-                  habit={seg.row.habit}
-                  dayTier={dayTier}
-                  stepNumber={seg.row.stepNumber}
-                  connectBelow={seg.row.connectBelow}
-                  onStatus={onStatus}
-                  onOpenNote={onOpenNote}
-                />
-              </li>
-            ),
-          )}
-        </ul>
-      </SortableContext>
-    </DndContext>
+    <SortableContext items={activeIds} strategy={verticalListSortingStrategy}>
+      <ul ref={setDropRef} className="space-y-1.5">
+        {segments.map((seg) =>
+          seg.kind === "done" ? (
+            doneItem(seg)
+          ) : seg.kind === "routine" ? (
+            routineItem(seg)
+          ) : (
+            <li key={seg.row.habit.schedule_id ?? seg.row.habit.id}>
+              <SortableRow
+                habit={seg.row.habit}
+                dayTier={dayTier}
+                stepNumber={seg.row.stepNumber}
+                connectBelow={seg.row.connectBelow}
+                onStatus={onStatus}
+                onOpenNote={onOpenNote}
+              />
+            </li>
+          ),
+        )}
+      </ul>
+    </SortableContext>
   );
 }
 
@@ -2869,6 +2840,177 @@ function PlansPage() {
     });
   }
 
+  // The row being dragged right now (schedule id), so a DragOverlay can render a
+  // solid copy that follows your finger — otherwise a row dragged out of its
+  // block fades in place and you can't see where you're moving it.
+  const [dragId, setDragId] = useState<number | null>(null);
+
+  // One shared drag context spans every block (lifted out of PlanBoard) so a row
+  // can be dragged from one time block into another. A 6px threshold keeps a
+  // plain tap working as a click (toggle / open detail).
+  const planSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+
+  // The loose, movable rows of a block — the same subset PlanBoard makes
+  // draggable: shown inline for the day, not main-only-hidden, not done, not
+  // routine-grouped. Done/routine/hidden rows keep their spot and never move.
+  const activeRowsOf = (habits: Habit[]) =>
+    habits.filter(
+      (h) =>
+        slotPlacement(h, inlineTierByHabit, dayTier) === "inline" &&
+        (!mainOnly || !h.is_support) &&
+        !isDone(h) &&
+        h.routine == null,
+    );
+
+  // Fire-and-forget POST of an explicit items list to /schedules/reorder/.
+  // Returns ok; the caller owns optimistic state + rollback.
+  async function persistItems(
+    items: Array<Record<string, number | null>>,
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/schedules/reorder/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        },
+      );
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  // Move one row (schedule `sid`) out of `fromPlan` into `toPlan`, dropping its
+  // chain/routine (those are same-block tags) and landing it before `overSid`
+  // (or at the end when dropped on empty block space). Persists BOTH blocks in
+  // one batch, optimistic with rollback, and offers an Undo that puts it back.
+  async function moveAcrossBlocks(
+    fromPlan: Plan,
+    toPlan: Plan,
+    sid: number,
+    overSid: number | null,
+  ) {
+    if (fromPlan.id == null || toPlan.id == null) return;
+    const moved = fromPlan.habits.find((h) => h.schedule_id === sid);
+    if (!moved) return;
+
+    const snapshot = plansRef.current;
+    const origFrom = fromPlan.habits;
+    const origTo = toPlan.habits;
+
+    const newFrom = origFrom.filter((h) => h.schedule_id !== sid);
+    const movedNew: Habit = { ...moved, chain: null, routine: null };
+    const at = overSid != null ? origTo.findIndex((h) => h.schedule_id === overSid) : -1;
+    const idx = at >= 0 ? at : origTo.length;
+    const newTo = [...origTo.slice(0, idx), movedNew, ...origTo.slice(idx)];
+
+    setPlans((prev) =>
+      prev.map((p) =>
+        p.id === fromPlan.id
+          ? { ...p, habits: newFrom.map((h, i) => ({ ...h, order: i + 1 })) }
+          : p.id === toPlan.id
+            ? { ...p, habits: newTo.map((h, i) => ({ ...h, order: i + 1 })) }
+            : p,
+      ),
+    );
+
+    const items = [
+      ...newFrom.map((h, i) => ({ id: h.schedule_id ?? null, order: i + 1 })),
+      ...newTo.map((h, i) =>
+        h.schedule_id === sid
+          ? { id: sid, order: i + 1, plan: toPlan.id, chain: null, routine: null }
+          : { id: h.schedule_id ?? null, order: i + 1 },
+      ),
+    ];
+    const ok = await persistItems(items);
+    if (!ok) {
+      setPlans(snapshot);
+      toast("Couldn't move that habit", { variant: "error" });
+      return;
+    }
+
+    toast("Habit moved", {
+      action: {
+        label: "Undo",
+        onClick: () => {
+          setPlans(snapshot);
+          // Put the row back in its old block, time, and chain/routine tags.
+          persistItems([
+            ...origFrom.map((h, i) =>
+              h.schedule_id === sid
+                ? {
+                    id: sid,
+                    order: i + 1,
+                    plan: fromPlan.id,
+                    chain: h.chain ?? null,
+                    routine: h.routine ?? null,
+                  }
+                : { id: h.schedule_id ?? null, order: i + 1 },
+            ),
+            ...origTo.map((h, i) => ({ id: h.schedule_id ?? null, order: i + 1 })),
+          ]);
+        },
+      },
+    });
+  }
+
+  // The page-level drop handler. The dragged id is a schedule id; the drop
+  // target is either another row (its schedule id) or a block's empty space
+  // (`plan-<id>`). Same block -> reorder; different block -> move across.
+  function handlePlanDragEnd(event: DragEndEvent) {
+    setDragId(null); // drop finished — tear down the overlay
+    const { active, over } = event;
+    if (!over) return;
+    const activeSid = Number(active.id);
+
+    let overSid: number | null = null;
+    let targetPlanId: number | null = null;
+    if (typeof over.id === "string" && over.id.startsWith("plan-")) {
+      const raw = over.id.slice("plan-".length);
+      targetPlanId = raw === "anytime" ? null : Number(raw);
+    } else {
+      overSid = Number(over.id);
+      targetPlanId =
+        plans.find(
+          (p) => p.id != null && p.habits.some((h) => h.schedule_id === overSid),
+        )?.id ?? null;
+    }
+    if (targetPlanId == null) return;
+
+    const sourcePlan = plans.find(
+      (p) => p.id != null && p.habits.some((h) => h.schedule_id === activeSid),
+    );
+    if (!sourcePlan || sourcePlan.id == null) return;
+
+    if (sourcePlan.id === targetPlanId) {
+      // Within-block reorder — rebuild the full list keeping non-active rows put.
+      if (overSid == null || activeSid === overSid) return;
+      const active2 = activeRowsOf(sourcePlan.habits);
+      const from = active2.findIndex((h) => h.schedule_id === activeSid);
+      const to = active2.findIndex((h) => h.schedule_id === overSid);
+      if (from < 0 || to < 0) return;
+      const newActive = arrayMove(active2, from, to);
+      let next = 0;
+      const newFull = sourcePlan.habits.map((h) =>
+        slotPlacement(h, inlineTierByHabit, dayTier) !== "inline" ||
+        (mainOnly && h.is_support) ||
+        isDone(h) ||
+        h.routine != null
+          ? h
+          : newActive[next++],
+      );
+      reorderPlan(sourcePlan.id, newFull);
+    } else {
+      const targetPlan = plans.find((p) => p.id === targetPlanId);
+      if (!targetPlan) return;
+      moveAcrossBlocks(sourcePlan, targetPlan, activeSid, overSid);
+    }
+  }
+
   // Reorder every schedulable plan to match a template's order, mapping the
   // CURRENT habit objects (so statuses/notes set since aren't clobbered) onto
   // the template's id order. Persists only the plans that actually changed.
@@ -3257,11 +3399,24 @@ function PlansPage() {
       </div>
     );
   } else {
+    const draggingHabit =
+      dragId != null
+        ? shownPlans
+            .flatMap((p) => p.habits)
+            .find((h) => h.schedule_id === dragId) ?? null
+        : null;
     body = (
-      <div
-        className={`space-y-6 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
+      <DndContext
+        sensors={planSensors}
+        collisionDetection={closestCorners}
+        onDragStart={(e) => setDragId(Number(e.active.id))}
+        onDragCancel={() => setDragId(null)}
+        onDragEnd={handlePlanDragEnd}
       >
-        {shownPlans.map((plan) => {
+        <div
+          className={`space-y-6 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
+        >
+          {shownPlans.map((plan) => {
           const key = plan.id ?? "anytime";
           const isNow =
             isViewingToday && plan.id != null && plan.id === nowBlockId;
@@ -3294,7 +3449,6 @@ function PlansPage() {
               mainOnly={mainOnly}
               onStatus={setHabitStatus}
               onOpenNote={setEditingNote}
-              onReorder={reorderPlan}
               onRoutineLog={setRoutineStatus}
               onEditRoutine={(id, name) =>
                 setRoutineSheet({ mode: "edit", id, name })
@@ -3445,7 +3599,20 @@ function PlansPage() {
             </ul>
           </section>
         )}
-      </div>
+        </div>
+        {/* Floating copy that follows the finger so the dragged habit stays
+            visible as it crosses between blocks. */}
+        <DragOverlay>
+          {draggingHabit ? (
+            <div className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm text-stone-800 shadow-lg ring-1 ring-calm-200">
+              <span className="text-calm-400">
+                <GripIcon />
+              </span>
+              {draggingHabit.name}
+            </div>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
     );
   }
 

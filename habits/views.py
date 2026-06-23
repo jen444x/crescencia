@@ -477,6 +477,11 @@ def reorder_schedules(request):
     `chain` is optional: it's only changed when the key is present (null means
     "no cycle"). Sending the whole list — instead of "move row X up one" — keeps
     this idempotent and avoids shuffling neighbours one index at a time.
+
+    `plan` (optional) moves a row into another time block — its value is the
+    target Plan's id. That's the cross-block drag: the moved row is sent with its
+    new `plan`, usually alongside `chain`/`routine` null (those are same-block
+    tags). Omit `plan` and the row stays in its current block.
     """
     try:
         body = json.loads(request.body or b"{}")
@@ -505,6 +510,16 @@ def reorder_schedules(request):
             entry["chain"] = item["chain"]   # None or a chain id
         if "routine" in item:
             entry["routine"] = item["routine"]   # None or a routine id
+        if "plan" in item:
+            # Move this row into another time block (cross-block drag). A real
+            # plan id only — null ("drop to Anytime") is a delete, handled
+            # elsewhere, not here.
+            p = item["plan"]
+            if not isinstance(p, int) or isinstance(p, bool):
+                return JsonResponse(
+                    {"error": "'plan' must be a plan id (integer)."}, status=400
+                )
+            entry["plan"] = p
         if "tier" in item:
             t = item["tier"]   # None (clear) or a tier level 1/2/3
             if t is not None and (
@@ -536,6 +551,13 @@ def reorder_schedules(request):
         if unknown:
             return JsonResponse({"error": f"Unknown routine ids: {unknown}."}, status=400)
 
+    plan_ids = {e["plan"] for e in cleaned if "plan" in e}
+    if plan_ids:
+        known = set(Plan.objects.filter(id__in=plan_ids).values_list("id", flat=True))
+        unknown = sorted(plan_ids - known)
+        if unknown:
+            return JsonResponse({"error": f"Unknown plan ids: {unknown}."}, status=400)
+
     # Map tier level (1/2/3) -> Tier row id, for any items setting a slot's tier.
     tier_by_level = {t.level: t.id for t in Tier.objects.all()}
 
@@ -549,6 +571,9 @@ def reorder_schedules(request):
         if "routine" in e:
             schedule.routine_id = e["routine"]
             fields.add("routine")
+        if "plan" in e:
+            schedule.plan_id = e["plan"]
+            fields.add("plan")
         if "tier" in e:
             schedule.tier_id = (
                 tier_by_level.get(e["tier"]) if e["tier"] is not None else None
@@ -560,7 +585,8 @@ def reorder_schedules(request):
         Schedule.objects.bulk_update(schedules.values(), list(fields))
 
     updated = [
-        {"id": s.id, "order": s.order, "chain": s.chain_id, "routine": s.routine_id}
+        {"id": s.id, "order": s.order, "plan": s.plan_id,
+         "chain": s.chain_id, "routine": s.routine_id}
         for s in sorted(schedules.values(), key=lambda s: s.order)
     ]
     return JsonResponse({"updated": updated})
