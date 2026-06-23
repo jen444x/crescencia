@@ -448,22 +448,6 @@ function RestoreIcon() {
   );
 }
 
-// Filled star marking an "important" habit. Filled (not outline) so it reads as
-// a clear marker at a glance next to the name.
-function StarIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M9.05 2.93c.3-.92 1.6-.92 1.9 0l1.42 4.38a1 1 0 00.95.69h4.6c.97 0 1.37 1.24.59 1.81l-3.73 2.71a1 1 0 00-.36 1.12l1.42 4.38c.3.92-.75 1.69-1.54 1.12l-3.72-2.71a1 1 0 00-1.18 0l-3.72 2.71c-.79.57-1.84-.2-1.54-1.12l1.42-4.38a1 1 0 00-.36-1.12L1.48 9.81c-.78-.57-.38-1.81.59-1.81h4.6a1 1 0 00.95-.69L9.05 2.93z" />
-    </svg>
-  );
-}
-
 function HabitCard({
   habit,
   dayTier,
@@ -529,13 +513,6 @@ function HabitCard({
     >
       <div className="flex items-center gap-3">
       {handle}
-      {/* Star marks an "important" habit (one she cares about completing). Dimmed
-          once the habit is done so it doesn't compete with the struck-out name. */}
-      {habit.is_important && (
-        <span className={`shrink-0 ${done ? "text-amber-300" : "text-amber-400"}`}>
-          <StarIcon />
-        </span>
-      )}
       {/* The name is a plain heading again, so a normal tap bubbles up and opens
           the habit detail page. A tier-slot appends its value (e.g. "· 7:30") in
           a lighter span, dimmed further once the slot is done. */}
@@ -1132,7 +1109,7 @@ function PlanBoard({
   plan,
   dayTier,
   inlineTierByHabit,
-  importantOnly,
+  mainOnly,
   onStatus,
   onOpenNote,
   onReorder,
@@ -1147,9 +1124,9 @@ function PlanBoard({
   // habit id -> its highest Case-A slot level <= dayTier (its "today" version), or
   // null. Drives which tier-slot renders inline vs. stretches vs. hides.
   inlineTierByHabit: Map<number, number | null>;
-  // "Important only" view: when on, non-important habits are hidden too (still
-  // kept in place during reorder, like tier-hidden ones — never dropped).
-  importantOnly: boolean;
+  // "Main only" view: when on, helper/support habits are hidden too (still kept
+  // in place during reorder, like tier-hidden ones — never dropped).
+  mainOnly: boolean;
   onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
   onOpenNote: (habit: Habit) => void;
   onReorder: (planId: number, orderedHabits: Habit[]) => void;
@@ -1178,7 +1155,7 @@ function PlanBoard({
   const habits = plan.habits.filter(
     (habit) =>
       slotPlacement(habit, inlineTierByHabit, dayTier) === "inline" &&
-      (!importantOnly || habit.is_important),
+      (!mainOnly || !habit.is_support),
   );
 
   // Not reorderable when it's the "Anytime" group (no schedule rows) or any day
@@ -1266,14 +1243,14 @@ function PlanBoard({
     let next = 0;
     // Rebuild the FULL list so the persisted order stays coherent: routine and
     // done members keep their spot, non-inline slots (stretch/hidden) and
-    // important-only-hidden rows stay put (not shown, not reordered, but must NOT
+    // main-only-hidden rows stay put (not shown, not reordered, but must NOT
     // be dropped from the order), and the loose visible actives take their new
     // order. The condition mirrors the `habits` display filter above.
     const newFull = plan.habits.map((habit) =>
       habit.routine != null ||
       isDone(habit) ||
       slotPlacement(habit, inlineTierByHabit, dayTier) !== "inline" ||
-      (importantOnly && !habit.is_important)
+      (mainOnly && habit.is_support)
         ? habit
         : newActive[next++],
     );
@@ -2474,15 +2451,15 @@ function PlansPage() {
     localStorage.setItem("dayTier", String(dayTier));
   }, [dayTier]);
 
-  // "Important only" view: when on, the plan hides every non-important habit (a
-  // low-energy day where you just want the few that matter). Pure display filter
-  // — no refetch, nothing logged differently. Persisted like the day-tier.
-  const [importantOnly, setImportantOnly] = useState(
-    () => localStorage.getItem("importantOnly") === "1",
+  // "Main only" view: when on, the plan hides the helper/support habits (a
+  // low-energy day where you just want the main ones that matter). Pure display
+  // filter — no refetch, nothing logged differently. Persisted like the day-tier.
+  const [mainOnly, setMainOnly] = useState(
+    () => localStorage.getItem("mainOnly") === "1",
   );
   useEffect(() => {
-    localStorage.setItem("importantOnly", importantOnly ? "1" : "0");
-  }, [importantOnly]);
+    localStorage.setItem("mainOnly", mainOnly ? "1" : "0");
+  }, [mainOnly]);
 
   // Where the plan opens (and where the floating control parks you): at "now" (the
   // current time block, the default) or at the top. Set by whichever floating
@@ -3192,21 +3169,21 @@ function PlansPage() {
     [visiblePlans, inlineTierByHabit, dayTier],
   );
 
-  // What actually renders: the tier-visible plans, further narrowed to important
-  // habits when "Important only" is on (empty groups dropped). A pure view filter
+  // What actually renders: the tier-visible plans, further narrowed to main
+  // habits when "Main only" is on (empty groups dropped). A pure view filter
   // layered on top of the tier filter — the skip-day/empty logic below still uses
   // the full `tierVisiblePlans`, so the toggle never changes what's stored.
   const shownPlans = useMemo(
     () =>
-      !importantOnly
+      !mainOnly
         ? tierVisiblePlans
         : tierVisiblePlans
             .map((plan) => ({
               ...plan,
-              habits: plan.habits.filter((habit) => habit.is_important),
+              habits: plan.habits.filter((habit) => !habit.is_support),
             }))
             .filter((plan) => plan.habits.length > 0),
-    [tierVisiblePlans, importantOnly],
+    [tierVisiblePlans, mainOnly],
   );
 
   // The "Stretch" section: harder versions she can opt into. Two sources, in plan
@@ -3214,12 +3191,12 @@ function PlansPage() {
   // at its own time), each completed at its own `tier`; (2) synthesized entries for
   // every Case-B rung ABOVE today (level > dayTier) — same habit, that rung's value,
   // completed at that level. `level` is the tier each card shows + sends. Honors
-  // "Important only" like the inline groups.
+  // "Main only" like the inline groups.
   const stretchSlots = useMemo(() => {
     const out: { habit: Habit; level: number }[] = [];
     for (const plan of visiblePlans) {
       for (const habit of plan.habits) {
-        if (importantOnly && !habit.is_important) continue;
+        if (mainOnly && habit.is_support) continue;
         if (habit.tier != null) {
           // Case A: this slot stretches when it's a harder tier than today.
           if (slotPlacement(habit, inlineTierByHabit, dayTier) === "stretch")
@@ -3232,7 +3209,7 @@ function PlansPage() {
       }
     }
     return out;
-  }, [visiblePlans, inlineTierByHabit, dayTier, importantOnly]);
+  }, [visiblePlans, inlineTierByHabit, dayTier, mainOnly]);
 
   // Has the whole day been skipped? (every habit resolved to skipped or done,
   // with at least one skip). If so, the day-level control flips from "Skip day"
@@ -3294,7 +3271,7 @@ function PlansPage() {
           // Progress for the collapsed header — a member counts as handled when
           // it's done OR skipped (same rule RoutineBlock uses). Counts the
           // shown habits, so the header matches the cards (a Roots day excludes
-          // hidden Growth; "Important only" excludes the rest).
+          // hidden Growth; "Main only" excludes the helpers).
           const total = plan.habits.length;
           const handled = plan.habits.filter(
             (h) => isDone(h) || isSkipped(h),
@@ -3314,7 +3291,7 @@ function PlansPage() {
               plan={fullPlan}
               dayTier={dayTier}
               inlineTierByHabit={inlineTierByHabit}
-              importantOnly={importantOnly}
+              mainOnly={mainOnly}
               onStatus={setHabitStatus}
               onOpenNote={setEditingNote}
               onReorder={reorderPlan}
@@ -3483,15 +3460,15 @@ function PlansPage() {
           onNext={() => setViewedDate((d) => addDays(d, 1))}
           onToday={() => setViewedDate(startOfDay(new Date()))}
         />
-        {/* Day-level controls: the tier picker, the important-only filter, and
+        {/* Day-level controls: the tier picker, the main-only filter, and
             the rare actions (new routine / skip day / reset), grouped into one
             compact bar. See ./plan/PlanToolbar. */}
         {visiblePlans.length > 0 && (
           <PlanToolbar
             dayTier={dayTier}
             onTierChange={setDayTier}
-            importantOnly={importantOnly}
-            onToggleImportant={() => setImportantOnly((v) => !v)}
+            mainOnly={mainOnly}
+            onToggleMainOnly={() => setMainOnly((v) => !v)}
             onNewRoutine={() => setRoutineSheet({ mode: "create" })}
             showResetOrder={isViewingToday && orderChanged}
             onResetOrder={resetOrder}

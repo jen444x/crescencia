@@ -65,7 +65,7 @@ function EditHabitPage() {
           name: data.name,
           notes: data.notes,
           area: data.area,
-          is_important: data.is_important,
+          is_support: data.is_support,
         });
         setTiers(data.tiers ?? []);
       } catch (err) {

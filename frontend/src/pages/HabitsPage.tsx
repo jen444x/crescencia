@@ -31,7 +31,7 @@ type HabitRow = {
   name: string;
   area: number | null;
   area_name: string | null;
-  is_important: boolean;
+  is_support: boolean;
   tiers: HabitTier[];
   status: HabitStatus;
   achieved_tier: number | null;
@@ -65,20 +65,6 @@ function CheckIcon() {
         strokeWidth={3}
         d="M5 13l4 4L19 7"
       />
-    </svg>
-  );
-}
-
-function StarIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M9.05 2.93c.3-.92 1.6-.92 1.9 0l1.42 4.38a1 1 0 00.95.69h4.6c.97 0 1.37 1.24.59 1.81l-3.73 2.71a1 1 0 00-.36 1.12l1.42 4.38c.3.92-.75 1.69-1.54 1.12l-3.72-2.71a1 1 0 00-1.18 0l-3.72 2.71c-.79.57-1.84-.2-1.54-1.12l1.42-4.38a1 1 0 00-.36-1.12L1.48 9.81c-.78-.57-.38-1.81.59-1.81h4.6a1 1 0 00.95-.69L9.05 2.93z" />
     </svg>
   );
 }
@@ -129,9 +115,9 @@ function HabitTierRow({
       }`}
     >
       {handle}
-      {habit.is_important && (
-        <span className="shrink-0 text-amber-400">
-          <StarIcon />
+      {habit.is_support && (
+        <span className="shrink-0 rounded-full bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-stone-400">
+          helper
         </span>
       )}
       <div className="min-w-0 flex-1">
@@ -286,8 +272,10 @@ function HabitsPage() {
   const [habits, setHabits] = useState<HabitRow[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  // "Important only" filter, off by default (show all habits).
-  const [importantOnly, setImportantOnly] = useState(false);
+  // "Show helpers" — off by default, so the page lists only the main habits she
+  // cares about (helper/support habits hidden, like her old app). On reveals the
+  // helpers too, each tagged "helper".
+  const [showHelpers, setShowHelpers] = useState(false);
   // Which tier sits on top (both always show). Growth on top by default (your
   // aim); pick Roots to put Roots above Growth.
   const [focus, setFocus] = useState<TierFocus>("GROWTH");
@@ -363,7 +351,11 @@ function HabitsPage() {
   // back into the single global order — Habit.order is one position per habit,
   // shared across sections — then persist the whole list.
   function handleReorder(level: number, activeId: number, overId: number) {
-    const inSection = (h: HabitRow) => h.tiers.some((t) => t.level === level);
+    // Only rows that are BOTH in this tier and currently visible take part, so a
+    // hidden helper keeps its global slot instead of being swept into the new
+    // order (mirrors the Plan page's "reorder keeps hidden rows in place" rule).
+    const inSection = (h: HabitRow) =>
+      h.tiers.some((t) => t.level === level) && (showHelpers || !h.is_support);
     const section = habits.filter(inSection);
     const from = section.findIndex((h) => h.id === activeId);
     const to = section.findIndex((h) => h.id === overId);
@@ -443,19 +435,15 @@ function HabitsPage() {
     );
   }
 
-  const visible = importantOnly
-    ? habits.filter((habit) => habit.is_important)
-    : habits;
-
-  // Drag only on the full list: reordering a filtered subset is ambiguous since
-  // the saved order is global.
-  const sortable = !importantOnly;
+  const visible = showHelpers
+    ? habits
+    : habits.filter((habit) => !habit.is_support);
 
   return (
     <>
       <Header title="Habits" body="" />
       <div className="max-w-md mx-auto">
-        {/* Controls: which-tier-on-top picker (left), Important filter (right). */}
+        {/* Controls: which-tier-on-top picker (left), Show-helpers toggle (right). */}
         <div className="mb-5 flex items-center justify-between gap-2">
           <div className="inline-flex rounded-full bg-white p-0.5 shadow-sm">
             {(["GROWTH", "ROOTS"] as const).map((option) => (
@@ -477,16 +465,15 @@ function HabitsPage() {
 
           <button
             type="button"
-            onClick={() => setImportantOnly((on) => !on)}
-            aria-pressed={importantOnly}
+            onClick={() => setShowHelpers((on) => !on)}
+            aria-pressed={showHelpers}
             className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-              importantOnly
-                ? "bg-amber-100 text-amber-700"
+              showHelpers
+                ? "bg-calm-100 text-calm-700"
                 : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
             }`}
           >
-            <StarIcon />
-            Important only
+            {showHelpers ? "Hide helpers" : "Show helpers"}
           </button>
         </div>
 
@@ -499,7 +486,7 @@ function HabitsPage() {
             level={level}
             habits={visible}
             onLog={logHabit}
-            sortable={sortable}
+            sortable={true}
             sensors={sensors}
             onReorder={handleReorder}
           />

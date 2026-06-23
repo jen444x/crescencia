@@ -24,10 +24,14 @@ class Habit(models.Model):
     name = models.CharField(max_length=200) # length of name
     notes = models.TextField(blank=True)
     date_added = models.DateTimeField(auto_now_add=True)
-    # A habit she actually cares about completing (vs a planning/helper habit
-    # that just structures the day). Display-only: drives a star + the "Important
-    # only" filter. Nothing about tracking changes — helpers still get logged.
-    is_important = models.BooleanField(default=False)
+    # True marks a SUPPORT/helper habit — scaffolding that only exists to help
+    # complete a main habit (e.g. "lay out clothes", "phone across the room",
+    # "get on the mat"). The Habits page hides these by default, so it lists only
+    # the main habits she actually cares about — like her old app, which had no
+    # helpers. False (default) = a main habit. Helpers still live in the Plan
+    # page + chains and are still fully tracked/logged; this is display/filter
+    # only. Fixed per habit (her intent), not derived from chain membership.
+    is_support = models.BooleanField(default=False)
     # Hand-picked position on the Habits page (drag-to-reorder). null = never
     # placed → those sort last (by name). Distinct from Schedule.order, which is
     # a habit's position WITHIN a time-slot on the Plan page; this orders the

@@ -165,7 +165,7 @@ def plan(request):
             "status": status,
             "done_today": done,
             "notes": notes,   # that day's HabitLog.notes ("" if none)
-            "is_important": habit.is_important,  # starred "one I care about"
+            "is_support": habit.is_support,  # True = helper/support habit
             "tier": tier_level,            # this slot's tier level, or null (untiered/Case B)
             "tier_name": tier_name,        # "Roots"/"Growth", or null
             "tier_value": tier_value,      # Case A: this slot's tier value, else null
@@ -708,7 +708,7 @@ def _habit_detail(habit):
         "notes": habit.notes,
         "area": habit.area_id,
         "date_added": habit.date_added,
-        "is_important": habit.is_important,
+        "is_support": habit.is_support,
         "tiers": _habit_tiers(habit),   # same shape as in /plan/
     }
 
@@ -731,7 +731,7 @@ def habit(request, habit_id):
 @csrf_exempt
 @require_POST
 def create_habit(request):
-    """Create a habit. Body: {"name", "notes"?, "area"?}.
+    """Create a habit. Body: {"name", "notes"?, "area"?, "is_support"?}.
 
     A new habit starts unscheduled (no plan/time), so it appears in the
     "unscheduled" group of /plan/ until it's placed on the timeline.
@@ -757,12 +757,12 @@ def create_habit(request):
     if area_error:
         return area_error
 
-    is_important = body.get("is_important", False)
-    if not isinstance(is_important, bool):
-        return JsonResponse({"error": "'is_important' must be true or false."}, status=400)
+    is_support = body.get("is_support", False)
+    if not isinstance(is_support, bool):
+        return JsonResponse({"error": "'is_support' must be true or false."}, status=400)
 
     habit = Habit.objects.create(
-        name=name, notes=notes.strip(), area_id=area_id, is_important=is_important
+        name=name, notes=notes.strip(), area_id=area_id, is_support=is_support
     )
     return JsonResponse(_habit_detail(habit), status=201)
 
@@ -800,10 +800,10 @@ def edit_habit(request, habit_id):
             return area_error
         habit.area_id = body["area"]
 
-    if "is_important" in body:
-        if not isinstance(body["is_important"], bool):
-            return JsonResponse({"error": "'is_important' must be true or false."}, status=400)
-        habit.is_important = body["is_important"]
+    if "is_support" in body:
+        if not isinstance(body["is_support"], bool):
+            return JsonResponse({"error": "'is_support' must be true or false."}, status=400)
+        habit.is_support = body["is_support"]
 
     habit.save()
     return JsonResponse(_habit_detail(habit))
@@ -1358,7 +1358,7 @@ def habits_list(request):
             "name": habit.name,
             "area": habit.area_id,
             "area_name": habit.area.name if habit.area_id else None,
-            "is_important": habit.is_important,
+            "is_support": habit.is_support,
             "tiers": _habit_tiers(habit),          # low->high, [] if untiered
             "status": status,                      # today's status, PENDING if no log
             "achieved_tier": achieved_level,       # today's highest tier level, or null

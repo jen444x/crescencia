@@ -4,7 +4,7 @@ export type HabitValues = {
   name: string;
   notes: string;
   area: number | null;
-  is_important: boolean;
+  is_support: boolean;
 };
 
 type Area = {
@@ -28,7 +28,7 @@ function HabitForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [area, setArea] = useState<number | null>(initial?.area ?? null);
-  const [isImportant, setIsImportant] = useState(initial?.is_important ?? false);
+  const [isSupport, setIsSupport] = useState(initial?.is_support ?? false);
   const [areas, setAreas] = useState<Area[]>([]);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -60,7 +60,7 @@ function HabitForm({
         name: name.trim(),
         notes: notes.trim(),
         area,
-        is_important: isImportant,
+        is_support: isSupport,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -124,12 +124,12 @@ function HabitForm({
       <label className="flex items-center gap-3 cursor-pointer select-none">
         <input
           type="checkbox"
-          checked={isImportant}
-          onChange={(e) => setIsImportant(e.target.checked)}
+          checked={isSupport}
+          onChange={(e) => setIsSupport(e.target.checked)}
           className="h-4 w-4 rounded border-calm-300 text-calm-600 focus:ring-calm-500"
         />
         <span className="text-calm-700 text-sm font-medium">
-          Important — one I care about completing
+          Helper habit — a step that supports a main one (hidden from the Habits list)
         </span>
       </label>
 

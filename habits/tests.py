@@ -756,9 +756,10 @@ class HabitsListTests(TestCase):
         self.mind = Area.objects.create(name="Mind")
         self.body = Area.objects.create(name="Body")
 
-        # A tiered habit (Meditate) in Mind: Roots -> Growth, with values.
+        # A tiered habit (Meditate) in Mind: Roots -> Growth, with values. A main
+        # habit (is_support defaults False), so it shows on the Habits page.
         self.meditate = Habit.objects.create(
-            name="Meditate", area=self.mind, is_important=True
+            name="Meditate", area=self.mind
         )
         self._add_tier(self.meditate, level=1, value="2 min")
         self._add_tier(self.meditate, level=2, value="10 min")
@@ -789,14 +790,14 @@ class HabitsListTests(TestCase):
         row = self._by_id(data)[self.meditate.id]
         self.assertEqual(
             set(row.keys()),
-            {"id", "name", "area", "area_name", "is_important",
+            {"id", "name", "area", "area_name", "is_support",
              "tiers", "status", "achieved_tier"},
         )
         self.assertEqual(row["id"], self.meditate.id)
         self.assertEqual(row["name"], "Meditate")
         self.assertEqual(row["area"], self.mind.id)
         self.assertEqual(row["area_name"], "Mind")
-        self.assertTrue(row["is_important"])
+        self.assertFalse(row["is_support"])  # a main habit, not a helper
 
     def test_untiered_habit_has_empty_tiers(self):
         row = self._by_id(self._get())[self.run.id]

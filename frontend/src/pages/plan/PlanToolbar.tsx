@@ -34,13 +34,14 @@ function EllipsisIcon() {
 }
 
 // The compact controls above the plan. Replaces the old row of bare ALL-CAPS text
-// links. Three groups: a day-tier dropdown (scales to any number of tiers), an
-// "important only" star toggle, and a "⋯" menu for the rare day-level actions.
+// links. Three groups: a day-tier dropdown (scales to any number of tiers), a
+// "main only" star toggle (hide helper habits), and a "⋯" menu for the rare
+// day-level actions.
 export default function PlanToolbar({
   dayTier,
   onTierChange,
-  importantOnly,
-  onToggleImportant,
+  mainOnly,
+  onToggleMainOnly,
   onNewRoutine,
   showResetOrder,
   onResetOrder,
@@ -50,8 +51,8 @@ export default function PlanToolbar({
 }: {
   dayTier: number;
   onTierChange: (level: number) => void;
-  importantOnly: boolean;
-  onToggleImportant: () => void;
+  mainOnly: boolean;
+  onToggleMainOnly: () => void;
   onNewRoutine: () => void;
   // Only today is reorderable, and only once something has actually moved — so the
   // "Reset order" item only appears then.
@@ -114,16 +115,17 @@ export default function PlanToolbar({
           ))}
         </select>
 
-        {/* "Important only": hide everything except starred habits, for a
-            low-energy day. Pure view filter — toggles instantly, persists. */}
+        {/* "Main only": hide the helper/support habits, leaving just the main
+            ones she cares about — for a low-energy day. Pure view filter —
+            toggles instantly, persists. */}
         <button
           type="button"
-          onClick={onToggleImportant}
-          aria-pressed={importantOnly}
-          aria-label="Show important habits only"
-          title="Important only"
+          onClick={onToggleMainOnly}
+          aria-pressed={mainOnly}
+          aria-label="Show main habits only (hide helpers)"
+          title="Main only"
           className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
-            importantOnly
+            mainOnly
               ? "bg-amber-100 text-amber-600"
               : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
           }`}

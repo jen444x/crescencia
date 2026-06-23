@@ -42,9 +42,9 @@ export type Habit = {
   // That day's notes from the new Note model, attached client-side from
   // /days/notes/ (see notesByHabit). A shared note appears on each of its habits.
   dayNotes?: DayNote[];
-  // Starred "one I care about completing" (vs a planning/helper habit). Drives a
-  // star + the "Important only" filter; nothing about tracking changes.
-  is_important?: boolean;
+  // True marks a SUPPORT/helper habit (scaffolding for a main habit), vs a main
+  // habit she cares about. Drives the "Main only" filter; tracking is unchanged.
+  is_support?: boolean;
   // This row is ONE tier-slot of a habit (a habit can have several at different
   // times). Backend derives status/done_today per slot.
   // tier != null  -> Case A: this row IS that tier-slot, at its own time. Show
