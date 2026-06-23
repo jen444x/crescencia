@@ -42,8 +42,11 @@ import type {
 } from "./plan/types";
 import {
   GROWTH_LEVEL,
+  caseBDisplayLevel,
+  highestDoneLevel,
   isCaseB,
   isUntiered,
+  levelsUpTo,
   rowDisplayValue,
   rowCompleteTier,
   slotPlacement,
@@ -520,18 +523,25 @@ function HabitCard({
   // "Wake up · 7:30"; an untiered slot has none and renders exactly as before.
   // A stretch card is pinned to one rung (completeTier), so it shows that rung's
   // value; otherwise the value follows the case + dayTier.
+  // The rung this card SHOWS and acts on. A stretch card pins an explicit
+  // completeTier. A Case-B inline card (no override) shows the habit's CURRENT
+  // achievement — the highest done rung once you've reached today's, else today's
+  // target rung — so after you do Growth it reads "· 12:30am" and undo steps it
+  // back down. Case A uses its own tier; untiered: none.
+  const caseBInline = completeTier == null && isCaseB(habit);
+  const tierToSend =
+    completeTier ??
+    (caseBInline
+      ? (caseBDisplayLevel(habit, dayTier) ?? undefined)
+      : rowCompleteTier(habit, dayTier));
   const tierValue =
-    completeTier != null
-      ? (habit.tiers?.find((t) => t.level === completeTier)?.value ?? null)
+    tierToSend != null
+      ? (habit.tiers?.find((t) => t.level === tierToSend)?.value ??
+         habit.tier_value ??
+         null)
       : rowDisplayValue(habit, dayTier);
-  // The level this card acts on: an explicit override (stretch card) or the row's
-  // own dayTier-derived level (Case A: its tier; Case B inline: rung <= today;
-  // untiered: none).
-  const tierToSend = completeTier ?? rowCompleteTier(habit, dayTier);
-  // Per-version state: this card shows ITS rung's status. The backend already
-  // resolved the higher-completes-lower cascade, so completing the easy version
-  // never ticks the harder stretch card and vice versa. Untiered cards use the
-  // whole-habit status.
+  // Per-version state: this card shows ITS rung's status (cascade already folded
+  // in by the backend), so completing the easy version never ticks the harder one.
   const cardStatus = slotStatus(habit, tierToSend);
   const done = cardStatus === "COMPLETED";
   const skipped = cardStatus === "SKIPPED";
@@ -663,10 +673,22 @@ function HabitCard({
             aria-pressed={done}
             onClick={(e) => {
               e.stopPropagation();
-              // Complete THIS card at its own level (Case A: its tier; Case B
-              // inline: the rung <= today; stretch card: its pinned rung). Pass the
-              // level on undo too, so it clears that version's row.
-              onStatus(habit.id, done ? "PENDING" : "COMPLETED", tierToSend);
+              if (done) {
+                // Undo STEPS DOWN: uncomplete the highest done rung. Its easier
+                // rungs (marked done on completion) stay, so a tiered card drops
+                // one level — Growth -> Roots -> open — instead of snapping back.
+                const top = isCaseB(habit)
+                  ? (highestDoneLevel(habit) ?? tierToSend)
+                  : tierToSend;
+                onStatus(habit.id, "PENDING", top);
+              } else if (isCaseB(habit) && tierToSend != null) {
+                // Completing a rung means you did the easier ones too — mark them
+                // all done so the step-down has real rungs to land on.
+                for (const lvl of levelsUpTo(habit, tierToSend))
+                  onStatus(habit.id, "COMPLETED", lvl);
+              } else {
+                onStatus(habit.id, "COMPLETED", tierToSend);
+              }
             }}
             className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
               done
@@ -3529,9 +3551,14 @@ function PlansPage() {
           if (slotPlacement(habit, inlineTierByHabit, dayTier) === "stretch")
             out.push({ habit, level: habit.tier });
         } else if (isCaseB(habit)) {
-          // Case B: one synthesized card per rung above today ("do more").
+          // Case B: one synthesized "do more" card per rung above what the inline
+          // card already shows — i.e. above the highest DONE rung (so a completed
+          // harder rung isn't also listed as a stretch), or above today when
+          // nothing's done yet.
+          const done = highestDoneLevel(habit);
+          const covered = done != null ? Math.max(dayTier, done) : dayTier;
           for (const t of habit.tiers ?? [])
-            if (t.level > dayTier) out.push({ habit, level: t.level });
+            if (t.level > covered) out.push({ habit, level: t.level });
         }
       }
     }

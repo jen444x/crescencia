@@ -83,3 +83,32 @@ export function slotPlacement(
   if ((habit.tier ?? 0) > dayTier) return "stretch";    // harder than today -> bottom
   return "hidden";                                      // lower, cascade-covered
 }
+
+// TODAY's highest rung that reads DONE (`tiers[].done`, which already folds in the
+// higher-completes-lower cascade), or null if none. Drives a Case-B card's "show
+// your highest achievement" display, the step-down undo, and which stretch rungs
+// are already covered.
+export function highestDoneLevel(habit: Habit): number | null {
+  const done = (habit.tiers ?? []).filter((t) => t.done).map((t) => t.level);
+  return done.length ? Math.max(...done) : null;
+}
+
+// Every rung at or BELOW `level`, ascending. Completing a rung marks these all
+// done (you can't have hit the harder version without the easier), so the
+// step-down undo has real rungs to land on instead of dropping straight to open.
+export function levelsUpTo(habit: Habit, level: number): number[] {
+  return (habit.tiers ?? [])
+    .map((t) => t.level)
+    .filter((lvl) => lvl <= level)
+    .sort((a, b) => a - b);
+}
+
+// The rung a Case-B inline card should SHOW/act on: your highest achievement when
+// it's at least today's rung (so once Growth is done it reads "· 12:30am"), else
+// today's target rung. null only when the habit has no rung at/below today.
+export function caseBDisplayLevel(habit: Habit, dayTier: number): number | null {
+  const today = caseBInlineLevel(habit, dayTier);
+  const done = highestDoneLevel(habit);
+  if (done != null && (today == null || done >= today)) return done;
+  return today;
+}
