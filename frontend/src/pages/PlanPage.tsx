@@ -34,6 +34,7 @@ import { CSS } from "@dnd-kit/utilities";
 // their home moved — and DAY_TIERS drives the new tier dropdown.
 import type {
   HabitStatus,
+  ReadStatus,
   Plan,
   Habit,
   DayNote,
@@ -55,10 +56,17 @@ function isDone(habit: Habit) {
 function isSkipped(habit: Habit) {
   return habit.status === "SKIPPED";
 }
-// A past day's habit that was never completed or skipped. Derived + read-only:
-// the backend sends this status; we never POST it.
-function isMissed(habit: Habit) {
-  return habit.status === "MISSED";
+// The status to show on ONE tier-slot card: its own version's per-tier status
+// (the backend already folded in the higher-completes-lower cascade), so
+// completing the easy version never changes the harder card and vice versa. An
+// untiered card — or an older payload without per-tier status — falls back to
+// the whole-habit status / done_today.
+function slotStatus(habit: Habit, level: number | undefined): ReadStatus {
+  if (level != null) {
+    const t = habit.tiers?.find((tt) => tt.level === level);
+    if (t?.status) return t.status;
+  }
+  return habit.status ?? (habit.done_today ? "COMPLETED" : "PENDING");
 }
 
 // "08:00:00" -> "8:00 AM"; null/empty -> "Anytime"
@@ -251,20 +259,35 @@ function buildSegments(habits: Habit[], asCycle: boolean): Segment[] {
   return segments;
 }
 
-// Return a NEW plans array with one habit's status set (and done_today kept in
-// sync). Pure + immutable, so React reliably re-renders.
+// Return a NEW plans array with one habit's status set. With a `tier` it sets
+// that ONE version's status (and, on a completion, cascades DOWN to mark the
+// lower rungs done); without one it sets the whole-habit status. Pure +
+// immutable, so React reliably re-renders.
 function applyStatus(
   plans: Plan[],
   habitId: number,
   status: HabitStatus,
+  tier?: number,
 ): Plan[] {
   return plans.map((plan) => ({
     ...plan,
-    habits: plan.habits.map((habit) =>
-      habit.id === habitId
-        ? { ...habit, status, done_today: status === "COMPLETED" }
-        : habit,
-    ),
+    habits: plan.habits.map((habit) => {
+      if (habit.id !== habitId) return habit;
+      if (tier == null) {
+        return { ...habit, status, done_today: status === "COMPLETED" };
+      }
+      // Per-version: update this rung. A completion cascades down (a higher win
+      // marks the lower rungs done); skip/missed touch only this rung. An undo's
+      // full de-cascade is reconciled by a refetch in setHabitStatus.
+      const tiers = (habit.tiers ?? []).map((t) => {
+        if (t.level === tier)
+          return { ...t, status, done: status === "COMPLETED" };
+        if (status === "COMPLETED" && t.level < tier)
+          return { ...t, status: "COMPLETED" as ReadStatus, done: true };
+        return t;
+      });
+      return { ...habit, tiers };
+    }),
   }));
 }
 
@@ -442,6 +465,27 @@ function RestoreIcon() {
   );
 }
 
+// A small ✕ for the "missed / didn't do it" action — visually distinct from the
+// check, so a version can be closed off the list without marking it done.
+function MissedIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-3.5 w-3.5"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2.5}
+        d="M6 6l12 12M18 6L6 18"
+      />
+    </svg>
+  );
+}
+
 function HabitCard({
   habit,
   dayTier,
@@ -464,8 +508,6 @@ function HabitCard({
   // Optional drag handle (a grip), rendered at the left inside the card.
   handle?: ReactNode;
 }) {
-  const skipped = isSkipped(habit);
-  const missed = isMissed(habit);
   // This card is one tier-slot of a habit. When it carries a tier value (e.g.
   // "7:30" / "11am" / "5 min") we append it after the name so the slot reads as
   // "Wake up · 7:30"; an untiered slot has none and renders exactly as before.
@@ -475,18 +517,18 @@ function HabitCard({
     completeTier != null
       ? (habit.tiers?.find((t) => t.level === completeTier)?.value ?? null)
       : rowDisplayValue(habit, dayTier);
-  // The level this card completes at: an explicit override (stretch card) or the
-  // row's own dayTier-derived level (Case A: its tier; Case B inline: rung <=
-  // today; untiered: none).
+  // The level this card acts on: an explicit override (stretch card) or the row's
+  // own dayTier-derived level (Case A: its tier; Case B inline: rung <= today;
+  // untiered: none).
   const tierToSend = completeTier ?? rowCompleteTier(habit, dayTier);
-  // Done is per-RUNG, not per-habit: a tiered card reads done when the habit's
-  // achieved_tier reaches THIS card's rung — so completing the easy version never
-  // ticks the harder stretch card, and completing the hard one cascades to mark
-  // the easier ones done. Untiered cards fall back to the plain log status.
-  const done =
-    tierToSend != null
-      ? habit.achieved_tier != null && habit.achieved_tier >= tierToSend
-      : isDone(habit);
+  // Per-version state: this card shows ITS rung's status. The backend already
+  // resolved the higher-completes-lower cascade, so completing the easy version
+  // never ticks the harder stretch card and vice versa. Untiered cards use the
+  // whole-habit status.
+  const cardStatus = slotStatus(habit, tierToSend);
+  const done = cardStatus === "COMPLETED";
+  const skipped = cardStatus === "SKIPPED";
+  const missed = cardStatus === "MISSED";
   // Notes come from the new Note model; fall back to the legacy per-habit string
   // while /days/notes/ rolls out. `hasNotes` drives the note button's accent
   // (the notes themselves are viewed on the habit detail page).
@@ -578,7 +620,7 @@ function HabitCard({
           aria-label="Move back to today"
           onClick={(e) => {
             e.stopPropagation();
-            onStatus(habit.id, "PENDING");
+            onStatus(habit.id, "PENDING", tierToSend);
           }}
           className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
             skipped
@@ -589,30 +631,45 @@ function HabitCard({
           <RestoreIcon />
         </button>
       ) : (
-        <button
-          type="button"
-          data-no-swipe
-          aria-label={done ? "Mark as not done today" : "Mark as done today"}
-          aria-pressed={done}
-          onClick={(e) => {
-            e.stopPropagation();
-            // Complete THIS card at its own level (Case A: its tier; Case B inline:
-            // the rung <= today; stretch card: its pinned rung). An untiered card
-            // sends no `tier`, exactly as before.
-            onStatus(
-              habit.id,
-              done ? "PENDING" : "COMPLETED",
-              done ? undefined : tierToSend,
-            );
-          }}
-          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
-            done
-              ? "border-calm-600 bg-calm-600 text-white"
-              : "border-calm-300 text-transparent hover:border-calm-500"
-          }`}
-        >
-          <CheckIcon />
-        </button>
+        <>
+          {/* "Missed" — close THIS version off the list as "didn't do it" (NOT a
+              skip). Per-version: missing the hard rung never touches the easy one.
+              Only offered while the rung is still open (a done rung just un-checks). */}
+          {!done && (
+            <button
+              type="button"
+              data-no-swipe
+              aria-label="Mark as missed today"
+              onClick={(e) => {
+                e.stopPropagation();
+                onStatus(habit.id, "MISSED", tierToSend);
+              }}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-rose-200 text-rose-300 transition-colors hover:border-rose-400 hover:text-rose-500"
+            >
+              <MissedIcon />
+            </button>
+          )}
+          <button
+            type="button"
+            data-no-swipe
+            aria-label={done ? "Mark as not done today" : "Mark as done today"}
+            aria-pressed={done}
+            onClick={(e) => {
+              e.stopPropagation();
+              // Complete THIS card at its own level (Case A: its tier; Case B
+              // inline: the rung <= today; stretch card: its pinned rung). Pass the
+              // level on undo too, so it clears that version's row.
+              onStatus(habit.id, done ? "PENDING" : "COMPLETED", tierToSend);
+            }}
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
+              done
+                ? "border-calm-600 bg-calm-600 text-white"
+                : "border-calm-300 text-transparent hover:border-calm-500"
+            }`}
+          >
+            <CheckIcon />
+          </button>
+        </>
       )}
       </div>
     </div>
@@ -663,7 +720,12 @@ function SwipeableCard({
   }
   function onPointerEnd() {
     if (startX.current == null) return;
-    if (dx <= -SWIPE_TRIGGER) onStatus(habit.id, "SKIPPED");
+    if (dx <= -SWIPE_TRIGGER)
+      onStatus(
+        habit.id,
+        "SKIPPED",
+        completeTier ?? rowCompleteTier(habit, dayTier),
+      );
     startX.current = null;
     setDragging(false);
     setDx(0); // animate back to rest
@@ -2554,18 +2616,18 @@ function PlansPage() {
     tier?: number,
   ) {
     const snapshot = plans;
-    setPlans((prev) => applyStatus(prev, habitId, status));
+    setPlans((prev) => applyStatus(prev, habitId, status, tier));
 
     try {
-      // Build the body, then add the optional `tier` only on a tiered completion
-      // (the backend honors it just with COMPLETED). Untiered habits pass no
-      // tier and POST exactly as before.
+      // Send the `tier` for EVERY status (not just completion) so skip / missed /
+      // undo target THAT version's row, not the whole habit. Omitting it means the
+      // untiered ("whole habit") row, exactly as before.
       const body: {
         status: HabitStatus;
         date?: string;
         tier?: number;
       } = isViewingToday ? { status } : { status, date: toYMD(viewedDate) };
-      if (status === "COMPLETED" && tier != null) body.tier = tier;
+      if (tier != null) body.tier = tier;
 
       const res = await fetch(
         `${import.meta.env.VITE_API_URL}/habits/${habitId}/log/`,
@@ -2578,6 +2640,10 @@ function PlansPage() {
         },
       );
       if (!res.ok) throw new Error("Request failed");
+      // Un-completing a rung optimistically can't know which LOWER rungs were only
+      // cascade-shown done (vs. completed in their own right), so reconcile an undo
+      // from the server. Complete/skip/missed are exact optimistically — no reload.
+      if (status === "PENDING" && tier != null) setReloadToken((t) => t + 1);
     } catch {
       setPlans(snapshot);
     }

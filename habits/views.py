@@ -1,4 +1,5 @@
 import json
+from collections import defaultdict
 from datetime import time as dt_time
 
 from django.db import transaction
@@ -77,6 +78,67 @@ def _habit_tiers(habit):
     return tiers
 
 
+def _day_logs(target_date):
+    """That day's HabitLogs grouped per habit into the shape `_version_status`
+    needs: ``habit_id -> {specific:{level:status}, fallback:status|None,
+    notes_by_tier:{level:notes}, fallback_notes:str}``.
+
+    `specific` holds the habit's tier-specific rows; `fallback` is the untiered
+    ("whole habit") row — a regular habit's only row, or a blanket-skip row.
+    """
+    buckets = defaultdict(
+        lambda: {"specific": {}, "fallback": None,
+                 "notes_by_tier": {}, "fallback_notes": ""}
+    )
+    for hid, level, status, notes in HabitLog.objects.filter(
+        date=target_date
+    ).values_list("habit_id", "tier__level", "status", "notes"):
+        b = buckets[hid]
+        if level is None:
+            b["fallback"] = status
+            b["fallback_notes"] = notes
+        else:
+            b["specific"][level] = status
+            b["notes_by_tier"][level] = notes
+    return buckets
+
+
+def _version_status(specific, fallback, level, is_past):
+    """Display status for ONE version of a habit on a day, from that day's logs.
+
+    `specific` = ``{tier_level: status}`` (tier-specific rows), `fallback` = the
+    untiered/whole-habit row's status or None, `level` = the version to resolve
+    (a tier level, or None for an untiered slot / regular habit).
+
+    Rules (docs/contracts/per-version-status.md): completing a HIGHER version
+    cascades DOWN (lower ones read done); completing a LOWER one never touches a
+    higher one; a whole-habit row (e.g. a blanket skip) applies to every version;
+    an untouched past day derives MISSED.
+    """
+    completed = [lv for lv, st in specific.items()
+                 if st == HabitLog.Status.COMPLETED]
+    max_completed = max(completed) if completed else None
+    whole_completed = fallback == HabitLog.Status.COMPLETED
+
+    if level is None:
+        # Untiered slot / regular habit — the whole-habit view. Done if anything
+        # was completed; else the explicit whole-habit status; else derived.
+        if whole_completed or max_completed is not None:
+            return HabitLog.Status.COMPLETED
+        if fallback is not None:
+            return fallback
+        return MISSED_STATUS if is_past else HabitLog.Status.PENDING
+
+    # A specific version.
+    if whole_completed or (max_completed is not None and max_completed >= level):
+        return HabitLog.Status.COMPLETED          # cascade down from a higher win
+    if level in specific:
+        return specific[level]                    # its own SKIPPED / MISSED / PENDING
+    if fallback is not None:
+        return fallback                           # e.g. a blanket skip covers it
+    return MISSED_STATUS if is_past else HabitLog.Status.PENDING
+
+
 def plan(request):
     # Which day to show. Defaults to today; the day-browser passes
     # ?date=YYYY-MM-DD to view any other day. The plan/schedule layout is the
@@ -90,14 +152,10 @@ def plan(request):
     # in habit_payload rather than storing it (see MISSED_STATUS).
     is_past_day = target_date < timezone.localdate()
 
-    # That day's status + per-day note for each habit. Habits with no log for the
-    # day default to PENDING / empty note below.
-    logs_by_habit = {
-        hid: (status, notes, tier_level)
-        for hid, status, notes, tier_level in HabitLog.objects.filter(date=target_date).values_list(
-            "habit_id", "status", "notes", "achieved_tier__level"
-        )
-    }
+    # That day's logs, grouped per habit into per-version buckets (logs are keyed
+    # per VERSION now — see _day_logs / _version_status). Habits with no log
+    # default to PENDING / "" via the helpers below.
+    day_logs = _day_logs(target_date)
 
     # Per-day time overrides for this day (from a "running late" shift). A plan
     # with no override here just uses its normal recurring time. Lets a
@@ -107,53 +165,53 @@ def plan(request):
         PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
     )
 
-    # The habit's tier list ([{level,name,value}], current value each), memoized so
-    # a habit with several tier-slots only builds it once. EVERY /plan/ row carries
-    # it: Case A (slot fixed to a tier) shows its own tier's value; Case B (tiers
-    # share one slot, e.g. meditate) lets the frontend swap the value by day-tier.
+    # The habit's tier list, each entry {level,name,value,status,done} for THIS
+    # day, memoized so a habit with several tier-slots only builds it once. EVERY
+    # /plan/ row carries it: the frontend reads per-version state (Root done /
+    # Growth missed) straight from here, independent of which slot the row is.
     tiers_by_habit = {}
 
     def habit_tier_list(habit):
         if habit.id not in tiers_by_habit:
-            tiers_by_habit[habit.id] = _habit_tiers(habit)
+            bucket = day_logs.get(habit.id)
+            specific = bucket["specific"] if bucket else {}
+            fallback = bucket["fallback"] if bucket else None
+            tiers = _habit_tiers(habit)
+            for t in tiers:
+                st = _version_status(specific, fallback, t["level"], is_past_day)
+                t["status"] = st
+                t["done"] = st == HabitLog.Status.COMPLETED
+            tiers_by_habit[habit.id] = tiers
         return tiers_by_habit[habit.id]
 
     def habit_payload(habit, schedule_id=None, chain=None, order=None,
                       routine=None, routine_name=None, tier=None):
-        # One HabitLog per habit per day, shared by all the habit's tier-slots.
-        raw_status, notes, achieved = logs_by_habit.get(
-            habit.id, (HabitLog.Status.PENDING, "", None)
-        )
+        bucket = day_logs.get(habit.id)
+        specific = bucket["specific"] if bucket else {}
+        fallback = bucket["fallback"] if bucket else None
         tiers = habit_tier_list(habit)
         tier_level = tier.level if tier else None
+
+        # This slot's status is its OWN version's status (the slot's tier, or the
+        # whole-habit view when the slot is untiered). Per-version & independent:
+        # a lower one done never closes a higher one; a higher one done cascades
+        # down. A still-pending slot on a past day derives missed. (_version_status)
+        status = _version_status(specific, fallback, tier_level, is_past_day)
+        done = status == HabitLog.Status.COMPLETED
+
         if tier_level is not None:
-            # A tier-slot is one of a habit's easy/hard versions sitting at its own
-            # time. It reads done when the day's achieved_tier reaches this slot's
-            # level (cascade) — so completing Growth ticks the Roots slot too.
-            # Skipping the habit skips every slot; a still-pending slot on a past
-            # day reads missed.
-            if raw_status == HabitLog.Status.SKIPPED:
-                status = HabitLog.Status.SKIPPED
-            elif achieved is not None and achieved >= tier_level:
-                status = HabitLog.Status.COMPLETED
-            elif is_past_day:
-                status = MISSED_STATUS
-            else:
-                status = HabitLog.Status.PENDING
-            done = achieved is not None and achieved >= tier_level
             tier_name = tier.get_level_display()
             tier_value = next(
                 (t["value"] for t in tiers if t["level"] == tier_level), None
             )
+            # This version's note, falling back to a whole-habit note if none.
+            notes = (bucket["notes_by_tier"].get(tier_level, "") if bucket else "") \
+                or (bucket["fallback_notes"] if bucket else "")
         else:
-            # Untiered slot OR Case B (tiers share one slot, tier null): status/done
-            # straight from the log; the frontend swaps the value by the day-tier.
-            status = raw_status
-            if is_past_day and status == HabitLog.Status.PENDING:
-                status = MISSED_STATUS
-            done = status == HabitLog.Status.COMPLETED
             tier_name = None
             tier_value = None
+            notes = bucket["fallback_notes"] if bucket else ""
+
         return {
             "id": habit.id,                # SAME across a habit's slots; FE groups by it
             "schedule_id": schedule_id,    # THIS slot — the row to target when reordering
@@ -164,13 +222,12 @@ def plan(request):
             "order": order,
             "status": status,
             "done_today": done,
-            "notes": notes,   # that day's HabitLog.notes ("" if none)
+            "notes": notes,   # that day's note for this version ("" if none)
             "is_support": habit.is_support,  # True = helper/support habit
             "tier": tier_level,            # this slot's tier level, or null (untiered/Case B)
             "tier_name": tier_name,        # "Roots"/"Growth", or null
             "tier_value": tier_value,      # Case A: this slot's tier value, else null
-            "tiers": tiers,                # habit's tier->value list, [] if untiered
-            "achieved_tier": achieved,     # habit's highest tier completed today, or null
+            "tiers": tiers,                # per-version [{level,name,value,status,done}], [] if untiered
         }
 
     # One query for the plans + their schedules + habits, with schedules sorted
@@ -236,9 +293,12 @@ def plan(request):
 def log_habit(request, habit_id):
     """Set a habit's status and/or notes for a given day (defaults to today).
 
-    Body: {"status"?: ..., "notes"?: "...", "date"?: "YYYY-MM-DD"} — send at least
-    one of `status` / `notes`.
-      - status: COMPLETED (complete) | PENDING (undo) | SKIPPED (skip).
+    Body: {"status"?, "notes"?, "tier"?: 1|2|3, "date"?: "YYYY-MM-DD"} — send at
+    least one of `status` / `notes`.
+      - status: COMPLETED (complete) | PENDING (undo) | SKIPPED (skip) | MISSED.
+      - tier: WHICH version this log is for. Omit for an untiered habit or a
+        whole-habit action; a level writes that version's row, so Root and Growth
+        are tracked independently (one row per habit/date/tier).
       - notes: free text for the day; settable WITHOUT a status, so jotting a note
         doesn't mark the habit done. Send "" to clear it.
     """
@@ -264,8 +324,8 @@ def log_habit(request, habit_id):
     if has_notes and not isinstance(body["notes"], str):
         return JsonResponse({"error": "'notes' must be a string."}, status=400)
 
-    # Optional: the tier LEVEL completed. Validated up front; it's only *recorded*
-    # on a completion (below). A tier the habit doesn't have is a 400.
+    # Optional: WHICH version (tier level) this log is for — it keys the row
+    # (habit, date, tier). Validated up front; a tier the habit doesn't have is a 400.
     raw_tier = body.get("tier")
     has_tier = "tier" in body and raw_tier is not None
     if has_tier:
@@ -283,9 +343,13 @@ def log_habit(request, habit_id):
     if date_error:
         return date_error
 
-    # One log per habit per day; create it the first time it's touched.
+    # One log per (habit, date, version); create it the first time it's touched.
+    # tier=None is the untiered/"whole habit" row; a level is that one version.
+    tier_obj = Tier.objects.filter(level=raw_tier).first() if has_tier else None
     with transaction.atomic():
-        log, _ = HabitLog.objects.get_or_create(habit=habit, date=target_date)
+        log, _ = HabitLog.objects.get_or_create(
+            habit=habit, date=target_date, tier=tier_obj
+        )
 
         if has_status:
             log.status = body["status"]
@@ -295,11 +359,6 @@ def log_habit(request, habit_id):
                 if log.status == HabitLog.Status.COMPLETED
                 else None
             )
-            # Record the tier only on a completion; any other status clears it.
-            if log.status == HabitLog.Status.COMPLETED and has_tier:
-                log.achieved_tier = Tier.objects.filter(level=raw_tier).first()
-            else:
-                log.achieved_tier = None
         if has_notes:
             log.notes = body["notes"].strip()
         log.save()
@@ -308,10 +367,10 @@ def log_habit(request, habit_id):
     return JsonResponse({
         "habit_id": habit.id,
         "date": log.date,
+        "tier": log.tier.level if log.tier_id else None,
         "status": log.status,
         "done_today": log.status == HabitLog.Status.COMPLETED,
         "notes": log.notes,
-        "achieved_tier": log.achieved_tier.level if log.achieved_tier_id else None,
     })
 
 
@@ -361,7 +420,7 @@ def add_habit_tier(request, habit_id):
 def delete_habit_tier(request, habit_id, level):
     """Drop a tier from a habit. Deletes the HabitTier and its TierValue history
     (CASCADE); the habit just stops existing at that tier. Past logs keep their
-    achieved_tier (it's a Tier FK, not a HabitTier FK). Returns the remaining
+    `tier` (it's a Tier FK, not a HabitTier FK). Returns the remaining
     {"tiers": [...]}. No such tier on the habit -> 404.
     """
     habit = get_object_or_404(Habit, id=habit_id)
@@ -391,9 +450,13 @@ def skip_day(request):
     if date_error:
         return date_error
 
-    # Only habits that existed on that day (same rule /plan/ uses).
+    # Only habits that existed on that day (same rule /plan/ uses). .order_by()
+    # clears the model's default (Schedule-joining) ordering, so a habit with
+    # several tier-slots isn't returned once per slot — which would make the
+    # blanket skip try to write duplicate untiered rows.
     habit_ids = list(
-        Habit.objects.filter(date_added__date__lte=target_date).values_list("id", flat=True)
+        Habit.objects.filter(date_added__date__lte=target_date)
+        .order_by().values_list("id", flat=True)
     )
     todays_logs = HabitLog.objects.filter(date=target_date, habit_id__in=habit_ids)
 
@@ -1385,8 +1448,11 @@ def log_routine(request, routine_id):
     if date_error:
         return date_error
 
+    # distinct(): a habit with several tier-slots in this routine must be logged
+    # once, not once per slot (which would duplicate its untiered row).
     habit_ids = list(
-        Schedule.objects.filter(routine=routine).values_list("habit_id", flat=True)
+        Schedule.objects.filter(routine=routine)
+        .values_list("habit_id", flat=True).distinct()
     )
     # Only a completion has a meaningful "time done".
     log_time = timezone.localtime().time() if status == HabitLog.Status.COMPLETED else None
@@ -1436,19 +1502,12 @@ def habits_list(request):
     model's default ordering, which JOINs Schedule and would duplicate a habit
     that sits in several time-slots.
 
-    Each habit carries its tier ladder (`_habit_tiers`, low->high, [] if
-    untiered) and TODAY's HabitLog status/achieved tier (PENDING with no log).
+    Each habit carries its tier ladder (`_habit_tiers`, low->high, each entry
+    {level,name,value,status,done} for today; [] if untiered) and a habit-level
+    `status` — the whole-habit view (done if any version is done).
     """
     today = timezone.localdate()
-
-    # One query for today's logs: habit id -> (status, achieved tier level).
-    # achieved_tier__level is null when the habit isn't completed/untiered.
-    logs_by_habit = {
-        hid: (status, achieved_level)
-        for hid, status, achieved_level in HabitLog.objects.filter(
-            date=today
-        ).values_list("habit_id", "status", "achieved_tier__level")
-    }
+    day_logs = _day_logs(today)
 
     # Override the model's default ordering (which JOINs Schedule -> duplicates):
     # hand-picked Habit.order first (unplaced habits are null -> sort last), then
@@ -1460,18 +1519,25 @@ def habits_list(request):
 
     data = []
     for habit in habits:
-        status, achieved_level = logs_by_habit.get(
-            habit.id, (HabitLog.Status.PENDING, None)
-        )
+        bucket = day_logs.get(habit.id)
+        specific = bucket["specific"] if bucket else {}
+        fallback = bucket["fallback"] if bucket else None
+
+        tiers = _habit_tiers(habit)
+        for t in tiers:
+            st = _version_status(specific, fallback, t["level"], is_past=False)
+            t["status"] = st
+            t["done"] = st == HabitLog.Status.COMPLETED
+
         data.append({
             "id": habit.id,
             "name": habit.name,
             "area": habit.area_id,
             "area_name": habit.area.name if habit.area_id else None,
             "is_support": habit.is_support,
-            "tiers": _habit_tiers(habit),          # low->high, [] if untiered
-            "status": status,                      # today's status, PENDING if no log
-            "achieved_tier": achieved_level,       # today's highest tier level, or null
+            "tiers": tiers,                        # per-version, [] if untiered
+            # whole-habit status: done if any version done, else skip/missed/pending
+            "status": _version_status(specific, fallback, None, is_past=False),
         })
 
     return JsonResponse(data, safe=False)

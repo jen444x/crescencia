@@ -161,27 +161,43 @@ class HabitLog(models.Model):
         PENDING = 'PENDING', 'Pending'
         COMPLETED = 'COMPLETED', 'Completed'
         SKIPPED = 'SKIPPED', 'Skipped'
-        # UNTRACKED = 'UNTRACKED', 'Untracked' # Optional, used for unanswered days'
+        # MISSED is ALSO derived at read time for a past PENDING day (see
+        # views.MISSED_STATUS). Making it a real, settable status lets her mark
+        # "I didn't do it" in the moment, so a version closes off the active list
+        # instead of sitting open all day. Skip = intentional/excused; missed =
+        # didn't do it. Same string either way, so they render identically.
+        MISSED = 'MISSED', 'Missed'
 
-    # includes habit and time
+    # One log per (habit, date, VERSION). `tier` IS the version: null = the habit
+    # itself — an untiered habit, or a whole-habit action like a blanket skip — and
+    # a tier level = that one version. A tiered habit gets one row per tier as each
+    # version is acted on, so Root can be COMPLETED while Growth is MISSED on the
+    # same day. The old single-row `achieved_tier` high-water-mark is gone; the
+    # downward cascade (completing a higher version implies the lower ones) is now
+    # derived from these rows at read time (views._version_status).
     habit = models.ForeignKey(Habit, on_delete=models.SET_NULL, null=True)
     date = models.DateField()
     time = models.TimeField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     notes = models.TextField(blank=True)
-    # Highest tier LEVEL completed that day. The cascade is derived from this,
-    # never stored: a lower tier reads as done when achieved_tier's level >= its
-    # level. null = not completed, or an untiered habit.
-    achieved_tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
+    tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
 
     class Meta:
-        # A habit has exactly one log per day, so completing/skipping it just
-        # updates that row instead of ever creating a duplicate.
         constraints = [
+            # At most one row per specific version per habit per day...
+            models.UniqueConstraint(
+                fields=["habit", "date", "tier"],
+                condition=models.Q(tier__isnull=False),
+                name="one_log_per_habit_date_tier",
+            ),
+            # ...and at most one untiered ("whole habit") row per habit per day.
+            # Two constraints because Postgres treats NULLs as distinct, so a
+            # single nullable-tier unique would let duplicate untiered rows slip in.
             models.UniqueConstraint(
                 fields=["habit", "date"],
-                name="one_log_per_habit_per_day",
-            )
+                condition=models.Q(tier__isnull=True),
+                name="one_untiered_log_per_habit_date",
+            ),
         ]
 
     def __str__(self):

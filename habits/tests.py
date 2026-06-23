@@ -799,7 +799,7 @@ class RoutineLogTests(TestCase):
         self.assertFalse(HabitLog.objects.filter(habit=self.brush, date=self.today).exists())
 
     def test_rejects_bad_status(self):
-        self.assertEqual(self._log(status="MISSED").status_code, 400)
+        self.assertEqual(self._log(status="NOPE").status_code, 400)
         self.assertEqual(self._log(status="bogus").status_code, 400)
 
     def test_empty_routine_is_a_noop(self):
@@ -858,7 +858,7 @@ class HabitsListTests(TestCase):
         self.assertEqual(
             set(row.keys()),
             {"id", "name", "area", "area_name", "is_support",
-             "tiers", "status", "achieved_tier"},
+             "tiers", "status"},
         )
         self.assertEqual(row["id"], self.meditate.id)
         self.assertEqual(row["name"], "Meditate")
@@ -875,8 +875,10 @@ class HabitsListTests(TestCase):
         self.assertEqual(
             row["tiers"],
             [
-                {"level": 1, "name": "Roots", "value": "2 min"},
-                {"level": 2, "name": "Growth", "value": "10 min"},
+                {"level": 1, "name": "Roots", "value": "2 min",
+                 "status": "PENDING", "done": False},
+                {"level": 2, "name": "Growth", "value": "10 min",
+                 "status": "PENDING", "done": False},
             ],
         )
 
@@ -893,16 +895,20 @@ class HabitsListTests(TestCase):
         tier2 = Tier.objects.get(level=2)
         HabitLog.objects.create(
             habit=self.meditate, date=self.today,
-            status=HabitLog.Status.COMPLETED, achieved_tier=tier2,
+            status=HabitLog.Status.COMPLETED, tier=tier2,
         )
         row = self._by_id(self._get())[self.meditate.id]
+        # Whole-habit status reads done when any version is done.
         self.assertEqual(row["status"], "COMPLETED")
-        self.assertEqual(row["achieved_tier"], 2)
+        # Completing Growth cascades down: Roots reads done too.
+        by_level = {t["level"]: t for t in row["tiers"]}
+        self.assertTrue(by_level[2]["done"])
+        self.assertTrue(by_level[1]["done"])
 
     def test_no_log_today_is_pending_with_null_tier(self):
         row = self._by_id(self._get())[self.run.id]
         self.assertEqual(row["status"], "PENDING")
-        self.assertIsNone(row["achieved_tier"])
+        self.assertEqual(row["tiers"], [])
 
     def test_habit_with_two_schedule_rows_appears_once(self):
         # Two tier-slots for the same habit at two times -> two Schedule rows.
@@ -1029,3 +1035,127 @@ class CreatePlanTests(TestCase):
     def test_rejects_bad_time(self):
         self.assertEqual(self._create("25:00").status_code, 400)
         self.assertEqual(self._create("nope").status_code, 400)
+
+
+class PerVersionStatusTests(TestCase):
+    """Each tier/version carries its OWN status (docs/contracts/per-version-status.md):
+    completing a LOWER version never closes a HIGHER one; completing a HIGHER one
+    cascades down; MISSED is settable; a whole-habit row covers every version."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        # "Drink water": Roots = 30 oz, Growth = 90 oz. Backdated so it exists on
+        # past days (the /plan/ "didn't exist yet" filter would hide it otherwise).
+        self.water = Habit.objects.create(name="Drink water")
+        Habit.objects.filter(id=self.water.id).update(
+            date_added=timezone.now() - timedelta(days=30)
+        )
+        self.roots = self._tier(1)
+        self.growth = self._tier(2)
+        self._add_tier(1, "30 oz")
+        self._add_tier(2, "90 oz")
+        # Two slots at two times, each fixed to a tier (wake-up style).
+        self.early = Plan.objects.create(start_time=time(9, 0))
+        self.late = Plan.objects.create(start_time=time(15, 0))
+        Schedule.objects.create(habit=self.water, plan=self.early, tier=self.growth, order=1)
+        Schedule.objects.create(habit=self.water, plan=self.late, tier=self.roots, order=1)
+
+    def _tier(self, level):
+        t, _ = Tier.objects.get_or_create(level=level)
+        return t
+
+    def _add_tier(self, level, value):
+        ht, _ = HabitTier.objects.get_or_create(habit=self.water, tier=self._tier(level))
+        TierValue.objects.create(habit_tier=ht, value=value, started=self.today)
+
+    def _log(self, status, tier=None, date=None):
+        body = {"status": status}
+        if tier is not None:
+            body["tier"] = tier
+        if date is not None:
+            body["date"] = date
+        return self.client.post(
+            reverse("habits:log_habit", args=[self.water.id]),
+            data=json.dumps(body), content_type="application/json",
+        )
+
+    def _versions(self, date=None):
+        """{tier_level: status} across the water habit's slots on /plan/."""
+        resp = self.client.get(reverse("habits:plan"), {"date": date} if date else {})
+        return {
+            h["tier"]: h["status"]
+            for g in json.loads(resp.content) for h in g["habits"]
+            if h["id"] == self.water.id
+        }
+
+    def test_completing_lower_does_not_touch_higher(self):
+        # Drink 30 oz (Roots) now — 90 oz (Growth) stays open & reachable later.
+        self.assertEqual(self._log("COMPLETED", tier=1).status_code, 200)
+        versions = self._versions()
+        self.assertEqual(versions[1], "COMPLETED")
+        self.assertEqual(versions[2], "PENDING")
+
+    def test_completing_higher_cascades_down(self):
+        # Hit 90 oz (Growth) -> 30 oz (Roots) reads done too (you passed it).
+        self.assertEqual(self._log("COMPLETED", tier=2).status_code, 200)
+        versions = self._versions()
+        self.assertEqual(versions[2], "COMPLETED")
+        self.assertEqual(versions[1], "COMPLETED")
+
+    def test_root_completed_growth_missed_coexist(self):
+        # The exact thing the old single-log model couldn't express.
+        self._log("COMPLETED", tier=1)
+        self._log("MISSED", tier=2)
+        versions = self._versions()
+        self.assertEqual(versions[1], "COMPLETED")
+        self.assertEqual(versions[2], "MISSED")
+        self.assertEqual(
+            HabitLog.objects.filter(habit=self.water, date=self.today).count(), 2
+        )
+
+    def test_missing_a_version_leaves_the_other_pending(self):
+        self._log("MISSED", tier=2)
+        versions = self._versions()
+        self.assertEqual(versions[2], "MISSED")
+        self.assertEqual(versions[1], "PENDING")
+
+    def test_log_writes_one_row_per_version(self):
+        self._log("COMPLETED", tier=1)
+        self._log("COMPLETED", tier=2)
+        rows = HabitLog.objects.filter(habit=self.water, date=self.today)
+        self.assertEqual(sorted(r.tier.level for r in rows), [1, 2])
+
+    def test_log_response_echoes_tier(self):
+        data = json.loads(self._log("COMPLETED", tier=1).content)
+        self.assertEqual((data["tier"], data["status"]), (1, "COMPLETED"))
+
+    def test_missed_is_an_accepted_status(self):
+        self.assertEqual(self._log("MISSED", tier=1).status_code, 200)
+
+    def test_rejects_a_tier_the_habit_lacks(self):
+        self.assertEqual(self._log("COMPLETED", tier=3).status_code, 400)  # no Flourish
+
+    def test_whole_habit_skip_covers_every_version(self):
+        self.client.post(
+            reverse("habits:skip_day"),
+            data=json.dumps({}), content_type="application/json",
+        )
+        versions = self._versions()
+        self.assertEqual(versions[1], "SKIPPED")
+        self.assertEqual(versions[2], "SKIPPED")
+
+    def test_completing_a_version_overrides_a_blanket_skip(self):
+        self.client.post(
+            reverse("habits:skip_day"),
+            data=json.dumps({}), content_type="application/json",
+        )
+        self._log("COMPLETED", tier=2)   # actually hit Growth after the blanket skip
+        versions = self._versions()
+        self.assertEqual(versions[2], "COMPLETED")
+        self.assertEqual(versions[1], "COMPLETED")   # cascade still applies
+
+    def test_past_pending_version_reads_missed(self):
+        versions = self._versions(date=self.yesterday.isoformat())
+        self.assertEqual(versions[1], "MISSED")
+        self.assertEqual(versions[2], "MISSED")

@@ -17,15 +17,24 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-// The statuses we can WRITE for a habit's day (matches the backend HabitLog).
-type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED";
+// The statuses for a habit's day (matches the backend HabitLog). MISSED is now
+// settable too (not just derived for past days).
+type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED" | "MISSED";
 
-// One tier of a habit (e.g. Roots / Growth) with its current target value.
-type HabitTier = { level: number; name: string; value: string };
+// One tier of a habit (e.g. Roots / Growth) with its current target value and
+// TODAY's per-version state. The backend folds the higher-completes-lower
+// cascade into `done`/`status`, so a row reads its own tier here.
+type HabitTier = {
+  level: number;
+  name: string;
+  value: string;
+  status?: HabitStatus;
+  done?: boolean;
+};
 
 // A habit from GET /habits/ : the habit plus today's tracking state. `tiers` is
-// [] for an untiered habit; `achieved_tier` is today's highest completed tier
-// level (the cascade truth) — null when nothing's done.
+// [] for an untiered habit; each tier carries its own done/status. `status` is
+// the whole-habit view (done if any version is done).
 type HabitRow = {
   id: number;
   name: string;
@@ -34,7 +43,6 @@ type HabitRow = {
   is_support: boolean;
   tiers: HabitTier[];
   status: HabitStatus;
-  achieved_tier: number | null;
 };
 
 // Which tier sits on top. Both tiers always render; this only moves the picked
@@ -91,8 +99,8 @@ function GripIcon() {
 }
 
 // One row inside a tier section: the habit's name + this tier's target value +
-// a complete/undo control. Reads "done" when the habit's achieved_tier has
-// reached this tier's level, so completing Growth cascades to mark Roots done.
+// a complete/undo control. Reads "done" from this tier's own per-version state
+// (the backend folds in the cascade, so completing Growth marks Roots done).
 // `handle` is the drag grip when the section is sortable (omitted otherwise).
 function HabitTierRow({
   habit,
@@ -106,7 +114,7 @@ function HabitTierRow({
   handle?: ReactNode;
 }) {
   const tier = habit.tiers.find((t) => t.level === level);
-  const done = habit.achieved_tier != null && habit.achieved_tier >= level;
+  const done = tier?.done ?? false;
 
   return (
     <div
@@ -142,7 +150,9 @@ function HabitTierRow({
         aria-label={done ? `Undo ${habit.name}` : `Complete ${habit.name}`}
         aria-pressed={done}
         onClick={() =>
-          done ? onLog(habit.id, "PENDING") : onLog(habit.id, "COMPLETED", level)
+          done
+            ? onLog(habit.id, "PENDING", level)
+            : onLog(habit.id, "COMPLETED", level)
         }
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
           done
@@ -306,8 +316,8 @@ function HabitsPage() {
     fetchHabits();
   }, []);
 
-  // A quiet re-fetch (no spinner) after a log POST, so the cascaded
-  // achieved_tier truth comes straight from the backend.
+  // A quiet re-fetch (no spinner) after a log POST, so the cascaded per-version
+  // truth comes straight from the backend.
   async function reloadHabits() {
     const res = await fetch(`${import.meta.env.VITE_API_URL}/habits/`, {
       method: "GET",
@@ -322,8 +332,10 @@ function HabitsPage() {
   // across tiers shows.
   async function logHabit(habitId: number, status: HabitStatus, tier?: number) {
     try {
+      // Send the tier for EVERY status (not just completion) so undo / skip /
+      // missed target that version's row, not the whole habit.
       const body: { status: HabitStatus; tier?: number } = { status };
-      if (status === "COMPLETED" && tier != null) body.tier = tier;
+      if (tier != null) body.tier = tier;
 
       const res = await fetch(
         `${import.meta.env.VITE_API_URL}/habits/${habitId}/log/`,

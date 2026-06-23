@@ -2,12 +2,13 @@
 // PlanPage.tsx so the tier logic and toolbar can import them without a cycle
 // (this module has no runtime code, so nothing can import back into it).
 
-// The statuses we can WRITE for a day. Matches the backend's HabitLog.Status.
-export type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED";
-// What the server can REPORT: adds MISSED — a derived, read-only state the
-// backend returns for a *past* day's untouched habit. We render it but never
-// send it (the log endpoint only accepts the three writable statuses above).
-export type ReadStatus = HabitStatus | "MISSED";
+// The statuses we can write/read for a day. Matches the backend's
+// HabitLog.Status. MISSED is now BOTH settable (mark "I didn't do it" in the
+// moment, so a version closes off the list) and derived (the backend still
+// returns it for a past day's untouched habit). ReadStatus is kept as an alias
+// so existing references compile; the two are the same set now.
+export type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED" | "MISSED";
+export type ReadStatus = HabitStatus;
 
 export type Plan = {
   // null for the "Anytime" group (habits with no schedule) — that group
@@ -56,10 +57,18 @@ export type Habit = {
   tier?: number | null;        // 1=Roots, 2=Growth; null = untiered OR Case B
   tier_name?: string | null;
   tier_value?: string | null;  // Case A only: this slot's value, e.g. "7:30"
-  // The habit's full tier list (every level it has). [] = untiered. Used to look
-  // up a value by level (Case A fallback) and to drive Case B's rung + stretch.
-  tiers?: { level: number; name: string; value: string }[];
-  achieved_tier?: number | null;
+  // The habit's full tier list (every level it has), each with TODAY's per-version
+  // state. [] = untiered. `status`/`done` are per version: completing a LOWER one
+  // never closes a HIGHER one, and the backend has already folded the
+  // higher-completes-lower cascade into these, so a card just reads its own
+  // version here. Used to drive each rung's done/skip/missed and Case B's rung.
+  tiers?: {
+    level: number;
+    name: string;
+    value: string;
+    status?: ReadStatus;
+    done?: boolean;
+  }[];
 };
 
 // A per-day note from the new Note model (GET /days/notes/). Unlike the legacy
