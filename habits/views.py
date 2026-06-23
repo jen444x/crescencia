@@ -2,7 +2,7 @@ import json
 from datetime import time as dt_time
 
 from django.db import transaction
-from django.db.models import F, Prefetch
+from django.db.models import F, Max, Prefetch
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -590,6 +590,50 @@ def reorder_schedules(request):
         for s in sorted(schedules.values(), key=lambda s: s.order)
     ]
     return JsonResponse({"updated": updated})
+
+
+@csrf_exempt
+@require_POST
+def create_schedule(request):
+    """Place an unscheduled habit onto the timeline.
+
+    Body: {"habit": <id>, "plan": <id>, "order"?: <int>}. Creates the Schedule
+    row that puts a habit (one with none yet — i.e. it's sitting in the "Anytime"
+    group) into a time block. `order` is optional; without it the row lands at
+    the bottom of that block (max order + 1). Returns the new schedule id so the
+    page can drop it straight into the block without a refetch.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    habit_id = body.get("habit")
+    plan_id = body.get("plan")
+    # bool is a subclass of int, so reject it explicitly.
+    if not isinstance(habit_id, int) or isinstance(habit_id, bool):
+        return JsonResponse({"error": "'habit' must be a habit id (integer)."}, status=400)
+    if not isinstance(plan_id, int) or isinstance(plan_id, bool):
+        return JsonResponse({"error": "'plan' must be a plan id (integer)."}, status=400)
+
+    if not Habit.objects.filter(id=habit_id).exists():
+        return JsonResponse({"error": f"Unknown habit id: {habit_id}."}, status=400)
+    if not Plan.objects.filter(id=plan_id).exists():
+        return JsonResponse({"error": f"Unknown plan id: {plan_id}."}, status=400)
+
+    order = body.get("order")
+    if order is not None and (not isinstance(order, int) or isinstance(order, bool)):
+        return JsonResponse({"error": "'order' must be an integer."}, status=400)
+    if order is None:
+        # Append: one past the block's current highest order (1 if it's empty).
+        highest = Schedule.objects.filter(plan_id=plan_id).aggregate(m=Max("order"))["m"]
+        order = (highest or 0) + 1
+
+    schedule = Schedule.objects.create(habit_id=habit_id, plan_id=plan_id, order=order)
+    return JsonResponse(
+        {"schedule_id": schedule.id, "habit": habit_id, "plan": plan_id, "order": order},
+        status=201,
+    )
 
 
 @csrf_exempt

@@ -34,6 +34,7 @@ urlpatterns = [
     path("routines/<int:routine_id>/members/", views.routine_members, name="routine_members"),
     path("routines/<int:routine_id>/log/", views.log_routine, name="log_routine"),
     path("schedules/reorder/", views.reorder_schedules, name="reorder_schedules"),
+    path("schedules/create/", views.create_schedule, name="create_schedule"),
     path("plans/shift/", views.shift_plans, name="shift_plans"),
     path("plans/retime/", views.retime_plan, name="retime_plan"),
     path("areas/", views.areas, name="areas"),

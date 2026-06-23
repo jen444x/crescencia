@@ -709,6 +709,40 @@ class RoutineApiTests(TestCase):
         self.s_brush.refresh_from_db()
         self.assertEqual(self.s_brush.plan_id, self.plan.id)  # block unchanged
 
+    def test_create_schedule_places_unscheduled_habit(self):
+        solo = Habit.objects.create(name="Journal")  # no schedule -> "Anytime"
+        resp = self.client.post(
+            reverse("habits:create_schedule"),
+            data={"habit": solo.id, "plan": self.plan.id},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        data = json.loads(resp.content)
+        self.assertEqual(data["plan"], self.plan.id)
+        self.assertEqual(data["order"], 3)  # appends after s_brush(1), s_wash(2)
+        self.assertTrue(
+            Schedule.objects.filter(
+                id=data["schedule_id"], habit=solo, plan=self.plan
+            ).exists()
+        )
+
+    def test_create_schedule_rejects_unknown_habit(self):
+        resp = self.client.post(
+            reverse("habits:create_schedule"),
+            data={"habit": 999999, "plan": self.plan.id},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_schedule_rejects_unknown_plan(self):
+        solo = Habit.objects.create(name="Journal")
+        resp = self.client.post(
+            reverse("habits:create_schedule"),
+            data={"habit": solo.id, "plan": 999999},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
 
 class RoutineLogTests(TestCase):
     """`routines/<id>/log/` fans one status out to every member habit — the

@@ -169,7 +169,7 @@ function dayLabel(date: Date): string {
 // Row + Segment types now live in ./plan/types. buildSegments turns a plan's
 // habits into the ordered segments a time block renders (active rows, collapsed
 // "done" runs, and in-place routine blocks).
-function buildSegments(habits: Habit[]): Segment[] {
+function buildSegments(habits: Habit[], asCycle: boolean): Segment[] {
   // 1) Collapse into ordered "units": consecutive habits sharing a routine
   //    become one routine unit; every other habit is its own unit.
   type Unit =
@@ -194,19 +194,13 @@ function buildSegments(habits: Habit[]): Segment[] {
     }
   }
 
-  // A unit's chain is its (first) habit's chain — for step numbers + connectors.
-  const unitChain = (u: Unit): number | null =>
-    (u.type === "habit" ? u.habit.chain : u.habits[0].chain) ?? null;
-
-  // 2) Chain step numbers, counting a whole routine unit as a single step.
-  const counts = new Map<number, number>();
-  const stepNumbers = units.map((u) => {
-    const chain = unitChain(u);
-    if (chain == null) return null;
-    const n = (counts.get(chain) ?? 0) + 1;
-    counts.set(chain, n);
-    return n;
-  });
+  // 2) Step numbers come from the TIME BLOCK itself: every timed block is one
+  //    cycle, so its units are steps 1..N in order (a routine counts as one
+  //    step). A block with a single unit is a "cycle of one" — shown plain, no
+  //    number. "Anytime" isn't a time, so it's never a cycle (asCycle false) and
+  //    its habits stay loose.
+  const numbered = asCycle && units.length >= 2;
+  const stepNumbers = units.map((_, i) => (numbered ? i + 1 : null));
 
   // 3) Emit segments in order, grouping consecutive completed single habits into
   //    one "done" chip. Routine units never collapse.
@@ -220,14 +214,12 @@ function buildSegments(habits: Habit[]): Segment[] {
   };
 
   units.forEach((u, i) => {
-    const chain = unitChain(u);
     const next = units[i + 1];
-    // Connect down to the next unit only when it's the immediately-following step
-    // of the same chain and not a collapsed done habit (so a line never dangles).
+    // Connect down to the next step in the block, unless that step is a collapsed
+    // done habit (so the connector line never dangles into the done tray).
     const connectBelow =
-      chain != null &&
+      numbered &&
       next != null &&
-      unitChain(next) === chain &&
       !(next.type === "habit" && isDone(next.habit));
 
     if (u.type === "routine") {
@@ -816,8 +808,11 @@ function SortableRow({
     isDragging,
     // Keyed by the SCHEDULE row, not the habit: a habit can sit in several
     // blocks (tier-slots at different times), so habit.id isn't unique across
-    // the page-wide drag context. schedule_id is always set on a draggable row.
-  } = useSortable({ id: habit.schedule_id ?? habit.id });
+    // the page-wide drag context. An Anytime habit has no schedule row yet, so
+    // it uses a "new-<habitId>" id the drop handler recognizes as "place me".
+  } = useSortable({
+    id: habit.schedule_id != null ? habit.schedule_id : `new-${habit.id}`,
+  });
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -1163,13 +1158,18 @@ function PlanBoard({
 
   // Not reorderable when it's the "Anytime" group (no schedule rows) or any day
   // that isn't today (see `interactive` above).
-  const canReorder = planId != null && interactive;
+  // Anytime (planId null) is draggable too, so you can drag a freshly-added
+  // habit out of it onto a time block. It just isn't a reorder/move target —
+  // dropping onto it is a no-op for now (removing a habit's time comes later).
+  const canReorder = interactive;
 
   // Ordered segments: single active habits, in-place "done" groups, and routine
   // blocks — each rendered WHERE it sits in the order, so a routine stays inside
   // its cycle. Drag reorders only the loose active habits; done + routine units
   // keep their exact spot.
-  const segments = buildSegments(habits);
+  // A real time block (planId set) is one cycle → its habits render connected.
+  // "Anytime" (planId null) isn't a time, so it stays loose.
+  const segments = buildSegments(habits, planId != null);
   const activeHabits = habits.filter(
     (habit) => !isDone(habit) && habit.routine == null,
   );
@@ -1232,7 +1232,9 @@ function PlanBoard({
   // Drag ids are schedule ids (unique page-wide). The drop logic lives in the
   // main component's page-level DndContext, which can see every block at once —
   // both within-block reorder and a move into another block.
-  const activeIds = activeHabits.map((habit) => habit.schedule_id ?? habit.id);
+  const activeIds = activeHabits.map((habit) =>
+    habit.schedule_id != null ? habit.schedule_id : `new-${habit.id}`,
+  );
 
   return (
     <SortableContext items={activeIds} strategy={verticalListSortingStrategy}>
@@ -1243,7 +1245,7 @@ function PlanBoard({
           ) : seg.kind === "routine" ? (
             routineItem(seg)
           ) : (
-            <li key={seg.row.habit.schedule_id ?? seg.row.habit.id}>
+            <li key={seg.row.habit.schedule_id ?? `new-${seg.row.habit.id}`}>
               <SortableRow
                 habit={seg.row.habit}
                 dayTier={dayTier}
@@ -2843,7 +2845,7 @@ function PlansPage() {
   // The row being dragged right now (schedule id), so a DragOverlay can render a
   // solid copy that follows your finger — otherwise a row dragged out of its
   // block fades in place and you can't see where you're moving it.
-  const [dragId, setDragId] = useState<number | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
 
   // One shared drag context spans every block (lifted out of PlanBoard) so a row
   // can be dragged from one time block into another. A 6px threshold keeps a
@@ -2961,17 +2963,70 @@ function PlansPage() {
   // The page-level drop handler. The dragged id is a schedule id; the drop
   // target is either another row (its schedule id) or a block's empty space
   // (`plan-<id>`). Same block -> reorder; different block -> move across.
+  // Place an Anytime habit (no schedule row yet) onto a real block: create the
+  // Schedule on the server, then move the row out of Anytime into that block
+  // (lands at the bottom — the backend appends it).
+  async function placeHabit(habitId: number, planId: number) {
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/schedules/create/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ habit: habitId, plan: planId }),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      const data = await res.json();
+      setPlans((prev) => {
+        const habit = prev
+          .find((p) => p.id == null)
+          ?.habits.find((h) => h.id === habitId);
+        if (!habit) return prev;
+        const placed: Habit = {
+          ...habit,
+          schedule_id: data.schedule_id,
+          order: data.order,
+          chain: null,
+          routine: null,
+        };
+        return prev.map((p) =>
+          p.id == null
+            ? { ...p, habits: p.habits.filter((h) => h.id !== habitId) }
+            : p.id === planId
+              ? { ...p, habits: [...p.habits, placed] }
+              : p,
+        );
+      });
+      toast("Habit placed");
+    } catch {
+      toast("Couldn't place that habit", { variant: "error" });
+    }
+  }
+
   function handlePlanDragEnd(event: DragEndEvent) {
     setDragId(null); // drop finished — tear down the overlay
     const { active, over } = event;
     if (!over) return;
-    const activeSid = Number(active.id);
 
+    // The dragged row is either a numeric schedule id (already on the timeline)
+    // or "new-<habitId>" — an Anytime habit with no schedule row yet.
+    const rawActive = String(active.id);
+    const newHabitId = rawActive.startsWith("new-")
+      ? Number(rawActive.slice("new-".length))
+      : null;
+    const activeSid = newHabitId == null ? Number(active.id) : null;
+
+    // Which block was it dropped on? A block's empty space ("plan-<id>" /
+    // "plan-anytime"), another timed row (numeric id), or an Anytime row.
     let overSid: number | null = null;
     let targetPlanId: number | null = null;
-    if (typeof over.id === "string" && over.id.startsWith("plan-")) {
-      const raw = over.id.slice("plan-".length);
+    const rawOver = String(over.id);
+    if (rawOver.startsWith("plan-")) {
+      const raw = rawOver.slice("plan-".length);
       targetPlanId = raw === "anytime" ? null : Number(raw);
+    } else if (rawOver.startsWith("new-")) {
+      targetPlanId = null; // dropped onto an Anytime row -> the Anytime group
     } else {
       overSid = Number(over.id);
       targetPlanId =
@@ -2979,7 +3034,16 @@ function PlansPage() {
           (p) => p.id != null && p.habits.some((h) => h.schedule_id === overSid),
         )?.id ?? null;
     }
-    if (targetPlanId == null) return;
+
+    // Placing a habit out of Anytime onto a real block.
+    if (newHabitId != null) {
+      if (targetPlanId != null) placeHabit(newHabitId, targetPlanId);
+      return; // anytime -> anytime is a no-op
+    }
+
+    // An existing timed row. Dragging it back to Anytime (removing its time)
+    // isn't built yet, so ignore that drop for now.
+    if (targetPlanId == null || activeSid == null) return;
 
     const sourcePlan = plans.find(
       (p) => p.id != null && p.habits.some((h) => h.schedule_id === activeSid),
@@ -3403,13 +3467,17 @@ function PlansPage() {
       dragId != null
         ? shownPlans
             .flatMap((p) => p.habits)
-            .find((h) => h.schedule_id === dragId) ?? null
+            .find((h) =>
+              dragId.startsWith("new-")
+                ? h.id === Number(dragId.slice("new-".length))
+                : h.schedule_id === Number(dragId),
+            ) ?? null
         : null;
     body = (
       <DndContext
         sensors={planSensors}
         collisionDetection={closestCorners}
-        onDragStart={(e) => setDragId(Number(e.active.id))}
+        onDragStart={(e) => setDragId(String(e.active.id))}
         onDragCancel={() => setDragId(null)}
         onDragEnd={handlePlanDragEnd}
       >
