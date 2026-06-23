@@ -19,6 +19,7 @@ urlpatterns = [
     path("habits/<int:habit_id>/tiers/<int:level>/delete/", views.delete_habit_tier, name="delete_habit_tier"),
     path("days/skip/", views.skip_day, name="skip_day"),
     path("days/clear/", views.clear_day, name="clear_day"),
+    path("days/arrange/", views.arrange_day, name="arrange_day"),
     path("days/notes/", views.day_notes, name="day_notes"),
     path("days/journal/", views.day_journal, name="day_journal"),
     path("notes/create/", views.create_note, name="create_note"),

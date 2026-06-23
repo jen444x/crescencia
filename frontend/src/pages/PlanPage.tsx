@@ -897,12 +897,14 @@ function SortableRow({
     transform,
     transition,
     isDragging,
-    // Keyed by the SCHEDULE row, not the habit: a habit can sit in several
-    // blocks (tier-slots at different times), so habit.id isn't unique across
-    // the page-wide drag context. An Anytime habit has no schedule row yet, so
-    // it uses a "new-<habitId>" id the drop handler recognizes as "place me".
+    // Keyed by the per-day ROW (row_id), not the habit: a habit can sit in
+    // several blocks (tier-slots at different times), so habit.id isn't unique
+    // across the page-wide drag context. row_id is stable across the
+    // template->frozen flip (schedule_id goes null on a frozen day). An Anytime
+    // habit has no row yet, so it uses a "new-<habitId>" id the drop handler
+    // recognizes as "place me".
   } = useSortable({
-    id: habit.schedule_id != null ? habit.schedule_id : `new-${habit.id}`,
+    id: habit.row_id != null ? habit.row_id : `new-${habit.id}`,
   });
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -1221,10 +1223,10 @@ function PlanBoard({
   onOpenNote: (habit: Habit) => void;
   onRoutineLog: (routineId: number, status: HabitStatus) => void;
   onEditRoutine: (routineId: number, name: string) => void;
-  // Only today is reorderable: dragging writes the *recurring* order (the
-  // reorder API has no date), so we don't let it happen while you're looking at
-  // another day — otherwise re-sorting "yesterday" would silently rearrange
-  // every day's routine.
+  // Reorderable on ANY viewed day: dragging now writes the per-day layer
+  // (/days/arrange/ with the viewed date), so re-sorting "yesterday" or
+  // "tomorrow" only touches that one day and never the recurring routine. Still
+  // false for the "Anytime" group (no rows to reorder).
   interactive: boolean;
 }) {
   const planId = plan.id;
@@ -1320,11 +1322,12 @@ function PlanBoard({
     );
   }
 
-  // Drag ids are schedule ids (unique page-wide). The drop logic lives in the
-  // main component's page-level DndContext, which can see every block at once —
-  // both within-block reorder and a move into another block.
+  // Drag ids are row ids (unique page-wide, stable across the template->frozen
+  // flip). The drop logic lives in the main component's page-level DndContext,
+  // which can see every block at once — both within-block reorder and a move
+  // into another block.
   const activeIds = activeHabits.map((habit) =>
-    habit.schedule_id != null ? habit.schedule_id : `new-${habit.id}`,
+    habit.row_id != null ? habit.row_id : `new-${habit.id}`,
   );
 
   return (
@@ -1343,7 +1346,7 @@ function PlanBoard({
           ) : seg.kind === "routine" ? (
             routineItem(seg)
           ) : (
-            <li key={seg.row.habit.schedule_id ?? `new-${seg.row.habit.id}`}>
+            <li key={seg.row.habit.row_id ?? `new-${seg.row.habit.id}`}>
               <SortableRow
                 habit={seg.row.habit}
                 dayTier={dayTier}
@@ -2898,31 +2901,32 @@ function PlansPage() {
     }
   }
 
-  // Persist a plan's habit order (no toast). Optimistic, with a snapshot we
-  // restore if the save fails. Shared by a drag, its Undo, and Reset order.
+  // Persist a plan's habit order for the VIEWED DAY only (no toast). Optimistic,
+  // with a snapshot we restore if the save fails. Shared by a drag and its Undo.
+  // Writes the per-day layer via /days/arrange/ — never the recurring template.
   async function postReorder(planId: number, orderedHabits: Habit[]) {
     if (orderedHabits.length === 0) return;
     const snapshot = plansRef.current;
     setPlans((prev) => applyPlanOrder(prev, planId, orderedHabits));
 
-    // Backend keys on schedule_id (NOT habit id) and wants the whole list
-    // with fresh 1..N orders. We keep each habit's chain as-is.
+    // /days/arrange/ keys on row_id (the day's stable per-row key) and wants the
+    // whole list with fresh 1..N orders. We keep each habit's chain as-is.
     const items = orderedHabits.map((habit, i) => ({
-      id: habit.schedule_id,
+      id: habit.row_id,
       order: i + 1,
       chain: habit.chain ?? null,
     }));
 
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/schedules/reorder/`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items }),
-        },
-      );
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/days/arrange/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: toYMD(viewedDate), items }),
+      });
       if (!res.ok) throw new Error("Request failed");
+      // A frozen day forks template rows into ScheduleDay rows (new row_ids), so
+      // re-fetch /plan/ to pick up the day's real keys + reconcile.
+      setReloadToken((token) => token + 1);
     } catch {
       setPlans(snapshot);
     }
@@ -2980,47 +2984,46 @@ function PlansPage() {
         h.routine == null,
     );
 
-  // Fire-and-forget POST of an explicit items list to /schedules/reorder/.
-  // Returns ok; the caller owns optimistic state + rollback.
+  // Fire-and-forget POST of an explicit items list to /days/arrange/ for the
+  // viewed day. Returns ok; the caller owns optimistic state + rollback. Writes
+  // the per-day layer only — never the recurring template.
   async function persistItems(
     items: Array<Record<string, number | null>>,
   ): Promise<boolean> {
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/schedules/reorder/`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items }),
-        },
-      );
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/days/arrange/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: toYMD(viewedDate), items }),
+      });
       return res.ok;
     } catch {
       return false;
     }
   }
 
-  // Move one row (schedule `sid`) out of `fromPlan` into `toPlan`, dropping its
-  // chain/routine (those are same-block tags) and landing it before `overSid`
-  // (or at the end when dropped on empty block space). Persists BOTH blocks in
-  // one batch, optimistic with rollback, and offers an Undo that puts it back.
+  // Move one row (`rid` = its row_id) out of `fromPlan` into `toPlan` for the
+  // viewed day only, dropping its chain/routine (those are same-block tags) and
+  // landing it before `overRid` (or at the end when dropped on empty block
+  // space). Persists BOTH blocks in one /days/arrange/ batch, optimistic with
+  // rollback, and offers an Undo that puts it back.
   async function moveAcrossBlocks(
     fromPlan: Plan,
     toPlan: Plan,
-    sid: number,
-    overSid: number | null,
+    rid: number,
+    overRid: number | null,
   ) {
     if (fromPlan.id == null || toPlan.id == null) return;
-    const moved = fromPlan.habits.find((h) => h.schedule_id === sid);
+    const moved = fromPlan.habits.find((h) => h.row_id === rid);
     if (!moved) return;
 
     const snapshot = plansRef.current;
     const origFrom = fromPlan.habits;
     const origTo = toPlan.habits;
 
-    const newFrom = origFrom.filter((h) => h.schedule_id !== sid);
+    const newFrom = origFrom.filter((h) => h.row_id !== rid);
     const movedNew: Habit = { ...moved, chain: null, routine: null };
-    const at = overSid != null ? origTo.findIndex((h) => h.schedule_id === overSid) : -1;
+    const at = overRid != null ? origTo.findIndex((h) => h.row_id === overRid) : -1;
     const idx = at >= 0 ? at : origTo.length;
     const newTo = [...origTo.slice(0, idx), movedNew, ...origTo.slice(idx)];
 
@@ -3035,11 +3038,11 @@ function PlansPage() {
     );
 
     const items = [
-      ...newFrom.map((h, i) => ({ id: h.schedule_id ?? null, order: i + 1 })),
+      ...newFrom.map((h, i) => ({ id: h.row_id ?? null, order: i + 1 })),
       ...newTo.map((h, i) =>
-        h.schedule_id === sid
-          ? { id: sid, order: i + 1, plan: toPlan.id, chain: null, routine: null }
-          : { id: h.schedule_id ?? null, order: i + 1 },
+        h.row_id === rid
+          ? { id: rid, order: i + 1, plan: toPlan.id, chain: null, routine: null }
+          : { id: h.row_id ?? null, order: i + 1 },
       ),
     ];
     const ok = await persistItems(items);
@@ -3048,6 +3051,9 @@ function PlansPage() {
       toast("Couldn't move that habit", { variant: "error" });
       return;
     }
+    // A frozen day reassigns row_ids (template -> ScheduleDay); re-fetch /plan/
+    // so the optimistic rows pick up the day's real keys.
+    setReloadToken((token) => token + 1);
 
     toast("Habit moved", {
       action: {
@@ -3057,63 +3063,63 @@ function PlansPage() {
           // Put the row back in its old block, time, and chain/routine tags.
           persistItems([
             ...origFrom.map((h, i) =>
-              h.schedule_id === sid
+              h.row_id === rid
                 ? {
-                    id: sid,
+                    id: rid,
                     order: i + 1,
                     plan: fromPlan.id,
                     chain: h.chain ?? null,
                     routine: h.routine ?? null,
                   }
-                : { id: h.schedule_id ?? null, order: i + 1 },
+                : { id: h.row_id ?? null, order: i + 1 },
             ),
-            ...origTo.map((h, i) => ({ id: h.schedule_id ?? null, order: i + 1 })),
-          ]);
+            ...origTo.map((h, i) => ({ id: h.row_id ?? null, order: i + 1 })),
+          ]).then(() => setReloadToken((token) => token + 1));
         },
       },
     });
   }
 
-  // The page-level drop handler. The dragged id is a schedule id; the drop
-  // target is either another row (its schedule id) or a block's empty space
-  // (`plan-<id>`). Same block -> reorder; different block -> move across.
-  // Place an Anytime habit (no schedule row yet) onto a real block: create the
-  // Schedule on the server, then move the row out of Anytime into that block
-  // (lands at the bottom — the backend appends it).
+  // Place an Anytime habit (no row yet) onto a real block FOR THE VIEWED DAY:
+  // /days/arrange/ with a placement item ({habit, plan}, no id) creates a
+  // ScheduleDay row for that day only — it does NOT add it to the recurring
+  // template. Optimistic move out of Anytime, then re-fetch /plan/ to pick up
+  // the new row's row_id. Lands at the bottom (omit order = append).
   async function placeHabit(habitId: number, planId: number) {
-    try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/schedules/create/`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ habit: habitId, plan: planId }),
-        },
+    const snapshot = plansRef.current;
+    setPlans((prev) => {
+      const habit = prev
+        .find((p) => p.id == null)
+        ?.habits.find((h) => h.id === habitId);
+      if (!habit) return prev;
+      const placed: Habit = {
+        ...habit,
+        chain: null,
+        routine: null,
+      };
+      return prev.map((p) =>
+        p.id == null
+          ? { ...p, habits: p.habits.filter((h) => h.id !== habitId) }
+          : p.id === planId
+            ? { ...p, habits: [...p.habits, placed] }
+            : p,
       );
-      if (!res.ok) throw new Error("Request failed");
-      const data = await res.json();
-      setPlans((prev) => {
-        const habit = prev
-          .find((p) => p.id == null)
-          ?.habits.find((h) => h.id === habitId);
-        if (!habit) return prev;
-        const placed: Habit = {
-          ...habit,
-          schedule_id: data.schedule_id,
-          order: data.order,
-          chain: null,
-          routine: null,
-        };
-        return prev.map((p) =>
-          p.id == null
-            ? { ...p, habits: p.habits.filter((h) => h.id !== habitId) }
-            : p.id === planId
-              ? { ...p, habits: [...p.habits, placed] }
-              : p,
-        );
+    });
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/days/arrange/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date: toYMD(viewedDate),
+          items: [{ habit: habitId, plan: planId }],
+        }),
       });
+      if (!res.ok) throw new Error("Request failed");
+      // The freeze assigns the new row its row_id; re-fetch to reconcile.
+      setReloadToken((token) => token + 1);
       toast("Habit placed");
     } catch {
+      setPlans(snapshot);
       toast("Couldn't place that habit", { variant: "error" });
     }
   }
@@ -3147,22 +3153,26 @@ function PlansPage() {
     }
   }
 
+  // The page-level drop handler. The dragged id is a row_id (stable across the
+  // template->frozen flip); the drop target is either another row (its row_id)
+  // or a block's empty space (`plan-<id>`). Same block -> reorder; different
+  // block -> move across. Both write the per-day layer via /days/arrange/.
   function handlePlanDragEnd(event: DragEndEvent) {
     setDragId(null); // drop finished — tear down the overlay
     const { active, over } = event;
     if (!over) return;
 
-    // The dragged row is either a numeric schedule id (already on the timeline)
-    // or "new-<habitId>" — an Anytime habit with no schedule row yet.
+    // The dragged row is either a numeric row_id (already on the timeline) or
+    // "new-<habitId>" — an Anytime habit with no row yet.
     const rawActive = String(active.id);
     const newHabitId = rawActive.startsWith("new-")
       ? Number(rawActive.slice("new-".length))
       : null;
-    const activeSid = newHabitId == null ? Number(active.id) : null;
+    const activeRid = newHabitId == null ? Number(active.id) : null;
 
     // Which block was it dropped on? A block's empty space ("plan-<id>" /
-    // "plan-anytime"), another timed row (numeric id), or an Anytime row.
-    let overSid: number | null = null;
+    // "plan-anytime"), another timed row (its row_id), or an Anytime row.
+    let overRid: number | null = null;
     let targetPlanId: number | null = null;
     const rawOver = String(over.id);
     if (rawOver.startsWith("plan-")) {
@@ -3171,10 +3181,10 @@ function PlansPage() {
     } else if (rawOver.startsWith("new-")) {
       targetPlanId = null; // dropped onto an Anytime row -> the Anytime group
     } else {
-      overSid = Number(over.id);
+      overRid = Number(over.id);
       targetPlanId =
         plans.find(
-          (p) => p.id != null && p.habits.some((h) => h.schedule_id === overSid),
+          (p) => p.id != null && p.habits.some((h) => h.row_id === overRid),
         )?.id ?? null;
     }
 
@@ -3186,19 +3196,19 @@ function PlansPage() {
 
     // An existing timed row. Dragging it back to Anytime (removing its time)
     // isn't built yet, so ignore that drop for now.
-    if (targetPlanId == null || activeSid == null) return;
+    if (targetPlanId == null || activeRid == null) return;
 
     const sourcePlan = plans.find(
-      (p) => p.id != null && p.habits.some((h) => h.schedule_id === activeSid),
+      (p) => p.id != null && p.habits.some((h) => h.row_id === activeRid),
     );
     if (!sourcePlan || sourcePlan.id == null) return;
 
     if (sourcePlan.id === targetPlanId) {
       // Within-block reorder — rebuild the full list keeping non-active rows put.
-      if (overSid == null || activeSid === overSid) return;
+      if (overRid == null || activeRid === overRid) return;
       const active2 = activeRowsOf(sourcePlan.habits);
-      const from = active2.findIndex((h) => h.schedule_id === activeSid);
-      const to = active2.findIndex((h) => h.schedule_id === overSid);
+      const from = active2.findIndex((h) => h.row_id === activeRid);
+      const to = active2.findIndex((h) => h.row_id === overRid);
       if (from < 0 || to < 0) return;
       const newActive = arrayMove(active2, from, to);
       let next = 0;
@@ -3214,7 +3224,7 @@ function PlansPage() {
     } else {
       const targetPlan = plans.find((p) => p.id === targetPlanId);
       if (!targetPlan) return;
-      moveAcrossBlocks(sourcePlan, targetPlan, activeSid, overSid);
+      moveAcrossBlocks(sourcePlan, targetPlan, activeRid, overRid);
     }
   }
 
@@ -3618,7 +3628,7 @@ function PlansPage() {
             .find((h) =>
               dragId.startsWith("new-")
                 ? h.id === Number(dragId.slice("new-".length))
-                : h.schedule_id === Number(dragId),
+                : h.row_id === Number(dragId),
             ) ?? null
         : null;
     body = (
@@ -3670,7 +3680,9 @@ function PlansPage() {
               onEditRoutine={(id, name) =>
                 setRoutineSheet({ mode: "edit", id, name })
               }
-              interactive={isViewingToday}
+              // Drag works on any viewed day — it writes the per-day layer
+              // (/days/arrange/), not the recurring template.
+              interactive
             />
           );
           return (

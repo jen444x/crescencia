@@ -19,9 +19,17 @@ export type Plan = {
 };
 export type Habit = {
   id: number;
-  // The Schedule row that holds this habit's position (order + chain).
-  // It's what we send to /schedules/reorder/ when the habit is dragged.
+  // The Schedule row that holds this habit's position (order + chain) on the
+  // recurring template. It's what we send to /schedules/reorder/ for the
+  // explicit "edit my recurring plan" action. NULL on a frozen day — that row is
+  // a ScheduleDay copy, not a template row — so never key dnd on this.
   schedule_id?: number | null;
+  // The STABLE per-row key for dnd + optimistic updates: the Schedule id on an
+  // unfrozen day, the ScheduleDay id once the day is frozen. Survives the
+  // template->frozen flip mid-session (schedule_id does not), so all drag ids,
+  // SortableContext items, and optimistic order/move logic key on this. It's
+  // also the `id` we send to /days/arrange/ for an existing row.
+  row_id?: number | null;
   name: string;
   chain?: number | null;
   // The Routine (group) this habit belongs to + its display name, for the

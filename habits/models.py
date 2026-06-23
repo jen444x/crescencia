@@ -155,7 +155,57 @@ class Schedule(models.Model):
 
     def __str__(self):
         return f"{self.plan.start_time} - {self.habit.name}"
-    
+
+
+class ScheduleDay(models.Model):
+    """One day's saved arrangement — the per-day twin of `Schedule`.
+
+    `Schedule` is the recurring plan (same every day): which habit sits in which
+    block, its chain, its order. `ScheduleDay` records what a *specific date*
+    actually looked like, so editing one day never changes the rest — exactly how
+    `PlanDay` is the per-day twin of `Plan`'s time.
+
+    No rows for a date = that day isn't frozen yet, so `/plan/` draws it from the
+    recurring `Schedule` (today's behaviour, unchanged). The first time a day is
+    opened or edited it's "frozen": its current arrangement is copied into
+    `ScheduleDay` rows for that date, and from then on the day is read from — and
+    edited on — its own copy. That's what makes a past day real history: changing
+    your recurring plan later can't rewrite a day that's already frozen.
+
+    `habit_name` is a snapshot so a frozen day still shows what ran even if the
+    habit is later deleted (the FK goes null) — history shouldn't rot the way the
+    old SET_NULL logs did.
+    """
+    date = models.DateField()
+    habit = models.ForeignKey(Habit, on_delete=models.SET_NULL, null=True)
+    habit_name = models.CharField(max_length=200)
+    plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True, blank=True)
+    chain = models.ForeignKey(Chain, on_delete=models.SET_NULL, null=True, blank=True)
+    routine = models.ForeignKey(Routine, on_delete=models.SET_NULL, null=True, blank=True)
+    tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
+    order = models.PositiveIntegerField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # Mirror HabitLog's per-version keying: one row per specific version
+            # per habit per day, plus one untiered ("whole habit") row. Two
+            # constraints because Postgres treats NULLs as distinct.
+            models.UniqueConstraint(
+                fields=["date", "habit", "tier"],
+                condition=models.Q(tier__isnull=False),
+                name="one_scheduleday_per_date_habit_tier",
+            ),
+            models.UniqueConstraint(
+                fields=["date", "habit"],
+                condition=models.Q(tier__isnull=True),
+                name="one_untiered_scheduleday_per_date_habit",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.date} - {self.habit_name} (#{self.order})"
+
+
 class HabitLog(models.Model):
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'Pending'

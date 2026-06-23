@@ -7,8 +7,9 @@ from django.utils import timezone
 
 from .models import (
     Area, Habit, HabitLog, HabitTier, Note, Plan, PlanDay, Routine, Schedule,
-    Tier, TierValue,
+    ScheduleDay, Tier, TierValue,
 )
+from .views import freeze_day
 
 
 class BrowseDaysTests(TestCase):
@@ -1159,3 +1160,230 @@ class PerVersionStatusTests(TestCase):
         versions = self._versions(date=self.yesterday.isoformat())
         self.assertEqual(versions[1], "MISSED")
         self.assertEqual(versions[2], "MISSED")
+
+
+class FreezeDayTests(TestCase):
+    """A day gets a permanent "photo" (ScheduleDay rows) the first time it's
+    viewed-as-past or edited, so later changes to the recurring plan can never
+    rewrite it (docs/contracts/per-day-schedule.md). The arrangement source flips
+    template -> frozen with no change to the /plan/ payload shape; /days/arrange/
+    edits that photo, never the template."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        self.tomorrow = self.today + timedelta(days=1)
+
+        # Two habits in one block. Backdated so they count as existing on past days
+        # (the /plan/ "didn't exist yet" filter would hide them otherwise).
+        self.plan = Plan.objects.create(start_time=time(9, 0))
+        self.brush = Habit.objects.create(name="Brush teeth")
+        self.wash = Habit.objects.create(name="Wash face")
+        for h in (self.brush, self.wash):
+            Habit.objects.filter(id=h.id).update(
+                date_added=timezone.now() - timedelta(days=30)
+            )
+        self.s_brush = Schedule.objects.create(habit=self.brush, plan=self.plan, order=1)
+        self.s_wash = Schedule.objects.create(habit=self.wash, plan=self.plan, order=2)
+
+    def _arrange(self, **body):
+        return self.client.post(
+            reverse("habits:arrange_day"),
+            data=json.dumps(body), content_type="application/json",
+        )
+
+    def _rows(self, response):
+        """All habit payloads in a /plan/ response, keyed by row_id."""
+        groups = json.loads(response.content)
+        return {h["row_id"]: h for g in groups for h in g["habits"]}
+
+    def _plan(self, date):
+        return self.client.get(reverse("habits:plan"), {"date": date.isoformat()})
+
+    # --- freeze helper -------------------------------------------------------
+
+    def test_freeze_is_idempotent(self):
+        first = freeze_day(self.yesterday)
+        self.assertEqual(len(first), 2)                       # both slots snapshotted
+        count = ScheduleDay.objects.filter(date=self.yesterday).count()
+        self.assertEqual(count, 2)
+
+        second = freeze_day(self.yesterday)
+        self.assertEqual(second, {})                          # already frozen -> no-op
+        # No duplicate rows from the second call.
+        self.assertEqual(
+            ScheduleDay.objects.filter(date=self.yesterday).count(), 2
+        )
+
+    def test_freeze_snapshots_name_plan_and_time(self):
+        freeze_day(self.yesterday)
+        sd = ScheduleDay.objects.get(date=self.yesterday, habit=self.brush)
+        self.assertEqual(sd.habit_name, "Brush teeth")        # name snapshot
+        self.assertEqual(sd.plan_id, self.plan.id)
+        self.assertEqual(sd.order, 1)
+        # The block's time is locked into PlanDay so time_by_plan serves it.
+        pd = PlanDay.objects.get(date=self.yesterday, plan=self.plan)
+        self.assertEqual(pd.start_time, time(9, 0))
+
+    def test_freeze_copies_every_tier_slot(self):
+        # A habit with two tier-slots (two times) must freeze BOTH rows.
+        water = Habit.objects.create(name="Drink water")
+        Habit.objects.filter(id=water.id).update(
+            date_added=timezone.now() - timedelta(days=30)
+        )
+        roots, _ = Tier.objects.get_or_create(level=1)
+        growth, _ = Tier.objects.get_or_create(level=2)
+        late = Plan.objects.create(start_time=time(15, 0))
+        Schedule.objects.create(habit=water, plan=self.plan, tier=growth, order=3)
+        Schedule.objects.create(habit=water, plan=late, tier=roots, order=1)
+
+        freeze_day(self.yesterday)
+        slots = ScheduleDay.objects.filter(date=self.yesterday, habit=water)
+        self.assertEqual(sorted(s.tier.level for s in slots), [1, 2])
+
+    # --- /plan/ reads frozen days -------------------------------------------
+
+    def test_viewing_a_past_day_freezes_it(self):
+        self.assertFalse(ScheduleDay.objects.filter(date=self.yesterday).exists())
+        resp = self._plan(self.yesterday)
+        self.assertEqual(resp.status_code, 200)
+        # The lazy "photo on first view" wrote the rows.
+        self.assertEqual(
+            ScheduleDay.objects.filter(date=self.yesterday).count(), 2
+        )
+
+    def test_today_and_future_are_not_frozen_on_view(self):
+        self.client.get(reverse("habits:plan"))               # today
+        self._plan(self.tomorrow)                              # future
+        self.assertFalse(ScheduleDay.objects.filter(date=self.today).exists())
+        self.assertFalse(ScheduleDay.objects.filter(date=self.tomorrow).exists())
+
+    def test_frozen_day_payload_uses_scheduleday_row_id(self):
+        self._plan(self.yesterday)                            # freeze it
+        rows = self._rows(self._plan(self.yesterday))
+        sd = ScheduleDay.objects.get(date=self.yesterday, habit=self.brush)
+        self.assertIn(sd.id, rows)                            # keyed on ScheduleDay id
+        self.assertEqual(rows[sd.id]["id"], self.brush.id)    # habit id unchanged
+        self.assertIsNone(rows[sd.id]["schedule_id"])         # template id gone on a frozen row
+
+    def test_template_day_payload_uses_schedule_row_id(self):
+        # An unfrozen day (today) keys row_id on the Schedule id.
+        rows = self._rows(self.client.get(reverse("habits:plan")))
+        self.assertIn(self.s_brush.id, rows)
+        self.assertEqual(rows[self.s_brush.id]["schedule_id"], self.s_brush.id)
+
+    def test_editing_template_does_not_change_a_frozen_day(self):
+        # THE CORE PROMISE. Freeze yesterday, then rip the habit off the template.
+        self._plan(self.yesterday)
+        before = self._rows(self._plan(self.yesterday))
+        self.assertEqual(len(before), 2)
+
+        # Edit the recurring plan: move brush to a new block, drop wash entirely.
+        other = Plan.objects.create(start_time=time(18, 0))
+        Schedule.objects.filter(id=self.s_brush.id).update(plan=other, order=9)
+        self.s_wash.delete()
+
+        after = self._rows(self._plan(self.yesterday))
+        self.assertEqual(len(after), 2)                       # both still there
+        self.assertCountEqual(
+            [h["id"] for h in after.values()], [self.brush.id, self.wash.id]
+        )
+        # Brush still sits in its original block at its frozen order.
+        brush_row = next(h for h in after.values() if h["id"] == self.brush.id)
+        self.assertEqual(brush_row["order"], 1)
+
+    # --- /days/arrange/ ------------------------------------------------------
+
+    def test_arrange_reorders_a_frozen_day_without_touching_template(self):
+        self._plan(self.yesterday)                            # freeze
+        sd_brush = ScheduleDay.objects.get(date=self.yesterday, habit=self.brush)
+        sd_wash = ScheduleDay.objects.get(date=self.yesterday, habit=self.wash)
+
+        resp = self._arrange(
+            date=self.yesterday.isoformat(),
+            items=[{"id": sd_brush.id, "order": 2}, {"id": sd_wash.id, "order": 1}],
+        )
+        self.assertEqual(resp.status_code, 200)
+        sd_brush.refresh_from_db(); sd_wash.refresh_from_db()
+        self.assertEqual((sd_brush.order, sd_wash.order), (2, 1))
+        # Template untouched.
+        self.s_brush.refresh_from_db(); self.s_wash.refresh_from_db()
+        self.assertEqual((self.s_brush.order, self.s_wash.order), (1, 2))
+
+    def test_arrange_on_unfrozen_future_day_freezes_then_applies(self):
+        # Tomorrow isn't frozen; arranging it with TEMPLATE ids freezes first,
+        # translates the ids through the freeze map, then applies.
+        self.assertFalse(ScheduleDay.objects.filter(date=self.tomorrow).exists())
+        resp = self._arrange(
+            date=self.tomorrow.isoformat(),
+            items=[{"id": self.s_brush.id, "order": 5}],   # template id
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            ScheduleDay.objects.filter(date=self.tomorrow).count(), 2  # full freeze
+        )
+        sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
+        self.assertEqual(sd_brush.order, 5)
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.order, 1)              # template untouched
+
+    def test_arrange_moves_a_row_between_blocks_for_that_day(self):
+        other = Plan.objects.create(start_time=time(18, 0))
+        resp = self._arrange(
+            date=self.tomorrow.isoformat(),
+            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id, "chain": None}],
+        )
+        self.assertEqual(resp.status_code, 200)
+        sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
+        self.assertEqual(sd_brush.plan_id, other.id)
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.plan_id, self.plan.id)  # template block unchanged
+
+    def test_arrange_places_an_anytime_habit_for_that_day(self):
+        # A habit with no Schedule row (sits in "Anytime") dragged into a block,
+        # that day only -> a new ScheduleDay row, no Schedule row created.
+        solo = Habit.objects.create(name="Journal")
+        Habit.objects.filter(id=solo.id).update(
+            date_added=timezone.now() - timedelta(days=30)
+        )
+        resp = self._arrange(
+            date=self.tomorrow.isoformat(),
+            items=[{"habit": solo.id, "plan": self.plan.id}],
+        )
+        self.assertEqual(resp.status_code, 200)
+        sd = ScheduleDay.objects.get(date=self.tomorrow, habit=solo)
+        self.assertEqual(sd.plan_id, self.plan.id)
+        self.assertEqual(sd.habit_name, "Journal")           # name snapshot
+        self.assertEqual(sd.order, 3)                         # appends after brush(1)+wash(2)
+        # No Schedule (template) row was created — placement is per-day only.
+        self.assertFalse(Schedule.objects.filter(habit=solo).exists())
+
+    def test_arrange_requires_a_date(self):
+        resp = self._arrange(items=[{"id": self.s_brush.id, "order": 1}])
+        self.assertEqual(resp.status_code, 400)
+
+    def test_arrange_rejects_unknown_row_id_on_frozen_day(self):
+        self._plan(self.yesterday)                            # freeze
+        resp = self._arrange(
+            date=self.yesterday.isoformat(),
+            items=[{"id": 999999, "order": 1}],
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_arrange_rejects_bool_id(self):
+        resp = self._arrange(
+            date=self.tomorrow.isoformat(),
+            items=[{"id": True, "order": 1}],
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_arrange_persists_across_a_refetch(self):
+        # End-to-end: arrange tomorrow, then /plan/ reflects the per-day edit.
+        other = Plan.objects.create(start_time=time(18, 0))
+        self._arrange(
+            date=self.tomorrow.isoformat(),
+            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id}],
+        )
+        rows = self._rows(self._plan(self.tomorrow))
+        sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
+        self.assertEqual(rows[sd_brush.id]["row_id"], sd_brush.id)

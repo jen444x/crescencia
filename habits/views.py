@@ -11,7 +11,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Chain, Routine, Habit, Plan, PlanDay, Schedule, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
+from .models import Area, Chain, Routine, Habit, Plan, PlanDay, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -139,6 +139,69 @@ def _version_status(specific, fallback, level, is_past):
     return MISSED_STATUS if is_past else HabitLog.Status.PENDING
 
 
+@transaction.atomic
+def freeze_day(target_date):
+    """Snapshot a day's current template arrangement into `ScheduleDay` (and lock
+    each block's time into `PlanDay`) — the "photo" that makes a day immutable.
+
+    Idempotent: a day is "frozen" exactly when it has `ScheduleDay` rows, so if
+    any already exist we leave everything alone. Otherwise we copy the day's
+    effective `Schedule` arrangement — the same rows `/plan/` would project for
+    that date (only habits that existed by then, every tier-slot) — into
+    `ScheduleDay`, snapshotting `habit_name` so a later habit-delete can't blank
+    out the history. We also write a `PlanDay` per block at that block's effective
+    time for the day (its existing override if present, else the recurring time),
+    so the frozen time travels in `time_by_plan` exactly like the arrangement does.
+
+    Returns a ``{schedule_id: scheduleday_id}`` map for the rows just created
+    (empty if the day was already frozen), so a caller mid-freeze — like
+    `arrange_day` on a not-yet-frozen day — can translate template ids it was
+    handed into the ScheduleDay ids it must now edit.
+    """
+    if ScheduleDay.objects.filter(date=target_date).exists():
+        return {}   # already frozen — no-op, exactly like PlanDay's "no row" rule
+
+    # The same set `/plan/` projects for this date: only habits that already
+    # existed by then (a habit added later didn't run on a past day).
+    schedules = list(
+        Schedule.objects.filter(habit__date_added__date__lte=target_date)
+        .select_related("habit")
+    )
+
+    # Lock each block's time for the day. A plan's effective time is its existing
+    # override if one was set (a "running late" shift), else its recurring time;
+    # timeless plans (no start_time) have nothing to freeze and are skipped.
+    overrides = dict(
+        PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
+    )
+    plan_ids = {s.plan_id for s in schedules if s.plan_id is not None}
+    for pid in plan_ids:
+        plan_obj = Plan.objects.get(id=pid)
+        effective = overrides.get(pid, plan_obj.start_time)
+        if effective is None:
+            continue
+        PlanDay.objects.get_or_create(
+            plan_id=pid, date=target_date, defaults={"start_time": effective}
+        )
+
+    # Copy every Schedule slot (including each tier-slot of a multi-tier habit)
+    # into its ScheduleDay twin, recording the schedule->scheduleday id mapping.
+    id_map = {}
+    for s in schedules:
+        sd = ScheduleDay.objects.create(
+            date=target_date,
+            habit=s.habit,
+            habit_name=s.habit.name,
+            plan_id=s.plan_id,
+            chain_id=s.chain_id,
+            routine_id=s.routine_id,
+            tier_id=s.tier_id,
+            order=s.order,
+        )
+        id_map[s.id] = sd.id
+    return id_map
+
+
 def plan(request):
     # Which day to show. Defaults to today; the day-browser passes
     # ?date=YYYY-MM-DD to view any other day. The plan/schedule layout is the
@@ -151,6 +214,18 @@ def plan(request):
     # Once a day is over, a still-pending habit counts as a miss. We derive that
     # in habit_payload rather than storing it (see MISSED_STATUS).
     is_past_day = target_date < timezone.localdate()
+
+    # Lazy "photo on first view of a past day": looking back at history freezes it
+    # as it was, so editing the recurring plan later can't rewrite it. Only PAST
+    # days, only once (freeze_day is idempotent) — today is still being lived and a
+    # future day is a deliberate pre-edit, so neither is auto-frozen on view.
+    if is_past_day and not ScheduleDay.objects.filter(date=target_date).exists():
+        freeze_day(target_date)
+
+    # A day is "frozen" iff it has ScheduleDay rows: its arrangement was snapshotted
+    # so it reads from that copy, not the live template (which would let a later
+    # plan edit rewrite the past). No rows = project the template, as before.
+    is_frozen = ScheduleDay.objects.filter(date=target_date).exists()
 
     # That day's logs, grouped per habit into per-version buckets (logs are keyed
     # per VERSION now — see _day_logs / _version_status). Habits with no log
@@ -185,7 +260,7 @@ def plan(request):
         return tiers_by_habit[habit.id]
 
     def habit_payload(habit, schedule_id=None, chain=None, order=None,
-                      routine=None, routine_name=None, tier=None):
+                      routine=None, routine_name=None, tier=None, row_id=None):
         bucket = day_logs.get(habit.id)
         specific = bucket["specific"] if bucket else {}
         fallback = bucket["fallback"] if bucket else None
@@ -214,7 +289,11 @@ def plan(request):
 
         return {
             "id": habit.id,                # SAME across a habit's slots; FE groups by it
-            "schedule_id": schedule_id,    # THIS slot — the row to target when reordering
+            # The stable per-row key dnd + /days/arrange/ target. It's the
+            # ScheduleDay id on a frozen day, else the Schedule id — so the id a
+            # drag keys on doesn't change when a day flips template -> frozen.
+            "row_id": row_id if row_id is not None else schedule_id,
+            "schedule_id": schedule_id,    # back-compat: the template slot id (None on a frozen row)
             "name": habit.name,
             "chain": chain,   # cycle id, or None if standalone
             "routine": routine,            # routine (group) id, or None if ungrouped
@@ -230,59 +309,101 @@ def plan(request):
             "tiers": tiers,                # per-version [{level,name,value,status,done}], [] if untiered
         }
 
-    # One query for the plans + their schedules + habits, with schedules sorted
-    # by their saved position so /plan/ reflects reordering. Habits with no
-    # explicit order (nulls) go last; id breaks ties so the list is stable.
-    #
-    # Only habits that already existed on the viewed day are shown: a habit you
-    # add today shouldn't appear when you scroll back to last week, since it
-    # didn't exist then. (For today/future days this filter matches everything,
-    # so it's a no-op there.)
-    ordered_schedules = Schedule.objects.select_related(
-        "habit", "routine", "tier"
-    ).filter(
-        habit__date_added__date__lte=target_date
-    ).order_by(F("order").asc(nulls_last=True), "id")
-    plans = Plan.objects.prefetch_related(
-        Prefetch("schedule_set", queryset=ordered_schedules)
-    )
+    # The arrangement source differs by whether the day is frozen, but the payload
+    # shape is IDENTICAL either way — the frontend can't tell which it got.
+    #   - Frozen: read each habit's placement from this date's ScheduleDay rows
+    #     (the saved photo), keyed for dnd on the ScheduleDay id (`row_id`).
+    #   - Not frozen (today/future, no rows): project the live template `Schedule`,
+    #     exactly as before, keyed on the Schedule id.
+    # Statuses come from HabitLog/_version_status and the day's times from
+    # time_by_plan (PlanDay) in BOTH paths — freeze just locks those PlanDay rows.
+    by_plan = defaultdict(list)   # plan_id -> [habit_payload, ...]; None = "Anytime"
 
-    plan_groups = []
-    for plan in plans:
-        # Each Schedule row carries its own habit, chain (cycle), and order,
-        # so we just emit each one. The frontend groups the chains.
-        habits = [
-            habit_payload(
-                schedule.habit,
-                schedule_id=schedule.id,
-                chain=schedule.chain_id,
-                routine=schedule.routine_id,
-                routine_name=schedule.routine.name if schedule.routine_id else None,
-                order=schedule.order,
-                tier=schedule.tier,   # this slot's tier (None = untiered slot)
+    if is_frozen:
+        # Read the saved arrangement. order_by mirrors the template path: saved
+        # position first (nulls last), id breaks ties for a stable list.
+        for sd in (ScheduleDay.objects.filter(date=target_date)
+                   .select_related("habit", "routine", "tier")
+                   .order_by(F("order").asc(nulls_last=True), "id")):
+            if sd.habit is None:
+                continue   # habit deleted since the freeze; FK went null (history snapshot only)
+            by_plan[sd.plan_id].append(
+                habit_payload(
+                    sd.habit,
+                    row_id=sd.id,            # the row dnd + /days/arrange/ target
+                    chain=sd.chain_id,
+                    routine=sd.routine_id,
+                    routine_name=sd.routine.name if sd.routine_id else None,
+                    order=sd.order,
+                    tier=sd.tier,            # this slot's tier (None = untiered slot)
+                )
             )
-            for schedule in plan.schedule_set.all()
-        ]
-        plan_groups.append({
-            "id": plan.id,
-            "time": time_by_plan.get(plan.id, plan.start_time),  # the day's time
-            "habits": habits,
-        })
+    else:
+        # One query for the plans + their schedules + habits, with schedules sorted
+        # by their saved position so /plan/ reflects reordering. Habits with no
+        # explicit order (nulls) go last; id breaks ties so the list is stable.
+        #
+        # Only habits that already existed on the viewed day are shown: a habit you
+        # add today shouldn't appear when you scroll back to last week, since it
+        # didn't exist then. (For today/future days this filter matches everything,
+        # so it's a no-op there.)
+        ordered_schedules = Schedule.objects.select_related(
+            "habit", "routine", "tier"
+        ).filter(
+            habit__date_added__date__lte=target_date
+        ).order_by(F("order").asc(nulls_last=True), "id")
+        for schedule in ordered_schedules:
+            # Each Schedule row carries its own habit, chain (cycle), and order,
+            # so we just emit each one. The frontend groups the chains.
+            by_plan[schedule.plan_id].append(
+                habit_payload(
+                    schedule.habit,
+                    schedule_id=schedule.id,
+                    chain=schedule.chain_id,
+                    routine=schedule.routine_id,
+                    routine_name=schedule.routine.name if schedule.routine_id else None,
+                    order=schedule.order,
+                    tier=schedule.tier,   # this slot's tier (None = untiered slot)
+                )
+            )
+
+    # One group per time block. The not-frozen path emits EVERY Plan (so an empty
+    # block still renders, as before); the frozen path emits only blocks that had
+    # habits that day (an empty block left no ScheduleDay rows to remember).
+    if is_frozen:
+        plan_rows = Plan.objects.filter(
+            id__in=[pid for pid in by_plan if pid is not None]
+        )
+    else:
+        plan_rows = Plan.objects.all()
+    plan_groups = [
+        {
+            "id": p.id,
+            "time": time_by_plan.get(p.id, p.start_time),  # the day's time
+            "habits": by_plan.get(p.id, []),
+        }
+        for p in plan_rows
+    ]
 
     # Sort by the day's effective time so a pushed-back cycle slides down the
     # list (the frontend trusts this order). Timeless plans go last; id breaks
     # ties for a stable order.
     plan_groups.sort(key=lambda g: (g["time"] is None, g["time"] or dt_time.min, g["id"]))
 
-    # Habits that aren't scheduled in any plan (same "existed by then" filter),
-    # always last.
-    unscheduled = Habit.objects.filter(
-        schedule__isnull=True, date_added__date__lte=target_date
-    )
+    # The "Anytime" group: habits with no placement this day. Frozen = any
+    # ScheduleDay row sitting in no plan (placed at Anytime that day); not frozen =
+    # habits with no Schedule row at all. Same "existed by then" rule, always last.
+    if is_frozen:
+        anytime_habits = by_plan.get(None, [])
+    else:
+        unscheduled = Habit.objects.filter(
+            schedule__isnull=True, date_added__date__lte=target_date
+        )
+        anytime_habits = [habit_payload(h) for h in unscheduled]
     data = plan_groups + [{
         "id": None,
         "time": None,
-        "habits": [habit_payload(h) for h in unscheduled],
+        "habits": anytime_habits,
     }]
 
     return JsonResponse(data, safe=False)
@@ -697,6 +818,233 @@ def create_schedule(request):
         {"schedule_id": schedule.id, "habit": habit_id, "plan": plan_id, "order": order},
         status=201,
     )
+
+
+@csrf_exempt
+@require_POST
+def arrange_day(request):
+    """Reorder / move / place habits for ONE day only — the per-day twin of
+    reorder_schedules + create_schedule. Writes `ScheduleDay`, NEVER `Schedule`,
+    so an edit here sticks to that date and can't rewrite the recurring plan.
+
+    Body: {"date": "YYYY-MM-DD", "items": [...]}. Each item is the SAME shape as
+    reorder_schedules, except `id` is the row's `row_id` (from /plan/):
+
+        {"id": 11, "order": 2, "chain": 3}      # reorder/retag an existing row
+        {"id": 12, "order": 3, "plan": 7}       # move it to another block, that day
+        {"habit": 9, "plan": 7, "order"?: 4}    # NEW per-day placement: drop a habit
+                                                #   from "Anytime" into a block, today only
+
+    `chain` / `routine` / `tier` / `plan` are only changed when their key is
+    present (null clears the tag); `tier` takes a level 1/2/3 or null.
+
+    Freezing: editing a day freezes it first. We snapshot whether the day was
+    already frozen, then call freeze_day (idempotent). On a NOT-yet-frozen day the
+    `id`s the client holds are template Schedule ids (that's what /plan/ emitted),
+    so we translate them through the freeze map to the ScheduleDay rows we just
+    created; on an already-frozen day they're ScheduleDay ids already.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+    if body.get("date") is None:
+        # Unlike status logs, an arrange MUST name its day — silently defaulting to
+        # today would let a missing field rewrite the wrong day's arrangement.
+        return JsonResponse({"error": "'date' is required."}, status=400)
+
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        return JsonResponse({"error": "'items' must be a non-empty list."}, status=400)
+
+    # Validate everything before touching the DB (mirrors reorder_schedules), so a
+    # bad item can never leave a half-applied arrangement — or a freeze — behind.
+    # An item is either an EDIT/move of an existing row (has "id") or a NEW per-day
+    # placement of an Anytime habit (has "habit", no "id").
+    moves, places = [], []
+    for item in items:
+        if not isinstance(item, dict):
+            return JsonResponse({"error": "Each item must be an object."}, status=400)
+
+        is_place = "id" not in item and "habit" in item
+        if is_place:
+            entry = {}
+            hid = item.get("habit")
+            pid = item.get("plan")
+            # bool is a subclass of int, so reject it explicitly.
+            if not isinstance(hid, int) or isinstance(hid, bool):
+                return JsonResponse(
+                    {"error": "A placement needs an integer 'habit' id."}, status=400
+                )
+            if not isinstance(pid, int) or isinstance(pid, bool):
+                return JsonResponse(
+                    {"error": "A placement needs an integer 'plan' id."}, status=400
+                )
+            entry["habit"] = hid
+            entry["plan"] = pid
+            order = item.get("order")
+            if order is not None and (not isinstance(order, int) or isinstance(order, bool)):
+                return JsonResponse({"error": "'order' must be an integer."}, status=400)
+            entry["order"] = order   # None = append at the bottom of the block
+        else:
+            rid, order = item.get("id"), item.get("order")
+            if not isinstance(rid, int) or isinstance(rid, bool) \
+                    or not isinstance(order, int) or isinstance(order, bool):
+                return JsonResponse(
+                    {"error": "Each item needs an integer 'id' and 'order'."}, status=400
+                )
+            entry = {"id": rid, "order": order}
+            if "chain" in item:
+                entry["chain"] = item["chain"]   # None or a chain id
+            if "routine" in item:
+                entry["routine"] = item["routine"]   # None or a routine id
+            if "plan" in item:
+                # Move this row into another time block (cross-block drag), that
+                # day only. A real plan id only — null ("drop to Anytime") clears
+                # the placement, so we allow it here (no row off-plan = Anytime).
+                p = item["plan"]
+                if p is not None and (not isinstance(p, int) or isinstance(p, bool)):
+                    return JsonResponse(
+                        {"error": "'plan' must be a plan id (integer) or null."}, status=400
+                    )
+                entry["plan"] = p
+            if "tier" in item:
+                t = item["tier"]   # None (clear) or a tier level 1/2/3
+                if t is not None and (
+                    not isinstance(t, int) or isinstance(t, bool) or t not in (1, 2, 3)
+                ):
+                    return JsonResponse(
+                        {"error": "'tier' must be 1, 2, 3, or null."}, status=400
+                    )
+                entry["tier"] = t
+            moves.append(entry)
+        if is_place:
+            places.append(entry)
+
+    # Validate referenced foreign keys up front (like reorder_schedules).
+    chain_ids = {e["chain"] for e in moves if e.get("chain") is not None}
+    if chain_ids:
+        known = set(Chain.objects.filter(id__in=chain_ids).values_list("id", flat=True))
+        unknown = sorted(chain_ids - known)
+        if unknown:
+            return JsonResponse({"error": f"Unknown chain ids: {unknown}."}, status=400)
+
+    routine_ids = {e["routine"] for e in moves if e.get("routine") is not None}
+    if routine_ids:
+        known = set(Routine.objects.filter(id__in=routine_ids).values_list("id", flat=True))
+        unknown = sorted(routine_ids - known)
+        if unknown:
+            return JsonResponse({"error": f"Unknown routine ids: {unknown}."}, status=400)
+
+    plan_ids = {e["plan"] for e in moves if "plan" in e and e["plan"] is not None}
+    plan_ids |= {e["plan"] for e in places}
+    if plan_ids:
+        known = set(Plan.objects.filter(id__in=plan_ids).values_list("id", flat=True))
+        unknown = sorted(plan_ids - known)
+        if unknown:
+            return JsonResponse({"error": f"Unknown plan ids: {unknown}."}, status=400)
+
+    habit_ids = {e["habit"] for e in places}
+    if habit_ids:
+        known = set(Habit.objects.filter(id__in=habit_ids).values_list("id", flat=True))
+        unknown = sorted(habit_ids - known)
+        if unknown:
+            return JsonResponse({"error": f"Unknown habit ids: {unknown}."}, status=400)
+
+    # Map tier level (1/2/3) -> Tier row id, for any items setting a slot's tier.
+    tier_by_level = {t.level: t.id for t in Tier.objects.all()}
+
+    # A bad row id must NOT leave the day frozen (the freeze runs inside the same
+    # transaction). We signal it with this exception so the atomic block rolls the
+    # whole thing — freeze included — back, then turn it into a clean 400 outside.
+    class _BadRowId(Exception):
+        def __init__(self, row_id):
+            self.row_id = row_id
+
+    try:
+        with transaction.atomic():
+            # Freeze the day if needed, then resolve each move's id to a
+            # ScheduleDay row. On a not-yet-frozen day the client's ids are
+            # template Schedule ids, so we translate them through the freeze map;
+            # on a frozen day they're already ScheduleDay ids.
+            was_frozen = ScheduleDay.objects.filter(date=target_date).exists()
+            freeze_map = freeze_day(target_date)   # {schedule_id: scheduleday_id}; {} if was_frozen
+
+            resolved = []   # (ScheduleDay id, entry) pairs to apply
+            for e in moves:
+                sd_id = e["id"] if was_frozen else freeze_map.get(e["id"])
+                if sd_id is None:
+                    # A Schedule id that wasn't part of the freeze (e.g. a habit
+                    # that didn't exist on that day, so it has no row).
+                    raise _BadRowId(e["id"])
+                resolved.append((sd_id, e))
+
+            rows = ScheduleDay.objects.in_bulk([sd_id for sd_id, _ in resolved])
+            # A ScheduleDay id the client sent that doesn't exist (frozen-day case).
+            for sd_id, e in resolved:
+                if sd_id not in rows:
+                    raise _BadRowId(e["id"])
+            fields = {"order"}
+            for sd_id, e in resolved:
+                row = rows[sd_id]
+                row.order = e["order"]
+                if "chain" in e:
+                    row.chain_id = e["chain"]
+                    fields.add("chain")
+                if "routine" in e:
+                    row.routine_id = e["routine"]
+                    fields.add("routine")
+                if "plan" in e:
+                    row.plan_id = e["plan"]
+                    fields.add("plan")
+                if "tier" in e:
+                    row.tier_id = (
+                        tier_by_level.get(e["tier"]) if e["tier"] is not None else None
+                    )
+                    fields.add("tier")
+            if rows:
+                ScheduleDay.objects.bulk_update(rows.values(), list(fields))
+
+            # New per-day placements: a habit dragged from Anytime that has no row
+            # this day. Create a ScheduleDay row for it (mirrors create_schedule's
+            # append logic, on the per-day layer), snapshotting habit_name.
+            habit_names = dict(
+                Habit.objects.filter(id__in=habit_ids).values_list("id", "name")
+            )
+            created = []
+            for e in places:
+                order = e["order"]
+                if order is None:
+                    # Append: one past this block's current highest order that day.
+                    highest = ScheduleDay.objects.filter(
+                        date=target_date, plan_id=e["plan"]
+                    ).aggregate(m=Max("order"))["m"]
+                    order = (highest or 0) + 1
+                sd = ScheduleDay.objects.create(
+                    date=target_date,
+                    habit_id=e["habit"],
+                    habit_name=habit_names[e["habit"]],
+                    plan_id=e["plan"],
+                    order=order,
+                )
+                created.append(sd)
+    except _BadRowId as bad:
+        return JsonResponse(
+            {"error": f"Unknown row id for this day: {bad.row_id}."}, status=400
+        )
+
+    # Return the day's updated arrangement (touched rows), like reorder_schedules.
+    touched = list(rows.values()) + created
+    updated = [
+        {"id": sd.id, "order": sd.order, "plan": sd.plan_id,
+         "chain": sd.chain_id, "routine": sd.routine_id}
+        for sd in sorted(touched, key=lambda sd: (sd.order is None, sd.order or 0, sd.id))
+    ]
+    return JsonResponse({"date": target_date, "updated": updated})
 
 
 @csrf_exempt
