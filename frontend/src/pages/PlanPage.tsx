@@ -43,6 +43,7 @@ import type {
 import {
   GROWTH_LEVEL,
   isCaseB,
+  isUntiered,
   rowDisplayValue,
   rowCompleteTier,
   slotPlacement,
@@ -228,7 +229,9 @@ function buildSegments(habits: Habit[], asCycle: boolean): Segment[] {
     const connectBelow =
       numbered &&
       next != null &&
-      !(next.type === "habit" && isDone(next.habit));
+      // A tiered done card isn't collapsed (it stays a visible step), so only a
+      // COLLAPSED (untiered) done habit should break the connector line.
+      !(next.type === "habit" && isDone(next.habit) && isUntiered(next.habit));
 
     if (u.type === "routine") {
       flushRun();
@@ -244,7 +247,11 @@ function buildSegments(habits: Habit[], asCycle: boolean): Segment[] {
       return;
     }
 
-    if (isDone(u.habit)) {
+    // Only plain (untiered) completions collapse into the "✓ N done" tray. A
+    // tiered slot stays a full card when done, so it still shows its version value
+    // (e.g. "· 5am") and its check uncompletes THAT version — the tray can't carry
+    // a tier, which made completed tiers flip between two cards confusingly.
+    if (isDone(u.habit) && isUntiered(u.habit)) {
       run.push(u.habit);
       return;
     }
