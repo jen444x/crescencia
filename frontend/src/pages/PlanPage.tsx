@@ -1239,6 +1239,13 @@ function PlanBoard({
   return (
     <SortableContext items={activeIds} strategy={verticalListSortingStrategy}>
       <ul ref={setDropRef} className="space-y-1.5">
+        {segments.length === 0 && (
+          // A freshly-added (empty) block: a tall dashed target so it's easy to
+          // drop a habit onto, with a hint of what to do.
+          <li className="rounded-xl border border-dashed border-calm-200 px-3 py-5 text-center text-xs text-calm-400">
+            Drag a habit here
+          </li>
+        )}
         {segments.map((seg) =>
           seg.kind === "done" ? (
             doneItem(seg)
@@ -2847,6 +2854,18 @@ function PlansPage() {
   // block fades in place and you can't see where you're moving it.
   const [dragId, setDragId] = useState<string | null>(null);
 
+  // Blocks just made with "＋ Add time" that are still empty. Empty blocks are
+  // normally filtered out of the render (so historical bare time labels don't
+  // show), but a brand-new one must stay visible so you can drag a habit into
+  // it. Once it has a habit it survives on its own; this set only keeps the
+  // empty window open. Also drives the inline add-time input.
+  const [newPlanIds, setNewPlanIds] = useState<Set<number>>(() => new Set());
+  const [addingTime, setAddingTime] = useState(false);
+  const [newTime, setNewTime] = useState("");
+  // Keep a block if it has habits OR it's a freshly-added (still-empty) one.
+  const keepBlock = (plan: Plan) =>
+    plan.habits.length > 0 || (plan.id != null && newPlanIds.has(plan.id));
+
   // One shared drag context spans every block (lifted out of PlanBoard) so a row
   // can be dragged from one time block into another. A 6px threshold keeps a
   // plain tap working as a click (toggle / open detail).
@@ -3001,6 +3020,35 @@ function PlansPage() {
       toast("Habit placed");
     } catch {
       toast("Couldn't place that habit", { variant: "error" });
+    }
+  }
+
+  // "＋ Add time": make an empty time block (or reuse the one already at that
+  // time) so you can drag a habit into it. Drops the new block into state in time
+  // order and keeps it visible while empty (newPlanIds).
+  async function addTime(timeStr: string) {
+    if (!timeStr) return;
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/plans/create/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ time: timeStr }),
+      });
+      if (!res.ok) throw new Error("Request failed");
+      const data = await res.json(); // { id, time, created }
+      setNewPlanIds((prev) => new Set(prev).add(data.id));
+      setPlans((prev) => {
+        if (prev.some((p) => p.id === data.id)) return prev; // reused an existing block
+        const block: Plan = { id: data.id, time: data.time, habits: [] };
+        const timed = prev.filter((p) => p.id != null);
+        const anytime = prev.filter((p) => p.id == null);
+        const merged = [...timed, block].sort(
+          (a, b) => timeToMinutes(a.time ?? "") - timeToMinutes(b.time ?? ""),
+        );
+        return [...merged, ...anytime];
+      });
+    } catch {
+      toast("Couldn't add that time", { variant: "error" });
     }
   }
 
@@ -3320,7 +3368,7 @@ function PlansPage() {
   const visiblePlans = useMemo(
     () =>
       plans
-        .filter((plan) => plan.habits.length > 0)
+        .filter(keepBlock)
         .map((plan) => ({
           ...plan,
           habits: plan.habits.map((habit) => ({
@@ -3328,7 +3376,7 @@ function PlansPage() {
             dayNotes: notesByHabit.get(habit.id) ?? [],
           })),
         })),
-    [plans, notesByHabit],
+    [plans, notesByHabit, newPlanIds],
   );
 
   // habit id -> the highest Case-A tier-slot level (h.tier, the non-null ones)
@@ -3371,8 +3419,8 @@ function PlansPage() {
               slotPlacement(habit, inlineTierByHabit, dayTier) === "inline",
           ),
         }))
-        .filter((plan) => plan.habits.length > 0),
-    [visiblePlans, inlineTierByHabit, dayTier],
+        .filter(keepBlock),
+    [visiblePlans, inlineTierByHabit, dayTier, newPlanIds],
   );
 
   // What actually renders: the tier-visible plans, further narrowed to main
@@ -3388,8 +3436,8 @@ function PlansPage() {
               ...plan,
               habits: plan.habits.filter((habit) => !habit.is_support),
             }))
-            .filter((plan) => plan.habits.length > 0),
-    [tierVisiblePlans, mainOnly],
+            .filter(keepBlock),
+    [tierVisiblePlans, mainOnly, newPlanIds],
   );
 
   // The "Stretch" section: harder versions she can opt into. Two sources, in plan
@@ -3474,6 +3522,7 @@ function PlansPage() {
             ) ?? null
         : null;
     body = (
+      <>
       <DndContext
         sensors={planSensors}
         collisionDetection={closestCorners}
@@ -3681,6 +3730,52 @@ function PlansPage() {
           ) : null}
         </DragOverlay>
       </DndContext>
+
+      {/* ＋ Add time: make a new (empty) cycle at a time you pick, then drag a
+          habit into it. Reuses the block if one already exists at that time. */}
+      <div className="mt-6">
+        {addingTime ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="time"
+              value={newTime}
+              onChange={(e) => setNewTime(e.target.value)}
+              className="rounded-lg border border-calm-200 px-2 py-1.5 text-sm text-stone-800"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                addTime(newTime);
+                setAddingTime(false);
+                setNewTime("");
+              }}
+              disabled={!newTime}
+              className="rounded-lg bg-calm-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAddingTime(false);
+                setNewTime("");
+              }}
+              className="rounded-lg px-2 py-1.5 text-sm text-calm-500"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAddingTime(true)}
+            className="w-full rounded-xl border border-dashed border-calm-300 px-3 py-2.5 text-sm font-medium text-calm-500 transition-colors hover:border-calm-400 hover:text-calm-700"
+          >
+            ＋ Add time
+          </button>
+        )}
+      </div>
+      </>
     );
   }
 

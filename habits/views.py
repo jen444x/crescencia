@@ -638,6 +638,46 @@ def create_schedule(request):
 
 @csrf_exempt
 @require_POST
+def create_plan(request):
+    """Create a new (empty) time block, or reuse the one at that time.
+
+    Body: {"time": "HH:MM"}. Same time = same cycle, so if a Plan already has
+    that start_time we return it instead of making a second block at the same
+    minute. The page then renders the (possibly empty) block so a habit can be
+    dragged into it. `created` tells the caller which happened.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    raw_time = body.get("time")
+    if not isinstance(raw_time, str):
+        return JsonResponse({"error": "'time' must be an 'HH:MM' string."}, status=400)
+    try:
+        new_time = parse_time(raw_time)   # None if the format is wrong
+    except ValueError:
+        new_time = None                   # right shape, impossible time (e.g. 25:00)
+    if new_time is None:
+        return JsonResponse(
+            {"error": f"'time' must be a valid 'HH:MM' time, got {raw_time!r}."},
+            status=400,
+        )
+    new_time = new_time.replace(second=0, microsecond=0)
+
+    # Reuse an existing block at this minute rather than duplicating it.
+    plan = Plan.objects.filter(start_time=new_time).first()
+    created = plan is None
+    if created:
+        plan = Plan.objects.create(start_time=new_time)
+    return JsonResponse(
+        {"id": plan.id, "time": new_time, "created": created},
+        status=201 if created else 200,
+    )
+
+
+@csrf_exempt
+@require_POST
 def shift_plans(request):
     """Push a cycle and everything later that day to a new time — for today only.
 

@@ -999,3 +999,33 @@ class ReorderHabitsTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.a.refresh_from_db()
         self.assertIsNone(self.a.order)   # all-or-nothing: nothing applied
+
+
+class CreatePlanTests(TestCase):
+    """`plans/create/` adds a new time block (or reuses the one at that time)."""
+
+    def _create(self, time_str):
+        return self.client.post(
+            reverse("habits:create_plan"),
+            data={"time": time_str}, content_type="application/json",
+        )
+
+    def test_creates_block_at_time(self):
+        resp = self._create("10:45")
+        self.assertEqual(resp.status_code, 201)
+        data = json.loads(resp.content)
+        self.assertTrue(data["created"])
+        self.assertTrue(Plan.objects.filter(id=data["id"], start_time=time(10, 45)).exists())
+
+    def test_reuses_existing_time(self):
+        first = json.loads(self._create("10:45").content)
+        resp = self._create("10:45")
+        self.assertEqual(resp.status_code, 200)
+        second = json.loads(resp.content)
+        self.assertFalse(second["created"])
+        self.assertEqual(first["id"], second["id"])  # same block, not a duplicate
+        self.assertEqual(Plan.objects.filter(start_time=time(10, 45)).count(), 1)
+
+    def test_rejects_bad_time(self):
+        self.assertEqual(self._create("25:00").status_code, 400)
+        self.assertEqual(self._create("nope").status_code, 400)
