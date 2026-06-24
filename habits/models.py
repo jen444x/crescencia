@@ -1,4 +1,11 @@
+from datetime import date
+
 from django.db import models
+
+# The fixed early sentinel every existing/base placement is stamped with: "this
+# has always been the plan." A single base generation at this date reproduces
+# today's behavior (see Schedule.valid_from / PlanTime).
+BASE_VALID_FROM = date(1970, 1, 1)
 
 class Area(models.Model):
     name = models.CharField(max_length=50) # length of name
@@ -149,9 +156,24 @@ class Schedule(models.Model):
     # this just places the tier on the timeline.
     tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
     order = models.PositiveIntegerField(null=True, blank=True)
+    # The date this placement takes effect. Reads pick the row with the greatest
+    # valid_from <= the viewed date; a single base generation reproduces today's
+    # behavior.
+    valid_from = models.DateField(default=BASE_VALID_FROM)
 
     def __str__(self):
         return f"{self.plan.start_time} - {self.habit.name}"
+
+
+class PlanTime(models.Model):
+    """Recurring time change effective from a date forward — the 'this and
+    following' twin of PlanDay (one day). NOT read yet (wired in Phase 3)."""
+    plan = models.ForeignKey(Plan, on_delete=models.CASCADE)
+    valid_from = models.DateField()
+    start_time = models.TimeField()
+
+    def __str__(self):
+        return f"plan {self.plan_id} from {self.valid_from} @ {self.start_time}"
 
 
 class ScheduleDay(models.Model):

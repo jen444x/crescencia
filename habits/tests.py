@@ -778,59 +778,6 @@ class RoutineApiTests(TestCase):
         self.assertIsNone(by_id[self.wash.id]["routine"])        # ungrouped habit
         self.assertIsNone(by_id[self.wash.id]["routine_name"])
 
-    def test_reorder_can_set_routine(self):
-        r = Routine.objects.create(name="Morning")
-        resp = self.client.post(
-            reverse("habits:reorder_schedules"),
-            data={"items": [{"id": self.s_brush.id, "order": 1, "routine": r.id}]},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(json.loads(resp.content)["updated"][0]["routine"], r.id)
-        self.s_brush.refresh_from_db()
-        self.assertEqual(self.s_brush.routine_id, r.id)
-
-    def test_reorder_rejects_unknown_routine(self):
-        resp = self.client.post(
-            reverse("habits:reorder_schedules"),
-            data={"items": [{"id": self.s_brush.id, "order": 1, "routine": 999999}]},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
-
-    def test_reorder_can_move_to_another_plan(self):
-        # Cross-block drag: send the moved row with its new `plan`.
-        other = Plan.objects.create()
-        resp = self.client.post(
-            reverse("habits:reorder_schedules"),
-            data={"items": [{"id": self.s_brush.id, "order": 1, "plan": other.id}]},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(json.loads(resp.content)["updated"][0]["plan"], other.id)
-        self.s_brush.refresh_from_db()
-        self.assertEqual(self.s_brush.plan_id, other.id)
-
-    def test_reorder_rejects_unknown_plan(self):
-        resp = self.client.post(
-            reverse("habits:reorder_schedules"),
-            data={"items": [{"id": self.s_brush.id, "order": 1, "plan": 999999}]},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
-        self.s_brush.refresh_from_db()
-        self.assertEqual(self.s_brush.plan_id, self.plan.id)  # unchanged on failure
-
-    def test_reorder_omitting_plan_keeps_block(self):
-        resp = self.client.post(
-            reverse("habits:reorder_schedules"),
-            data={"items": [{"id": self.s_brush.id, "order": 5}]},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 200)
-        self.s_brush.refresh_from_db()
-        self.assertEqual(self.s_brush.plan_id, self.plan.id)  # block unchanged
-
     def test_plan_no_longer_exposes_chain(self):
         # The Chain model is gone (Phase B), so no /plan/ row carries a "chain"
         # key anymore — the frontend must stop reading it.
@@ -838,55 +785,6 @@ class RoutineApiTests(TestCase):
         rows = [h for g in groups for h in g["habits"]]
         self.assertTrue(rows)                                  # we have habits to check
         self.assertTrue(all("chain" not in h for h in rows))
-
-    def test_reorder_ignores_a_stray_chain_key(self):
-        # An older client may still send "chain"; it's ignored (not 400'd) and the
-        # rest of the reorder still applies.
-        resp = self.client.post(
-            reverse("habits:reorder_schedules"),
-            data={"items": [{"id": self.s_brush.id, "order": 7, "chain": 999999}]},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 200)
-        updated = json.loads(resp.content)["updated"][0]
-        self.assertEqual(updated["order"], 7)
-        self.assertNotIn("chain", updated)                    # not echoed back
-        self.s_brush.refresh_from_db()
-        self.assertEqual(self.s_brush.order, 7)               # reorder applied
-
-    def test_create_schedule_places_unscheduled_habit(self):
-        solo = Habit.objects.create(name="Journal")  # no schedule -> "Anytime"
-        resp = self.client.post(
-            reverse("habits:create_schedule"),
-            data={"habit": solo.id, "plan": self.plan.id},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 201)
-        data = json.loads(resp.content)
-        self.assertEqual(data["plan"], self.plan.id)
-        self.assertEqual(data["order"], 3)  # appends after s_brush(1), s_wash(2)
-        self.assertTrue(
-            Schedule.objects.filter(
-                id=data["schedule_id"], habit=solo, plan=self.plan
-            ).exists()
-        )
-
-    def test_create_schedule_rejects_unknown_habit(self):
-        resp = self.client.post(
-            reverse("habits:create_schedule"),
-            data={"habit": 999999, "plan": self.plan.id},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
-
-    def test_create_schedule_rejects_unknown_plan(self):
-        solo = Habit.objects.create(name="Journal")
-        resp = self.client.post(
-            reverse("habits:create_schedule"),
-            data={"habit": solo.id, "plan": 999999},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
 
 
 class RoutineLogTests(TestCase):
@@ -1678,3 +1576,24 @@ class FreezePastDaysCommandTests(TestCase):
     def test_date_rejects_today_or_future(self):
         with self.assertRaises(CommandError):
             self._run("--date", self.today.isoformat())
+
+
+class RetiredRecurringWritersTests(TestCase):
+    """apply-to-future Phase 0: the dateless, permanent, all-days recurring
+    writers `/schedules/create/` and `/schedules/reorder/` are uncalled but were
+    still live and would reintroduce the old all-days bug if ever hit. Their URL
+    routes are retired — both must now 404."""
+
+    def test_create_schedule_route_is_retired(self):
+        resp = self.client.post(
+            "/schedules/create/",
+            data={"habit": 1, "plan": 1}, content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_reorder_schedules_route_is_retired(self):
+        resp = self.client.post(
+            "/schedules/reorder/",
+            data={"items": []}, content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 404)

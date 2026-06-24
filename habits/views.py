@@ -170,7 +170,13 @@ def freeze_day(target_date):
     # The same set `/plan/` projects for this date: only habits that already
     # existed by then (a habit added later didn't run on a past day).
     schedules = list(
-        Schedule.objects.filter(habit__date_added__date__lte=target_date)
+        Schedule.objects.filter(
+            habit__date_added__date__lte=target_date,
+            # Phase 1: single generation, so this filter is a no-op today; Phase 2
+            # adds latest-generation-per-slot selection when multiple generations
+            # exist.
+            valid_from__lte=target_date,
+        )
         .select_related("habit")
     )
 
@@ -370,7 +376,11 @@ def plan(request):
         ordered_schedules = Schedule.objects.select_related(
             "habit", "routine", "tier"
         ).filter(
-            habit__date_added__date__lte=target_date
+            habit__date_added__date__lte=target_date,
+            # Phase 1: single generation, so this filter is a no-op today; Phase 2
+            # adds latest-generation-per-slot selection when multiple generations
+            # exist.
+            valid_from__lte=target_date,
         ).order_by(F("order").asc(nulls_last=True), "id")
         for schedule in ordered_schedules:
             # Each Schedule row carries its own habit, block, and order, so we
@@ -682,6 +692,7 @@ def clear_day(request):
 
 @csrf_exempt
 @require_POST
+# RETIRED (apply-to-future Phase 0): no URL route; pending Phase 2 fold-in.
 def reorder_schedules(request):
     """Apply a new arrangement to a set of schedules in one shot.
 
@@ -802,6 +813,7 @@ def reorder_schedules(request):
 
 @csrf_exempt
 @require_POST
+# RETIRED (apply-to-future Phase 0): no URL route; pending Phase 2 fold-in.
 def create_schedule(request):
     """Place an unscheduled habit onto the timeline.
 
