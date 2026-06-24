@@ -45,7 +45,8 @@ export default function PlanToolbar({
   onNewRoutine,
   showResetOrder,
   onResetOrder,
-  dayFullySkipped,
+  showResetDay,
+  showSkipDay,
   onSkipDay,
   onResetDay,
 }: {
@@ -58,9 +59,12 @@ export default function PlanToolbar({
   // "Reset order" item only appears then.
   showResetOrder: boolean;
   onResetOrder: () => void;
-  // When the whole day is already skipped the action flips to a persistent "Reset
-  // day" undo; otherwise it's "Skip day".
-  dayFullySkipped: boolean;
+  // "Reset day" and "Skip day" are no longer mutually exclusive. "Reset day"
+  // shows whenever there's something to undo (a full skip OR a per-day
+  // rearrangement); "Skip day" shows whenever the day isn't already fully
+  // skipped. So a rearranged-but-not-skipped day shows BOTH.
+  showResetDay: boolean;
+  showSkipDay: boolean;
   onSkipDay: () => void;
   onResetDay: () => void;
 }) {
@@ -169,7 +173,7 @@ export default function PlanToolbar({
                 Reset order
               </button>
             )}
-            {dayFullySkipped ? (
+            {showResetDay && (
               <button
                 type="button"
                 role="menuitem"
@@ -178,7 +182,8 @@ export default function PlanToolbar({
               >
                 Reset day
               </button>
-            ) : (
+            )}
+            {showSkipDay && (
               <button
                 type="button"
                 role="menuitem"

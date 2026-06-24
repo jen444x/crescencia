@@ -3588,6 +3588,17 @@ function PlansPage() {
       plan.habits.every((habit) => isSkipped(habit) || isDone(habit)),
     );
 
+  // Has this day been rearranged into a per-day ("frozen") arrangement? On a
+  // frozen day each placed habit comes from the ScheduleDay layer, so it has a
+  // row_id (the copy) but no schedule_id (the template row). "Anytime" habits
+  // have BOTH null, so they don't count. If any visible scheduled habit looks
+  // like that, the day has something to reset even when nothing was skipped.
+  const dayHasArrangement = tierVisiblePlans.some((plan) =>
+    plan.habits.some(
+      (habit) => habit.schedule_id == null && habit.row_id != null,
+    ),
+  );
+
   let body: ReactNode;
   if (isLoading && plans.length === 0) {
     // First load only — when switching days we keep the current list visible
@@ -3914,7 +3925,8 @@ function PlansPage() {
             onNewRoutine={() => setRoutineSheet({ mode: "create" })}
             showResetOrder={isViewingToday && orderChanged}
             onResetOrder={resetOrder}
-            dayFullySkipped={dayFullySkipped}
+            showResetDay={dayFullySkipped || dayHasArrangement}
+            showSkipDay={!dayFullySkipped}
             onSkipDay={() => setSkipDayOpen(true)}
             onResetDay={() => clearDay(viewedDate)}
           />
