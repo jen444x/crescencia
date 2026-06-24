@@ -52,7 +52,7 @@ import {
   slotPlacement,
 } from "./plan/tier";
 import PlanToolbar from "./plan/PlanToolbar";
-import { buildForwardItems } from "./plan/forward";
+import { forwardItemForPlan } from "./plan/forward";
 
 // Read a habit's state, tolerating an older payload that only had done_today.
 function isDone(habit: Habit) {
@@ -317,6 +317,32 @@ function applyPlanOrder(
         }
       : plan,
   );
+}
+
+// Which single habit moved in a within-cycle reorder (fix #3). A single drag
+// reorder relocates exactly one row; that row is the one whose removal from both
+// the before- and after-lists leaves the remaining sequences identical. Returns
+// its habit id, or null when the order didn't actually change (dropped in place).
+function movedHabitId(before: Habit[], after: Habit[]): number | null {
+  if (before.length !== after.length) {
+    // Lengths differ — not a pure reorder; can't pinpoint one moved row.
+    return null;
+  }
+  const sameOrder = before.every((h, i) => h.id === after[i]?.id);
+  if (sameOrder) return null;
+  // Try each candidate: remove it from both lists; if the remainders match in
+  // order, that candidate is the moved one.
+  for (const cand of after) {
+    const b = before.filter((h) => h.id !== cand.id);
+    const a = after.filter((h) => h.id !== cand.id);
+    if (b.length === a.length && b.every((h, i) => h.id === a[i].id)) {
+      return cand.id;
+    }
+  }
+  // Ambiguous (multiple rows shifted): default to the first row that changed
+  // position, so we still write a single-habit generation rather than nothing.
+  const i = after.findIndex((h, idx) => h.id !== before[idx]?.id);
+  return i >= 0 ? after[i].id : null;
 }
 
 function CheckIcon() {
@@ -3068,25 +3094,35 @@ function PlansPage() {
     }
   }
 
-  // The toggle-ON placement writer. Sends the WHOLE affected cycle(s) — read off
-  // the OPTIMISTIC post-move state — to /schedules/arrange-forward/ as fresh
-  // 1..N items, anchored to today (from_date defaults to today; we send it
-  // explicitly for clarity). On success we re-fetch /plan/ so the day reflects
-  // the new generation (today is mirrored even when frozen). On failure we roll
-  // the optimistic state back. Placement only — never touches time/status.
+  // The toggle-ON placement writer (fix #3: PER-MOVED-HABIT scope). Sends exactly
+  // ONE item — the moved habit's new slot — read off the OPTIMISTIC post-move
+  // state, to /schedules/arrange-forward/, anchored to today (from_date defaults
+  // to today; we send it explicitly for clarity). `arrange_forward` upserts only
+  // that habit's dated generation, so the OTHER habits in the cycle keep whatever
+  // forward placement they already had — we never rewrite them. On success we
+  // re-fetch /plan/ so the day reflects the new generation (today is mirrored
+  // even when frozen). On failure we roll the optimistic state back. Placement
+  // only — never touches time/status.
   async function persistForward(
     optimisticPlans: Plan[],
-    affectedPlanIds: Array<number | null>,
+    habitId: number,
+    targetPlanId: number | null,
     snapshot: Plan[],
   ): Promise<boolean> {
-    const items = buildForwardItems(optimisticPlans, affectedPlanIds);
+    const item = forwardItemForPlan(optimisticPlans, habitId, targetPlanId);
+    if (!item) {
+      // The moved habit isn't where we expected in the optimistic state — bail
+      // without writing anything rather than send a malformed payload.
+      setPlans(snapshot);
+      return false;
+    }
     try {
       const res = await fetch(
         `${import.meta.env.VITE_API_URL}/schedules/arrange-forward/`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ from_date: toYMD(new Date()), items }),
+          body: JSON.stringify({ from_date: toYMD(new Date()), items: [item] }),
         },
       );
       if (!res.ok) throw new Error("Request failed");
@@ -3105,10 +3141,13 @@ function PlansPage() {
   // one-line summary ("... — every day from today") and run the writer only on
   // confirm. Cancel leaves everything untouched (nothing optimistic happened
   // yet). This is the single funnel every toggle-ON gesture passes through.
+  // `habitId` + `targetPlanId` name the ONE habit being moved (fix #3): only its
+  // forward generation is written; siblings are left alone.
   function confirmForward(
     summary: string,
     optimistic: () => Plan[],
-    affectedPlanIds: Array<number | null>,
+    habitId: number,
+    targetPlanId: number | null,
   ) {
     setPendingForward({
       summary,
@@ -3116,7 +3155,7 @@ function PlansPage() {
         const snapshot = plansRef.current;
         const next = optimistic();
         setPlans(next);
-        void persistForward(next, affectedPlanIds, snapshot);
+        void persistForward(next, habitId, targetPlanId, snapshot);
       },
     });
   }
@@ -3162,10 +3201,17 @@ function PlansPage() {
     if (orderedHabits.length === 0) return;
     if (applyToFuture && isViewingToday) {
       const cyclePlan = plans.find((p) => p.id === planId);
+      // fix #3: a within-cycle reorder still moves exactly ONE habit. Find it by
+      // diffing the new order against the old (the one row whose removal makes
+      // the two lists equal) and write only that habit's forward generation —
+      // the siblings keep their existing forward placement.
+      const movedId = movedHabitId(cyclePlan?.habits ?? [], orderedHabits);
+      if (movedId == null) return; // no net move (e.g. dropped in place)
       confirmForward(
         `Reorder ${cycleLabel(cyclePlan?.habits ?? orderedHabits, cyclePlan?.time ?? null)} — every day from today`,
         () => applyPlanOrder(plansRef.current, planId, orderedHabits),
-        [planId],
+        movedId,
+        planId,
       );
       return;
     }
@@ -3260,8 +3306,11 @@ function PlansPage() {
     const newTo = [...origTo.slice(0, idx), movedNew, ...origTo.slice(idx)];
 
     // Forward mode: route the cross-cycle move through the clarity gate + the
-    // recurring forward-writer. Both cycles are re-sent fresh, since the source
-    // shrinks and the target grows. No optimistic move until she confirms.
+    // recurring forward-writer. fix #3: only the MOVED habit (`rid` -> habit
+    // `moved.id`) gets a forward generation, landing in the target cycle. The
+    // source cycle's siblings and the target cycle's siblings keep their existing
+    // forward placement — we don't renumber either. No optimistic move until she
+    // confirms.
     if (applyToFuture && isViewingToday) {
       const fromId = fromPlan.id;
       const toId = toPlan.id;
@@ -3275,7 +3324,8 @@ function PlansPage() {
                 ? { ...p, habits: newTo.map((h, i) => ({ ...h, order: i + 1 })) }
                 : p,
           ),
-        [fromId, toId],
+        moved.id,
+        toId,
       );
       return;
     }
@@ -3356,9 +3406,10 @@ function PlansPage() {
       );
     };
 
-    // Forward mode: confirm, then send the WHOLE target cycle (the habit lands
-    // at the bottom) to the recurring forward-writer. Only the target cycle is
-    // re-sent — the Anytime group isn't a cycle, so we don't pin its members.
+    // Forward mode: confirm, then write ONLY the placed habit's forward
+    // generation (fix #3). It lands at the bottom of the target cycle; the
+    // cycle's existing members keep their forward placement — we don't renumber
+    // them.
     if (applyToFuture && isViewingToday) {
       const habit = snapshot
         .find((p) => p.id == null)
@@ -3368,7 +3419,8 @@ function PlansPage() {
       confirmForward(
         `Move "${habit.name}" into ${cycleLabel(targetPlan.habits, targetPlan.time)} — every day from today`,
         () => moveOut(plansRef.current),
-        [planId],
+        habitId,
+        planId,
       );
       return;
     }

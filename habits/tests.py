@@ -1927,3 +1927,70 @@ class ArrangeForwardTests(TestCase):
         # Today (now frozen) DOES.
         today = self._placement(self._plan(self.today))
         self.assertEqual(today[self.water.id], [self.evening.id])
+
+    # --- per-moved-habit scope (fix #3) -------------------------------------
+    #
+    # A forward move sends ONE item (the moved habit's slot). It must change that
+    # habit forward but leave EVERY other habit's forward placement untouched —
+    # the siblings in its cycle, and anything an earlier edit set on another slot.
+
+    def test_forward_move_of_one_habit_leaves_sibling_unchanged(self):
+        # Move ONLY Stretch into Evening. Read (the sibling) shares Morning and is
+        # NOT in the payload — its forward placement must not change.
+        resp = self._forward(
+            items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}]
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        future = self._placement(self._plan(self.tomorrow))
+        # The moved habit changed forward.
+        self.assertEqual(future[self.stretch.id], [self.evening.id])
+        # The sibling is UNCHANGED forward — still Morning, where it always was.
+        self.assertEqual(future[self.read.id], [self.morning.id])
+
+        # No forward generation was written for the sibling: its only Schedule row
+        # is still the base one, untouched.
+        read_gens = Schedule.objects.filter(habit=self.read)
+        self.assertEqual(read_gens.count(), 1)
+        self.assertEqual(read_gens.first().valid_from, BASE_VALID_FROM)
+
+    def test_forward_move_does_not_disturb_an_earlier_forward_edit(self):
+        # An EARLIER toggle-ON edit moved Read into Evening (its own generation).
+        self._forward(items=[{"habit": self.read.id, "plan": self.evening.id, "order": 5}])
+        read_gen_id = Schedule.objects.get(
+            habit=self.read, tier__isnull=True, valid_from=self.today
+        ).id
+
+        # Now a SEPARATE forward move of Stretch into Morning's slot. It must not
+        # touch Read's existing forward generation at all.
+        self._forward(items=[{"habit": self.stretch.id, "plan": self.morning.id, "order": 1}])
+
+        read_gen = Schedule.objects.get(id=read_gen_id)
+        self.assertEqual(read_gen.plan_id, self.evening.id)   # untouched
+        self.assertEqual(read_gen.order, 5)
+        # And forward, Read still reflects its earlier edit.
+        future = self._placement(self._plan(self.tomorrow))
+        self.assertEqual(future[self.read.id], [self.evening.id])
+
+    def test_frozen_today_mirror_touches_only_the_moved_habit(self):
+        # Freeze today (so reads come from ScheduleDay). Move ONLY Stretch.
+        freeze_day(self.today)
+        read_sd_before = ScheduleDay.objects.get(
+            date=self.today, habit=self.read, tier__isnull=True
+        )
+
+        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+
+        # The moved habit's ScheduleDay mirror moved to Evening.
+        stretch_sd = ScheduleDay.objects.get(
+            date=self.today, habit=self.stretch, tier__isnull=True
+        )
+        self.assertEqual(stretch_sd.plan_id, self.evening.id)
+        # The sibling's ScheduleDay for today is byte-for-byte unchanged (same row,
+        # same cycle, same order) — the mirror never rewrote it.
+        read_sd_after = ScheduleDay.objects.get(
+            date=self.today, habit=self.read, tier__isnull=True
+        )
+        self.assertEqual(read_sd_after.id, read_sd_before.id)
+        self.assertEqual(read_sd_after.plan_id, read_sd_before.plan_id)
+        self.assertEqual(read_sd_after.order, read_sd_before.order)
