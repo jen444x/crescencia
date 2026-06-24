@@ -831,6 +831,29 @@ class RoutineApiTests(TestCase):
         self.s_brush.refresh_from_db()
         self.assertEqual(self.s_brush.plan_id, self.plan.id)  # block unchanged
 
+    def test_plan_no_longer_exposes_chain(self):
+        # The Chain model is gone (Phase B), so no /plan/ row carries a "chain"
+        # key anymore — the frontend must stop reading it.
+        groups = json.loads(self.client.get(reverse("habits:plan")).content)
+        rows = [h for g in groups for h in g["habits"]]
+        self.assertTrue(rows)                                  # we have habits to check
+        self.assertTrue(all("chain" not in h for h in rows))
+
+    def test_reorder_ignores_a_stray_chain_key(self):
+        # An older client may still send "chain"; it's ignored (not 400'd) and the
+        # rest of the reorder still applies.
+        resp = self.client.post(
+            reverse("habits:reorder_schedules"),
+            data={"items": [{"id": self.s_brush.id, "order": 7, "chain": 999999}]},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        updated = json.loads(resp.content)["updated"][0]
+        self.assertEqual(updated["order"], 7)
+        self.assertNotIn("chain", updated)                    # not echoed back
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.order, 7)               # reorder applied
+
     def test_create_schedule_places_unscheduled_habit(self):
         solo = Habit.objects.create(name="Journal")  # no schedule -> "Anytime"
         resp = self.client.post(
@@ -1452,13 +1475,26 @@ class FreezeDayTests(TestCase):
         other = Plan.objects.create(start_time=time(18, 0))
         resp = self._arrange(
             date=self.tomorrow.isoformat(),
-            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id, "chain": None}],
+            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id}],
         )
         self.assertEqual(resp.status_code, 200)
         sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
         self.assertEqual(sd_brush.plan_id, other.id)
         self.s_brush.refresh_from_db()
         self.assertEqual(self.s_brush.plan_id, self.plan.id)  # template block unchanged
+
+    def test_arrange_ignores_a_stray_chain_key(self):
+        # The Chain model is gone (Phase B); a "chain" sent by an older client is
+        # ignored rather than 400'd, and the reorder still applies for the day.
+        resp = self._arrange(
+            date=self.tomorrow.isoformat(),
+            items=[{"id": self.s_brush.id, "order": 4, "chain": 999999}],
+        )
+        self.assertEqual(resp.status_code, 200)
+        updated = json.loads(resp.content)["updated"][0]
+        self.assertNotIn("chain", updated)                    # not echoed back
+        sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
+        self.assertEqual(sd_brush.order, 4)                   # reorder applied
 
     def test_arrange_places_an_anytime_habit_for_that_day(self):
         # A habit with no Schedule row (sits in "Anytime") dragged into a block,

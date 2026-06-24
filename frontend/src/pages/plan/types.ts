@@ -23,7 +23,7 @@ export type Plan = {
 };
 export type Habit = {
   id: number;
-  // The Schedule row that holds this habit's position (order + chain) on the
+  // The Schedule row that holds this habit's position (order) on the
   // recurring template. It's what we send to /schedules/reorder/ for the
   // explicit "edit my recurring plan" action. NULL on a frozen day — that row is
   // a ScheduleDay copy, not a template row — so never key dnd on this.
@@ -35,10 +35,8 @@ export type Habit = {
   // also the `id` we send to /days/arrange/ for an existing row.
   row_id?: number | null;
   name: string;
-  chain?: number | null;
   // The Routine (group) this habit belongs to + its display name, for the
   // collapsible block on the Plan page. null when the habit isn't grouped.
-  // Independent of `chain`: a habit can be in a routine, a chain, both, or neither.
   routine?: number | null;
   routine_name?: string | null;
   order?: number;
@@ -98,9 +96,9 @@ export type DayNote = {
 
 export type SlotPlacement = "inline" | "stretch" | "hidden";
 
-// A row to render for one habit. `stepNumber` is its position within a chain
+// A row to render for one habit. `stepNumber` is its position within a cycle
 // (1, 2, 3...) or null if it's a standalone habit. `connectBelow` draws the
-// little connector line down to the next step when they're in the same chain.
+// little connector line down to the next step when they're in the same cycle.
 export type Row = {
   habit: Habit;
   stepNumber: number | null;
@@ -113,7 +111,7 @@ export type Row = {
 //   - "routine": a RUN of consecutive habits sharing a routine, shown as one
 //     collapsible block — so a routine stays put inside its cycle (e.g. between
 //     "shower" and "lotion") instead of being lifted out of the order.
-// A routine counts as ONE step in its chain, so step numbers stay sensible
+// A routine counts as ONE step in its cycle, so step numbers stay sensible
 // (shower 1 · morning routine 2 · lotion 3), and completed routine members stay
 // in their block rather than collapsing into the "done" chip.
 export type Segment =

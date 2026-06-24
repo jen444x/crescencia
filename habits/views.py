@@ -11,7 +11,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Chain, Routine, Habit, Plan, PlanDay, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
+from .models import Area, Routine, Habit, Plan, PlanDay, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -193,7 +193,6 @@ def freeze_day(target_date):
             habit=s.habit,
             habit_name=s.habit.name,
             plan_id=s.plan_id,
-            chain_id=s.chain_id,
             routine_id=s.routine_id,
             tier_id=s.tier_id,
             order=s.order,
@@ -259,7 +258,7 @@ def plan(request):
             tiers_by_habit[habit.id] = tiers
         return tiers_by_habit[habit.id]
 
-    def habit_payload(habit, schedule_id=None, chain=None, order=None,
+    def habit_payload(habit, schedule_id=None, order=None,
                       routine=None, routine_name=None, tier=None, row_id=None):
         bucket = day_logs.get(habit.id)
         specific = bucket["specific"] if bucket else {}
@@ -295,7 +294,6 @@ def plan(request):
             "row_id": row_id if row_id is not None else schedule_id,
             "schedule_id": schedule_id,    # back-compat: the template slot id (None on a frozen row)
             "name": habit.name,
-            "chain": chain,   # cycle id, or None if standalone
             "routine": routine,            # routine (group) id, or None if ungrouped
             "routine_name": routine_name,  # the group's name, for the block header
             "order": order,
@@ -331,7 +329,6 @@ def plan(request):
                 habit_payload(
                     sd.habit,
                     row_id=sd.id,            # the row dnd + /days/arrange/ target
-                    chain=sd.chain_id,
                     routine=sd.routine_id,
                     routine_name=sd.routine.name if sd.routine_id else None,
                     order=sd.order,
@@ -353,13 +350,12 @@ def plan(request):
             habit__date_added__date__lte=target_date
         ).order_by(F("order").asc(nulls_last=True), "id")
         for schedule in ordered_schedules:
-            # Each Schedule row carries its own habit, chain (cycle), and order,
-            # so we just emit each one. The frontend groups the chains.
+            # Each Schedule row carries its own habit, block, and order, so we
+            # just emit each one. The frontend groups them by time block.
             by_plan[schedule.plan_id].append(
                 habit_payload(
                     schedule.habit,
                     schedule_id=schedule.id,
-                    chain=schedule.chain_id,
                     routine=schedule.routine_id,
                     routine_name=schedule.routine.name if schedule.routine_id else None,
                     order=schedule.order,
@@ -667,22 +663,22 @@ def reorder_schedules(request):
     """Apply a new arrangement to a set of schedules in one shot.
 
     After a drag-and-drop the Plan page sends every affected row with its new
-    position (and its new cycle, if it was moved between chains):
+    position (and its new routine, if it was regrouped):
 
         {"items": [
-            {"id": 10, "order": 1},               # just moved within the list
-            {"id": 11, "order": 2, "chain": 3},   # also moved into cycle 3
-            {"id": 12, "order": 3, "chain": null} # pulled out to standalone
+            {"id": 10, "order": 1},                 # just moved within the list
+            {"id": 11, "order": 2, "routine": 3},   # also moved into routine 3
+            {"id": 12, "order": 3, "routine": null} # pulled out to ungrouped
         ]}
 
-    `chain` is optional: it's only changed when the key is present (null means
-    "no cycle"). Sending the whole list — instead of "move row X up one" — keeps
+    `routine` is optional: it's only changed when the key is present (null means
+    "no group"). Sending the whole list — instead of "move row X up one" — keeps
     this idempotent and avoids shuffling neighbours one index at a time.
 
     `plan` (optional) moves a row into another time block — its value is the
     target Plan's id. That's the cross-block drag: the moved row is sent with its
-    new `plan`, usually alongside `chain`/`routine` null (those are same-block
-    tags). Omit `plan` and the row stays in its current block.
+    new `plan`, usually alongside `routine` null (a same-block tag). Omit `plan`
+    and the row stays in its current block.
     """
     try:
         body = json.loads(request.body or b"{}")
@@ -707,8 +703,8 @@ def reorder_schedules(request):
                 {"error": "Each item needs an integer 'id' and 'order'."}, status=400
             )
         entry = {"id": sid, "order": order}
-        if "chain" in item:
-            entry["chain"] = item["chain"]   # None or a chain id
+        # A stray "chain" key (from an older client) is ignored — the Chain model
+        # is gone — rather than 400'd, so it can't break a mid-update frontend.
         if "routine" in item:
             entry["routine"] = item["routine"]   # None or a routine id
         if "plan" in item:
@@ -737,14 +733,6 @@ def reorder_schedules(request):
     if missing:
         return JsonResponse({"error": f"Unknown schedule ids: {missing}."}, status=400)
 
-    # Validate any chain ids referenced before applying.
-    chain_ids = {e["chain"] for e in cleaned if e.get("chain") is not None}
-    if chain_ids:
-        known = set(Chain.objects.filter(id__in=chain_ids).values_list("id", flat=True))
-        unknown = sorted(chain_ids - known)
-        if unknown:
-            return JsonResponse({"error": f"Unknown chain ids: {unknown}."}, status=400)
-
     routine_ids = {e["routine"] for e in cleaned if e.get("routine") is not None}
     if routine_ids:
         known = set(Routine.objects.filter(id__in=routine_ids).values_list("id", flat=True))
@@ -766,9 +754,6 @@ def reorder_schedules(request):
     for e in cleaned:
         schedule = schedules[e["id"]]
         schedule.order = e["order"]
-        if "chain" in e:
-            schedule.chain_id = e["chain"]
-            fields.add("chain")
         if "routine" in e:
             schedule.routine_id = e["routine"]
             fields.add("routine")
@@ -786,8 +771,7 @@ def reorder_schedules(request):
         Schedule.objects.bulk_update(schedules.values(), list(fields))
 
     updated = [
-        {"id": s.id, "order": s.order, "plan": s.plan_id,
-         "chain": s.chain_id, "routine": s.routine_id}
+        {"id": s.id, "order": s.order, "plan": s.plan_id, "routine": s.routine_id}
         for s in sorted(schedules.values(), key=lambda s: s.order)
     ]
     return JsonResponse({"updated": updated})
@@ -847,13 +831,13 @@ def arrange_day(request):
     Body: {"date": "YYYY-MM-DD", "items": [...]}. Each item is the SAME shape as
     reorder_schedules, except `id` is the row's `row_id` (from /plan/):
 
-        {"id": 11, "order": 2, "chain": 3}      # reorder/retag an existing row
+        {"id": 11, "order": 2, "routine": 3}    # reorder/retag an existing row
         {"id": 12, "order": 3, "plan": 7}       # move it to another block, that day
         {"habit": 9, "plan": 7, "order"?: 4}    # NEW per-day placement: drop a habit
                                                 #   from "Anytime" into a block, today only
 
-    `chain` / `routine` / `tier` / `plan` are only changed when their key is
-    present (null clears the tag); `tier` takes a level 1/2/3 or null.
+    `routine` / `tier` / `plan` are only changed when their key is present (null
+    clears the tag); `tier` takes a level 1/2/3 or null.
 
     Freezing: editing a day freezes it first. We snapshot whether the day was
     already frozen, then call freeze_day (idempotent). On a NOT-yet-frozen day the
@@ -915,8 +899,8 @@ def arrange_day(request):
                     {"error": "Each item needs an integer 'id' and 'order'."}, status=400
                 )
             entry = {"id": rid, "order": order}
-            if "chain" in item:
-                entry["chain"] = item["chain"]   # None or a chain id
+            # A stray "chain" key (older client) is ignored, not 400'd — the
+            # Chain model is gone, so it just no longer means anything.
             if "routine" in item:
                 entry["routine"] = item["routine"]   # None or a routine id
             if "plan" in item:
@@ -943,13 +927,6 @@ def arrange_day(request):
             places.append(entry)
 
     # Validate referenced foreign keys up front (like reorder_schedules).
-    chain_ids = {e["chain"] for e in moves if e.get("chain") is not None}
-    if chain_ids:
-        known = set(Chain.objects.filter(id__in=chain_ids).values_list("id", flat=True))
-        unknown = sorted(chain_ids - known)
-        if unknown:
-            return JsonResponse({"error": f"Unknown chain ids: {unknown}."}, status=400)
-
     routine_ids = {e["routine"] for e in moves if e.get("routine") is not None}
     if routine_ids:
         known = set(Routine.objects.filter(id__in=routine_ids).values_list("id", flat=True))
@@ -1009,9 +986,6 @@ def arrange_day(request):
             for sd_id, e in resolved:
                 row = rows[sd_id]
                 row.order = e["order"]
-                if "chain" in e:
-                    row.chain_id = e["chain"]
-                    fields.add("chain")
                 if "routine" in e:
                     row.routine_id = e["routine"]
                     fields.add("routine")
@@ -1057,8 +1031,7 @@ def arrange_day(request):
     # Return the day's updated arrangement (touched rows), like reorder_schedules.
     touched = list(rows.values()) + created
     updated = [
-        {"id": sd.id, "order": sd.order, "plan": sd.plan_id,
-         "chain": sd.chain_id, "routine": sd.routine_id}
+        {"id": sd.id, "order": sd.order, "plan": sd.plan_id, "routine": sd.routine_id}
         for sd in sorted(touched, key=lambda sd: (sd.order is None, sd.order or 0, sd.id))
     ]
     return JsonResponse({"date": target_date, "updated": updated})
@@ -1661,8 +1634,8 @@ def delete_journal(request, entry_id):
 # --- Routines (Routine model) -----------------------------------------------
 # A Routine is a named group of habits that the Plan page renders as ONE
 # collapsible block (e.g. "Morning routine"). Membership lives on
-# `Schedule.routine`, exactly like `Schedule.chain` — a habit can be in a
-# routine, a chain, both, or neither. A routine's "done" state is NEVER stored:
+# `Schedule.routine` — a habit can be in a routine or not. A routine's "done"
+# state is NEVER stored:
 # the block reads as done because its member habits' HabitLogs do (the frontend
 # derives it). `log_routine` is just a fan-out that writes one status to every
 # member — there is no routine-level log row.

@@ -78,19 +78,13 @@ class JournalEntry(models.Model):
         return f"{self.date} - {self.body[:30]}"
 
 
-class Chain(models.Model):
-    created_at = models.DateTimeField(auto_now_add=True)
-
-
 class Routine(models.Model):
     """A named group of habits shown as ONE collapsible block on the Plan page
     (e.g. "Morning routine": brush teeth, wash face, ...).
 
-    A routine is just another optional tag on a Schedule row, exactly like
-    `chain` — a habit can be in a routine, a chain, both, or neither. The
-    difference is only in how each renders: a chain gives its habits an order
-    (step 1 → 2 → 3); a routine just groups them, to be done in any order,
-    whenever.
+    A routine is an optional tag on a Schedule row — a habit can be in a routine
+    or not. It just groups the block's habits under a name, to be done in any
+    order, whenever.
 
     A routine's "done" state is NEVER stored. It's derived from its members'
     HabitLogs: the block reads as done when every member is COMPLETED or SKIPPED
@@ -144,9 +138,8 @@ class PlanDay(models.Model):
 class Schedule(models.Model):
     habit = models.ForeignKey(Habit, on_delete=models.CASCADE)
     plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True)
-    chain = models.ForeignKey(Chain, on_delete=models.CASCADE, null=True, blank=True)
-    # Like `chain`, but groups (no order) instead of ordering. SET_NULL, not
-    # CASCADE: deleting a Routine just ungroups its habits — they stay on the
+    # Groups (no order) the habits in a block under a named routine. SET_NULL,
+    # not CASCADE: deleting a Routine just ungroups its habits — they stay on the
     # plan as standalone rows — rather than dropping them off the plan.
     routine = models.ForeignKey(Routine, on_delete=models.SET_NULL, null=True, blank=True)
     # Which tier (Roots/Growth) this slot is for. null = the slot isn't
@@ -165,7 +158,7 @@ class ScheduleDay(models.Model):
     """One day's saved arrangement — the per-day twin of `Schedule`.
 
     `Schedule` is the recurring plan (same every day): which habit sits in which
-    block, its chain, its order. `ScheduleDay` records what a *specific date*
+    block, its routine, its order. `ScheduleDay` records what a *specific date*
     actually looked like, so editing one day never changes the rest — exactly how
     `PlanDay` is the per-day twin of `Plan`'s time.
 
@@ -184,7 +177,6 @@ class ScheduleDay(models.Model):
     habit = models.ForeignKey(Habit, on_delete=models.SET_NULL, null=True)
     habit_name = models.CharField(max_length=200)
     plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True, blank=True)
-    chain = models.ForeignKey(Chain, on_delete=models.SET_NULL, null=True, blank=True)
     routine = models.ForeignKey(Routine, on_delete=models.SET_NULL, null=True, blank=True)
     tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
     order = models.PositiveIntegerField(null=True, blank=True)

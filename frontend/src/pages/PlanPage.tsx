@@ -823,7 +823,7 @@ function SwipeableCard({
   );
 }
 
-// Shared layout. Chain steps get a numbered badge + connector line in a left
+// Shared layout. Cycle steps get a numbered badge + connector line in a left
 // rail (a label only — dragging happens via the grip inside the card).
 // Standalone habits have no rail, so their card spans the full width.
 function RowLayout({
@@ -873,7 +873,7 @@ function RowLayout({
   );
 }
 
-// A draggable habit row. The drag handle is a grip INSIDE the card; chain steps
+// A draggable habit row. The drag handle is a grip INSIDE the card; cycle steps
 // also show their number in the left rail (label only).
 function SortableRow({
   habit,
@@ -1081,8 +1081,8 @@ function RoutineBlock({
   habits: Habit[];
   // The day's chosen tier, threaded to member cards for their shown rung/ladder.
   dayTier: number;
-  // Chain step number + connector, when the routine sits inside a cycle. null
-  // step = standalone (no chain), and the block spans the full width.
+  // Cycle step number + connector, when the routine sits inside a cycle. null
+  // step = standalone (no cycle), and the block spans the full width.
   stepNumber: number | null;
   connectBelow: boolean;
   onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
@@ -1098,9 +1098,9 @@ function RoutineBlock({
 
   return (
     <div className="flex gap-3">
-      {/* Left rail: chain step badge + connector, so the routine reads as one
+      {/* Left rail: cycle step badge + connector, so the routine reads as one
           step in the cycle (e.g. between shower and lotion). Null step = the
-          routine isn't in a chain, and the block spans the full width. */}
+          routine isn't in a cycle, and the block spans the full width. */}
       {stepNumber != null && (
         <div className="flex flex-col items-center">
           <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-calm-300 bg-calm-50 text-[10px] font-medium text-calm-500">
@@ -1306,7 +1306,7 @@ function PlanBoard({
             routineItem(seg)
           ) : (
             <li key={seg.row.habit.id}>
-              {/* Non-draggable, but still shows chain step numbers/connectors. */}
+              {/* Non-draggable, but still shows cycle step numbers/connectors. */}
               <RowLayout
                 habit={seg.row.habit}
                 dayTier={dayTier}
@@ -2988,11 +2988,10 @@ function PlansPage() {
     setPlans((prev) => applyPlanOrder(prev, planId, orderedHabits));
 
     // /days/arrange/ keys on row_id (the day's stable per-row key) and wants the
-    // whole list with fresh 1..N orders. We keep each habit's chain as-is.
+    // whole list with fresh 1..N orders.
     const items = orderedHabits.map((habit, i) => ({
       id: habit.row_id,
       order: i + 1,
-      chain: habit.chain ?? null,
     }));
 
     try {
@@ -3081,7 +3080,7 @@ function PlansPage() {
   }
 
   // Move one row (`rid` = its row_id) out of `fromPlan` into `toPlan` for the
-  // viewed day only, dropping its chain/routine (those are same-block tags) and
+  // viewed day only, dropping its routine (a same-block tag) and
   // landing it before `overRid` (or at the end when dropped on empty block
   // space). Persists BOTH blocks in one /days/arrange/ batch, optimistic with
   // rollback, and offers an Undo that puts it back.
@@ -3100,7 +3099,7 @@ function PlansPage() {
     const origTo = toPlan.habits;
 
     const newFrom = origFrom.filter((h) => h.row_id !== rid);
-    const movedNew: Habit = { ...moved, chain: null, routine: null };
+    const movedNew: Habit = { ...moved, routine: null };
     const at = overRid != null ? origTo.findIndex((h) => h.row_id === overRid) : -1;
     const idx = at >= 0 ? at : origTo.length;
     const newTo = [...origTo.slice(0, idx), movedNew, ...origTo.slice(idx)];
@@ -3119,7 +3118,7 @@ function PlansPage() {
       ...newFrom.map((h, i) => ({ id: h.row_id ?? null, order: i + 1 })),
       ...newTo.map((h, i) =>
         h.row_id === rid
-          ? { id: rid, order: i + 1, plan: toPlan.id, chain: null, routine: null }
+          ? { id: rid, order: i + 1, plan: toPlan.id, routine: null }
           : { id: h.row_id ?? null, order: i + 1 },
       ),
     ];
@@ -3138,7 +3137,7 @@ function PlansPage() {
         label: "Undo",
         onClick: () => {
           setPlans(snapshot);
-          // Put the row back in its old block, time, and chain/routine tags.
+          // Put the row back in its old block, time, and routine tag.
           persistItems([
             ...origFrom.map((h, i) =>
               h.row_id === rid
@@ -3146,7 +3145,6 @@ function PlansPage() {
                     id: rid,
                     order: i + 1,
                     plan: fromPlan.id,
-                    chain: h.chain ?? null,
                     routine: h.routine ?? null,
                   }
                 : { id: h.row_id ?? null, order: i + 1 },
@@ -3172,7 +3170,6 @@ function PlansPage() {
       if (!habit) return prev;
       const placed: Habit = {
         ...habit,
-        chain: null,
         routine: null,
       };
       return prev.map((p) =>
