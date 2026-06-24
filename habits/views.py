@@ -609,11 +609,20 @@ def clear_day(request):
     or a mis-fired "running late" shift.
 
     Body: {"date"?: "YYYY-MM-DD"} (defaults today). Removes:
+      - that day's saved arrangement (its ScheduleDay rows), so the day stops
+        being frozen and projects the recurring template again ("back to
+        default"), and
       - that day's time shifts (its PlanDay overrides), and
       - skips / pendings (HabitLogs that aren't COMPLETED).
-    Completions are kept (your wins stay), and any notes are kept — a note-bearing
-    log is reset to PENDING but holds onto its text; only empty, non-completed
-    logs are deleted outright (PENDING + no note == the default no-row state).
+    Completions are kept (your wins stay) — they're keyed per habit/date/tier and
+    are independent of ScheduleDay, so they survive the un-freeze. Any notes are
+    kept too — a note-bearing log is reset to PENDING but holds onto its text;
+    only empty, non-completed logs are deleted outright (PENDING + no note == the
+    default no-row state).
+
+    On a PAST day this discards that day's frozen arrangement, so the next time
+    it's viewed it re-freezes from the *current* template (the intended "reset =
+    discard this day's adjustments" meaning).
     """
     try:
         body = json.loads(request.body or b"{}")
@@ -629,6 +638,11 @@ def clear_day(request):
     )
 
     with transaction.atomic():
+        # Un-freeze the day: dropping its ScheduleDay rows returns it to the
+        # "no row = use the template" default, just like clearing PlanDay returns
+        # its times to the recurring plan. Completions survive (they're HabitLogs,
+        # not ScheduleDay rows).
+        arrangement_cleared = ScheduleDay.objects.filter(date=target_date).delete()[0]
         shifts_cleared = PlanDay.objects.filter(date=target_date).delete()[0]
         # Keep notes: a note-bearing skip/pending goes back to PENDING but holds
         # its text; everything else with nothing to keep is removed.
@@ -639,6 +653,7 @@ def clear_day(request):
 
     return JsonResponse({
         "date": target_date,
+        "arrangement_cleared": arrangement_cleared,
         "shifts_cleared": shifts_cleared,
         "logs_cleared": notes_kept + logs_removed,
     })

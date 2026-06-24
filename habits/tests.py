@@ -1,6 +1,9 @@
 import json
 from datetime import time, timedelta
+from io import StringIO
 
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -389,6 +392,48 @@ class ClearDayTests(TestCase):
         self._clear()
         log = HabitLog.objects.get(habit=self.a, date=self.today)
         self.assertEqual((log.status, log.notes), ("PENDING", "away"))
+
+    def test_unfreezes_the_arrangement_keeping_completions(self):
+        # A frozen, rearranged day: clearing it drops the ScheduleDay rows so the
+        # day reverts to the template, while a completion on that day survives.
+        Schedule.objects.create(habit=self.a, plan=self.plan, order=1)
+        Schedule.objects.create(habit=self.b, plan=self.plan, order=2)
+        HabitLog.objects.create(
+            habit=self.a, date=self.today, status=HabitLog.Status.COMPLETED
+        )
+
+        # Freeze + rearrange today via /days/arrange/ (swap A and B's order).
+        s_a = Schedule.objects.get(habit=self.a)
+        s_b = Schedule.objects.get(habit=self.b)
+        arrange = self.client.post(
+            reverse("habits:arrange_day"),
+            data=json.dumps({
+                "date": self.today.isoformat(),
+                "items": [{"id": s_a.id, "order": 2}, {"id": s_b.id, "order": 1}],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(arrange.status_code, 200)
+        self.assertTrue(ScheduleDay.objects.filter(date=self.today).exists())
+
+        response = self._clear()
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["arrangement_cleared"], 2)  # both ScheduleDay rows gone
+
+        # Day un-frozen: no ScheduleDay rows, /plan/ reverts to the template order.
+        self.assertFalse(ScheduleDay.objects.filter(date=self.today).exists())
+        groups = self.client.get(
+            reverse("habits:plan"), {"date": self.today.isoformat()}
+        ).json()
+        rows = [h for g in groups for h in g["habits"]]
+        order_by_habit = {h["id"]: h["order"] for h in rows}
+        self.assertEqual(order_by_habit[self.a.id], 1)  # back to template order
+        self.assertEqual(order_by_habit[self.b.id], 2)
+        # The completion survived the un-freeze.
+        self.assertTrue(
+            HabitLog.objects.filter(habit=self.a, status="COMPLETED").exists()
+        )
 
     def test_rejects_bad_date(self):
         self.assertEqual(self._clear(date="nope").status_code, 400)
@@ -1387,3 +1432,70 @@ class FreezeDayTests(TestCase):
         rows = self._rows(self._plan(self.tomorrow))
         sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
         self.assertEqual(rows[sd_brush.id]["row_id"], sd_brush.id)
+
+
+class FreezePastDaysCommandTests(TestCase):
+    """The nightly catch-all: `freeze_past_days` freezes lived-but-unopened past
+    days by calling the idempotent `freeze_day` helper. It walks a recent lookback
+    window (last 7 days by default, `--days N` to widen) and never touches today
+    or future days."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        self.tomorrow = self.today + timedelta(days=1)
+
+        # One habit in a block, backdated so it counts as existing on past days
+        # (otherwise the freeze's "didn't exist yet" filter snapshots nothing).
+        self.plan = Plan.objects.create(start_time=time(9, 0))
+        self.habit = Habit.objects.create(name="Brush teeth")
+        Habit.objects.filter(id=self.habit.id).update(
+            date_added=timezone.now() - timedelta(days=30)
+        )
+        Schedule.objects.create(habit=self.habit, plan=self.plan, order=1)
+
+    def _run(self, *args):
+        out = StringIO()
+        call_command("freeze_past_days", *args, stdout=out)
+        return out.getvalue()
+
+    def test_freezes_an_unfrozen_past_day_in_the_window(self):
+        self.assertFalse(ScheduleDay.objects.filter(date=self.yesterday).exists())
+        out = self._run()
+        self.assertTrue(ScheduleDay.objects.filter(date=self.yesterday).exists())
+        self.assertIn(f"Froze {self.yesterday}", out)
+
+    def test_is_a_noop_on_an_already_frozen_day(self):
+        freeze_day(self.yesterday)
+        before = ScheduleDay.objects.filter(date=self.yesterday).count()
+        out = self._run()
+        # No duplicate rows; reported as skipped, not frozen.
+        self.assertEqual(
+            ScheduleDay.objects.filter(date=self.yesterday).count(), before
+        )
+        self.assertIn(f"Already frozen, skipped {self.yesterday}", out)
+
+    def test_does_not_freeze_today_or_future(self):
+        self._run("--days", "7")
+        self.assertFalse(ScheduleDay.objects.filter(date=self.today).exists())
+        self.assertFalse(ScheduleDay.objects.filter(date=self.tomorrow).exists())
+
+    def test_days_bounds_the_window(self):
+        # An old day just outside a 2-day window isn't frozen; one inside is.
+        old = self.today - timedelta(days=5)
+        self._run("--days", "2")
+        self.assertFalse(ScheduleDay.objects.filter(date=old).exists())   # outside
+        self.assertTrue(
+            ScheduleDay.objects.filter(date=self.yesterday).exists()      # inside
+        )
+
+    def test_date_freezes_one_specific_past_day(self):
+        target = self.today - timedelta(days=10)   # outside the default window
+        self._run("--date", target.isoformat())
+        self.assertTrue(ScheduleDay.objects.filter(date=target).exists())
+        # Only that day was frozen, not the rest of the window.
+        self.assertFalse(ScheduleDay.objects.filter(date=self.yesterday).exists())
+
+    def test_date_rejects_today_or_future(self):
+        with self.assertRaises(CommandError):
+            self._run("--date", self.today.isoformat())
