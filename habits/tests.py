@@ -1413,6 +1413,50 @@ class FreezeDayTests(TestCase):
         # No Schedule (template) row was created — placement is per-day only.
         self.assertFalse(Schedule.objects.filter(habit=solo).exists())
 
+    def _anytime_ids(self, response):
+        """Habit ids in the trailing "Anytime" (id=None) group of a /plan/ payload."""
+        groups = json.loads(response.content)
+        anytime = next(g for g in groups if g["id"] is None)
+        return [h["id"] for h in anytime["habits"]]
+
+    def test_frozen_day_keeps_never_placed_anytime_habits(self):
+        # THE BUG: a habit that was never placed (no Schedule row) lives in
+        # Anytime. The moment a day freezes (e.g. the first drag) it gets
+        # ScheduleDay rows — but a never-placed habit has none, so it used to
+        # vanish from Anytime on a frozen day. It must still be listed, and a
+        # page refresh (a fresh frozen GET) must keep showing it.
+        solo = Habit.objects.create(name="Read")           # never placed -> Anytime
+        Habit.objects.filter(id=solo.id).update(
+            date_added=timezone.now() - timedelta(days=30)
+        )
+        # Freeze today by placing a DIFFERENT habit (brush) for the day. This is
+        # exactly the user's reproduction: dragging one habit freezes the day.
+        resp = self._arrange(
+            date=self.today.isoformat(),
+            items=[{"id": self.s_brush.id, "order": 1, "plan": self.plan.id}],
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(ScheduleDay.objects.filter(date=self.today).exists())  # frozen
+        self.assertFalse(                                  # the never-placed habit got no row
+            ScheduleDay.objects.filter(date=self.today, habit=solo).exists()
+        )
+
+        # A fresh GET of the now-frozen day (i.e. a refresh) still lists it in Anytime.
+        anytime = self._anytime_ids(self.client.get(reverse("habits:plan")))
+        self.assertIn(solo.id, anytime)
+        # And it isn't double-listed, nor are the placed habits leaked into Anytime.
+        self.assertEqual(anytime.count(solo.id), 1)
+        self.assertNotIn(self.brush.id, anytime)
+        self.assertNotIn(self.wash.id, anytime)
+
+    def test_frozen_day_anytime_excludes_habits_added_later(self):
+        # The "existed by then" rule still applies on a frozen day: a habit added
+        # AFTER the viewed day must not appear in that frozen day's Anytime.
+        self._plan(self.yesterday)                         # freeze yesterday
+        future_habit = Habit.objects.create(name="Brand new")  # date_added = now (today)
+        anytime = self._anytime_ids(self._plan(self.yesterday))
+        self.assertNotIn(future_habit.id, anytime)
+
     def test_arrange_requires_a_date(self):
         resp = self._arrange(items=[{"id": self.s_brush.id, "order": 1}])
         self.assertEqual(resp.status_code, 400)

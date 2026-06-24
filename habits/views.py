@@ -453,13 +453,34 @@ def plan(request):
     plan_groups.sort(key=lambda g: (g["time"] is None, g["time"] or dt_time.min, g["id"]))
 
     # The "Anytime" group: habits with no placement this day. Frozen = any
-    # ScheduleDay row sitting in no plan (placed at Anytime that day); not frozen =
+    # ScheduleDay row sitting in no plan (placed at Anytime that day) PLUS habits
+    # that were never placed at all (no ScheduleDay/Schedule row); not frozen =
     # habits with no EFFECTIVE Schedule row at all for this date. We key off the
     # generation actually in effect (not `schedule__isnull`), so a habit whose only
     # Schedule row is a future generation (valid_from > T) correctly sits in Anytime
     # for earlier dates. Same "existed by then" rule, always last.
     if is_frozen:
-        anytime_habits = by_plan.get(None, [])
+        # The day's photo (ScheduleDay) only ever snapshotted habits that HAD an
+        # effective Schedule placement when it froze — a never-placed habit has no
+        # Schedule row, so it got no ScheduleDay row and would silently vanish the
+        # moment a day freezes (e.g. the first drag). Mirror the not-frozen fallback
+        # below: also surface habits that existed by this date but sit in NO
+        # ScheduleDay row for the day (any cycle, incl. Anytime) and have no
+        # effective Schedule placement either. `placed_ids` is every habit already
+        # accounted for, so this never double-lists one already shown (in a cycle or
+        # in the plan=None Anytime list).
+        placed_ids = {
+            sd.habit_id
+            for sd in ScheduleDay.objects.filter(date=target_date)
+            if sd.habit_id is not None
+        }
+        placed_ids |= {s.habit_id for s in _effective_schedules(target_date)}
+        unscheduled = Habit.objects.filter(
+            date_added__date__lte=target_date
+        ).exclude(id__in=placed_ids)
+        anytime_habits = by_plan.get(None, []) + [
+            habit_payload(h) for h in unscheduled
+        ]
     else:
         # Two sources, both legitimately "Anytime" on a not-frozen day:
         #   - rows whose effective generation has plan=None (a habit explicitly
