@@ -12,7 +12,7 @@ from .models import (
     Area, Habit, HabitLog, HabitTier, Note, Plan, PlanDay, Routine, Schedule,
     ScheduleDay, Tier, TierValue,
 )
-from .views import freeze_day
+from .views import FREEZE_CATCHUP_DAYS, freeze_day
 
 
 class BrowseDaysTests(TestCase):
@@ -1544,6 +1544,73 @@ class FreezeDayTests(TestCase):
         rows = self._rows(self._plan(self.tomorrow))
         sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
         self.assertEqual(rows[sd_brush.id]["row_id"], sd_brush.id)
+
+
+class PlanFreezeCatchupTests(TestCase):
+    """Photograph-on-open: every /plan/ load freezes the last FREEZE_CATCHUP_DAYS
+    past days that aren't frozen yet, so a day the user lived but never opened still
+    gets its permanent photo (the no-cron alternative to the nightly sweep). Never
+    today or a future day; a past day older than the window only freezes when viewed
+    directly via the existing lazy "photo on first view" logic."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.tomorrow = self.today + timedelta(days=1)
+
+        # One habit in a block, backdated far enough that it counts as existing on
+        # every day in (and older than) the catch-up window.
+        self.plan = Plan.objects.create(start_time=time(9, 0))
+        self.habit = Habit.objects.create(name="Brush teeth")
+        Habit.objects.filter(id=self.habit.id).update(
+            date_added=timezone.now() - timedelta(days=60)
+        )
+        Schedule.objects.create(habit=self.habit, plan=self.plan, order=1)
+
+    def _load_today(self):
+        return self.client.get(reverse("habits:plan"))
+
+    def test_loading_today_freezes_the_catchup_window(self):
+        window = [self.today - timedelta(days=n)
+                  for n in range(1, FREEZE_CATCHUP_DAYS + 1)]
+        for d in window:
+            self.assertFalse(ScheduleDay.objects.filter(date=d).exists())
+
+        resp = self._load_today()
+        self.assertEqual(resp.status_code, 200)
+        # Each day in the window now has its photo.
+        for d in window:
+            self.assertTrue(
+                ScheduleDay.objects.filter(date=d).exists(),
+                f"{d} should be frozen by the catch-up sweep",
+            )
+
+    def test_catchup_is_idempotent(self):
+        self._load_today()
+        counts = {
+            d: ScheduleDay.objects.filter(date=d).count()
+            for d in (self.today - timedelta(days=n)
+                      for n in range(1, FREEZE_CATCHUP_DAYS + 1))
+        }
+        # A second load must not duplicate any frozen rows.
+        self._load_today()
+        for d, before in counts.items():
+            self.assertEqual(
+                ScheduleDay.objects.filter(date=d).count(), before
+            )
+
+    def test_does_not_freeze_today_or_future(self):
+        self._load_today()
+        self.assertFalse(ScheduleDay.objects.filter(date=self.today).exists())
+        self.assertFalse(ScheduleDay.objects.filter(date=self.tomorrow).exists())
+
+    def test_does_not_freeze_a_day_older_than_the_window(self):
+        old = self.today - timedelta(days=FREEZE_CATCHUP_DAYS + 1)   # just outside
+        # Loading today sweeps only the window, so the older day stays unfrozen...
+        self._load_today()
+        self.assertFalse(ScheduleDay.objects.filter(date=old).exists())
+        # ...but viewing it directly still freezes it (existing lazy-photo logic).
+        self.client.get(reverse("habits:plan"), {"date": old.isoformat()})
+        self.assertTrue(ScheduleDay.objects.filter(date=old).exists())
 
 
 class FreezePastDaysCommandTests(TestCase):

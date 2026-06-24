@@ -1,6 +1,6 @@
 import json
 from collections import defaultdict
-from datetime import time as dt_time
+from datetime import time as dt_time, timedelta
 
 from django.db import transaction
 from django.db.models import F, Max, Prefetch
@@ -18,6 +18,12 @@ from .models import Area, Routine, Habit, Plan, PlanDay, Schedule, ScheduleDay, 
 # no MISSED row to create and clients never POST it — log_habit only accepts the
 # three real HabitLog.Status values.
 MISSED_STATUS = "MISSED"
+
+# Photograph-on-open catch-up window. Every /plan/ load freezes the last N past
+# days that were lived but never opened, so a later plan edit can't rewrite them
+# (see freeze_day). This is the no-infra alternative to a nightly Railway sweep:
+# the user opens the app ~daily, so this catches yesterday-and-back.
+FREEZE_CATCHUP_DAYS = 7
 
 
 def index(request):
@@ -212,7 +218,24 @@ def plan(request):
 
     # Once a day is over, a still-pending habit counts as a miss. We derive that
     # in habit_payload rather than storing it (see MISSED_STATUS).
-    is_past_day = target_date < timezone.localdate()
+    today = timezone.localdate()
+    is_past_day = target_date < today
+
+    # Photograph-on-open catch-up: every plan load also freezes the last
+    # FREEZE_CATCHUP_DAYS days *before today* that aren't frozen yet, so a day the
+    # user lived but never opened still gets its permanent photo before a later plan
+    # edit can rewrite it (the no-cron alternative to a nightly sweep). One query for
+    # the already-frozen dates in the window, then idempotent freeze_day on the gaps.
+    # Never today or a future day — those aren't history yet.
+    window = [today - timedelta(days=n) for n in range(1, FREEZE_CATCHUP_DAYS + 1)]
+    already_frozen = set(
+        ScheduleDay.objects.filter(date__in=window)
+        .values_list("date", flat=True)
+        .distinct()
+    )
+    for d in window:
+        if d not in already_frozen:
+            freeze_day(d)
 
     # Lazy "photo on first view of a past day": looking back at history freezes it
     # as it was, so editing the recurring plan later can't rewrite it. Only PAST
