@@ -15,6 +15,10 @@ export type Plan = {
   // can't be reordered.
   id: number | null;
   time: string | null;
+  // The cycle's optional user-given name. "" (or absent) when unnamed — the
+  // block header then falls back to cycleLabel(). Only timed blocks can be
+  // named; the "Anytime" group (id == null) always reports "".
+  name?: string;
   habits: Habit[];
 };
 export type Habit = {

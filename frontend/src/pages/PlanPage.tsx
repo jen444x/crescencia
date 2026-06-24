@@ -1713,6 +1713,84 @@ function RetimeRuler({
   );
 }
 
+// The cycle's name, inline-editable. Shows `label` (the saved name, or the
+// cycleLabel fallback when unnamed) as a tappable title; tapping opens a small
+// text input that saves on Enter/blur and cancels on Escape. Carries
+// data-no-retime so a tap edits the name instead of starting the header's
+// retime drag. Only rendered for timed blocks. `name` is the raw saved value
+// ("" when unnamed) — what we seed the input with — while `label` is what we
+// show when not editing.
+function CycleNameControl({
+  name,
+  label,
+  onSave,
+}: {
+  name: string;
+  label: string;
+  onSave: (name: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Focus + select when the input opens so a rename overwrites cleanly.
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  function open() {
+    setDraft(name);
+    setEditing(true);
+  }
+
+  // Save only when the value actually changed (Enter/blur both land here), then
+  // close. The parent trims + persists.
+  function commit() {
+    setEditing(false);
+    if (draft.trim() !== name.trim()) onSave(draft);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        data-no-retime
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            setEditing(false);
+          }
+        }}
+        onBlur={commit}
+        placeholder="Name this cycle"
+        maxLength={100}
+        aria-label="Cycle name"
+        className="min-w-0 flex-1 rounded-lg border border-calm-200 bg-white px-2 py-0.5 text-xs font-medium text-calm-900 focus:border-calm-500 focus:outline-none"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      data-no-retime
+      onClick={open}
+      title="Name this cycle"
+      aria-label={name ? `Rename cycle "${name}"` : "Name this cycle"}
+      className="group inline-flex min-w-0 items-center gap-1 text-xs font-medium text-calm-600 transition-colors hover:text-calm-800"
+    >
+      <span className="truncate">{label}</span>
+      <span className="shrink-0 text-calm-300 transition-colors group-hover:text-calm-500">
+        <PencilIcon />
+      </span>
+    </button>
+  );
+}
+
 // The retime gesture for a WHOLE timed cycle. Grab the block by its header strip;
 // past a small threshold the ephemeral RetimeRuler takes over and the block's
 // position on it = its time, until you release. Grabbing the header (not the
@@ -3140,7 +3218,12 @@ function PlansPage() {
       setNewPlanIds((prev) => new Set(prev).add(data.id));
       setPlans((prev) => {
         if (prev.some((p) => p.id === data.id)) return prev; // reused an existing block
-        const block: Plan = { id: data.id, time: data.time, habits: [] };
+        const block: Plan = {
+          id: data.id,
+          time: data.time,
+          name: "",
+          habits: [],
+        };
         const timed = prev.filter((p) => p.id != null);
         const anytime = prev.filter((p) => p.id == null);
         const merged = [...timed, block].sort(
@@ -3392,6 +3475,36 @@ function PlansPage() {
     toast(`Moved to ${formatTime(time)}`, {
       action: { label: "Undo", onClick: () => postRetime(planId, previousTime) },
     });
+  }
+
+  // Name (or rename/clear) a timed cycle. Optimistic: drop the trimmed name into
+  // the block right away, then reconcile from the 200's saved name (the backend
+  // trims/echoes it). On failure, restore the snapshot and toast. Only timed
+  // blocks reach here — the "Anytime" group has no endpoint.
+  async function renamePlan(planId: number, name: string) {
+    const trimmed = name.trim();
+    const snapshot = plansRef.current;
+    setPlans((prev) =>
+      prev.map((p) => (p.id === planId ? { ...p, name: trimmed } : p)),
+    );
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/plans/${planId}/name/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: trimmed }),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      const data = await res.json(); // { id, name }
+      setPlans((prev) =>
+        prev.map((p) => (p.id === planId ? { ...p, name: data.name ?? "" } : p)),
+      );
+    } catch {
+      setPlans(snapshot);
+      toast("Couldn't rename that cycle", { variant: "error" });
+    }
   }
 
   // Reset a day's per-day adjustments (skips + running-late shifts) back to
@@ -3711,13 +3824,13 @@ function PlansPage() {
                 <RetimeBlock
                   planId={plan.id}
                   time={plan.time}
-                  blockLabel={cycleLabel(plan.habits, plan.time)}
+                  blockLabel={plan.name || cycleLabel(plan.habits, plan.time)}
                   otherBlocks={visiblePlans.flatMap((p) =>
                     p.id !== plan.id && p.time
                       ? [
                           {
                             min: timeToMinutes(p.time),
-                            name: cycleLabel(p.habits, p.time),
+                            name: p.name || cycleLabel(p.habits, p.time),
                           },
                         ]
                       : [],
@@ -3758,6 +3871,20 @@ function PlansPage() {
                           </span>
                         )}
                       </span>
+                      {/* The cycle's name (or the cycleLabel fallback when
+                          unnamed) — tap to name/rename. data-no-retime inside,
+                          so editing doesn't start the header's time-drag. */}
+                      {!collapsed && (
+                        <CycleNameControl
+                          name={plan.name ?? ""}
+                          label={
+                            plan.name
+                              ? plan.name
+                              : cycleLabel(plan.habits, plan.time)
+                          }
+                          onSave={(n) => renamePlan(plan.id!, n)}
+                        />
+                      )}
                       {isNow && (
                         <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
                           Now

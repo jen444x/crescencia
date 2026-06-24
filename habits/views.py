@@ -380,6 +380,7 @@ def plan(request):
         {
             "id": p.id,
             "time": time_by_plan.get(p.id, p.start_time),  # the day's time
+            "name": p.name,                                # the block's cycle name ("" if unnamed)
             "habits": by_plan.get(p.id, []),
         }
         for p in plan_rows
@@ -403,6 +404,7 @@ def plan(request):
     data = plan_groups + [{
         "id": None,
         "time": None,
+        "name": "",   # "Anytime" isn't a cycle, so it's never named
         "habits": anytime_habits,
     }]
 
@@ -1100,6 +1102,40 @@ def create_plan(request):
         {"id": plan.id, "time": new_time, "created": created},
         status=201 if created else 200,
     )
+
+
+@csrf_exempt
+@require_POST
+def name_plan(request, plan_id):
+    """Set or rename a time block (the "cycle"). Recurring, every day.
+
+    Body: {"name": "<str>"}. The name is trimmed; an empty string (after trim)
+    clears it, so the block goes back to looking unnamed. Naming is cosmetic — the
+    block is still keyed/grouped by its time — so this only writes Plan.name.
+    Returns {"id": plan_id, "name": <saved name>}.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    name = body.get("name")
+    if not isinstance(name, str):
+        return JsonResponse({"error": "'name' must be a string."}, status=400)
+    name = name.strip()
+    if len(name) > 100:
+        return JsonResponse(
+            {"error": "'name' must be at most 100 characters."}, status=400
+        )
+
+    try:
+        plan = Plan.objects.get(id=plan_id)
+    except Plan.DoesNotExist:
+        return JsonResponse({"error": f"Unknown plan id: {plan_id}."}, status=400)
+
+    plan.name = name
+    plan.save(update_fields=["name"])
+    return JsonResponse({"id": plan.id, "name": plan.name})
 
 
 @csrf_exempt

@@ -262,6 +262,82 @@ class RetimePlanTests(TestCase):
         self.assertEqual(self._retime(plan=self.mid.id).status_code, 400)  # missing time
 
 
+class NamePlanTests(TestCase):
+    """Name a time block (the "cycle"). Optional + cosmetic: an unnamed block
+    reads as "" and looks unchanged; naming it persists and shows in /plan/."""
+
+    def setUp(self):
+        self.plan = Plan.objects.create(start_time=time(8, 0))
+        self.url = reverse("habits:name_plan", args=[self.plan.id])
+
+    def _name(self, plan_id=None, **body):
+        url = reverse("habits:name_plan", args=[plan_id or self.plan.id])
+        return self.client.post(url, data=body, content_type="application/json")
+
+    def _block_name(self, plan_id):
+        """The name of one block from the /plan/ payload."""
+        groups = json.loads(self.client.get(reverse("habits:plan")).content)
+        return next(g["name"] for g in groups if g["id"] == plan_id)
+
+    def test_name_defaults_to_blank(self):
+        # A brand-new block has no name, in the DB and in /plan/.
+        self.assertEqual(self.plan.name, "")
+        self.assertEqual(self._block_name(self.plan.id), "")
+
+    def test_setting_a_name_persists_and_shows_in_plan(self):
+        response = self._name(name="Morning routine")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content),
+                         {"id": self.plan.id, "name": "Morning routine"})
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.name, "Morning routine")
+        self.assertEqual(self._block_name(self.plan.id), "Morning routine")
+
+    def test_empty_string_clears_the_name(self):
+        self._name(name="Morning routine")
+        response = self._name(name="")
+        self.assertEqual(response.status_code, 200)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.name, "")
+        self.assertEqual(self._block_name(self.plan.id), "")
+
+    def test_name_is_trimmed(self):
+        response = self._name(name="  Wind down  ")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content)["name"], "Wind down")
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.name, "Wind down")
+
+    def test_whitespace_only_clears_the_name(self):
+        self._name(name="Morning routine")
+        self._name(name="   ")   # trims to "" -> clears
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.name, "")
+
+    def test_rejects_bad_input(self):
+        self.assertEqual(self._name(name=123).status_code, 400)         # not a string
+        self.assertEqual(self._name(name=None).status_code, 400)        # missing/null
+        self.assertEqual(self._name().status_code, 400)                 # no 'name' key
+        self.assertEqual(self._name(name="x" * 101).status_code, 400)   # too long
+        # Exactly 100 chars is allowed.
+        self.assertEqual(self._name(name="x" * 100).status_code, 200)
+
+    def test_unknown_plan_id_errors(self):
+        self.assertEqual(self._name(plan_id=999999, name="Nope").status_code, 400)
+
+    def test_plan_shape_unchanged_plus_name(self):
+        # Every group still has the original keys, and now a "name" too. An
+        # unnamed block (and the trailing "Anytime" group) report "".
+        groups = json.loads(self.client.get(reverse("habits:plan")).content)
+        for g in groups:
+            self.assertEqual(
+                set(g.keys()), {"id", "time", "name", "habits"}
+            )
+        self.assertEqual(self._block_name(self.plan.id), "")  # unnamed -> ""
+        anytime = next(g for g in groups if g["id"] is None)
+        self.assertEqual(anytime["name"], "")                 # Anytime is never named
+
+
 class SkipDayTests(TestCase):
     """Skip every habit for a whole day in one tap (e.g. out of town), without
     erasing anything you'd already completed."""

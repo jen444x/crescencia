@@ -37,6 +37,7 @@ urlpatterns = [
     path("schedules/reorder/", views.reorder_schedules, name="reorder_schedules"),
     path("schedules/create/", views.create_schedule, name="create_schedule"),
     path("plans/create/", views.create_plan, name="create_plan"),
+    path("plans/<int:plan_id>/name/", views.name_plan, name="name_plan"),
     path("plans/shift/", views.shift_plans, name="shift_plans"),
     path("plans/retime/", views.retime_plan, name="retime_plan"),
     path("areas/", views.areas, name="areas"),

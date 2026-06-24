@@ -107,6 +107,10 @@ class Routine(models.Model):
 class Plan(models.Model):
     start_date = models.DateField(auto_now_add=True)
     start_time = models.TimeField(blank=True, null=True)
+    # Optional user-facing name for this time block (the "cycle"). Empty = unnamed,
+    # which renders exactly like today (the frontend falls back to its time label).
+    # Naming is purely cosmetic — the block is still keyed/grouped by its time.
+    name = models.CharField(max_length=100, blank=True, default="")
 
     class Meta:
         ordering = ['start_time']
