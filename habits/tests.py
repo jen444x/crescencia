@@ -1433,20 +1433,26 @@ class FreezeDayTests(TestCase):
         self.s_brush.refresh_from_db(); self.s_wash.refresh_from_db()
         self.assertEqual((self.s_brush.order, self.s_wash.order), (1, 2))
 
-    def test_arrange_on_unfrozen_future_day_freezes_then_applies(self):
-        # Tomorrow isn't frozen; arranging it with TEMPLATE ids freezes first,
-        # translates the ids through the freeze map, then applies.
+    def test_arrange_on_future_day_overrides_only_the_moved_habit(self):
+        # Only PAST days lock. Arranging a FUTURE day with a TEMPLATE id does NOT
+        # freeze the whole day: only the moved habit gets a per-day override, and
+        # every other habit keeps following the template (no whole-day snapshot).
         self.assertFalse(ScheduleDay.objects.filter(date=self.tomorrow).exists())
         resp = self._arrange(
             date=self.tomorrow.isoformat(),
             items=[{"id": self.s_brush.id, "order": 5}],   # template id
         )
         self.assertEqual(resp.status_code, 200)
+        # ONE override row (brush only) — wash is untouched, still template-driven.
         self.assertEqual(
-            ScheduleDay.objects.filter(date=self.tomorrow).count(), 2  # full freeze
+            ScheduleDay.objects.filter(date=self.tomorrow).count(), 1
         )
         sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
         self.assertEqual(sd_brush.order, 5)
+        self.assertEqual(sd_brush.plan_id, self.plan.id)     # seeded from template block
+        self.assertFalse(
+            ScheduleDay.objects.filter(date=self.tomorrow, habit=self.wash).exists()
+        )
         self.s_brush.refresh_from_db()
         self.assertEqual(self.s_brush.order, 1)              # template untouched
 
@@ -1493,6 +1499,77 @@ class FreezeDayTests(TestCase):
         self.assertEqual(sd.order, 3)                         # appends after brush(1)+wash(2)
         # No Schedule (template) row was created — placement is per-day only.
         self.assertFalse(Schedule.objects.filter(habit=solo).exists())
+
+    # --- only PAST days lock: a just-today edit doesn't lock the rest ----------
+
+    def test_just_today_edit_on_today_does_not_lock_the_rest(self):
+        # Moving ONE habit "just today" on TODAY creates an override for that habit
+        # only — the day is NOT whole-day frozen, so every other habit keeps
+        # following the template.
+        rows = self._rows(self.client.get(reverse("habits:plan")))
+        other = Plan.objects.create(start_time=time(18, 0))
+        resp = self._arrange(
+            date=self.today.isoformat(),
+            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id}],  # template id
+        )
+        self.assertEqual(resp.status_code, 200)
+        # Exactly ONE override row (brush); wash has none -> still template-driven.
+        self.assertEqual(ScheduleDay.objects.filter(date=self.today).count(), 1)
+        self.assertTrue(
+            ScheduleDay.objects.filter(date=self.today, habit=self.brush).exists()
+        )
+        self.assertFalse(
+            ScheduleDay.objects.filter(date=self.today, habit=self.wash).exists()
+        )
+        # /plan/ reflects: brush moved, wash unchanged, both still shown.
+        groups = json.loads(self.client.get(reverse("habits:plan")).content)
+        block_of = {h["id"]: g["id"] for g in groups for h in g["habits"]}
+        self.assertEqual(block_of[self.brush.id], other.id)
+        self.assertEqual(block_of[self.wash.id], self.plan.id)
+        # Template untouched.
+        self.s_brush.refresh_from_db()
+        self.assertEqual(self.s_brush.plan_id, self.plan.id)
+
+    def test_just_today_edit_on_today_does_not_freeze_tomorrow(self):
+        # A just-today edit on TODAY must leave TOMORROW following the template
+        # (no whole-day snapshot leaks forward).
+        other = Plan.objects.create(start_time=time(18, 0))
+        self._arrange(
+            date=self.today.isoformat(),
+            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id}],
+        )
+        self.assertFalse(ScheduleDay.objects.filter(date=self.tomorrow).exists())
+        groups = json.loads(self._plan(self.tomorrow).content)
+        block_of = {h["id"]: g["id"] for g in groups for h in g["habits"]}
+        self.assertEqual(block_of[self.brush.id], self.plan.id)   # tomorrow unchanged
+
+    def test_just_today_tweak_wins_over_a_forward_change_on_today(self):
+        # Precedence (like PlanDay > PlanTime): a per-day "just today" tweak to a
+        # habit on TODAY wins over a "going forward" change to that SAME habit for
+        # today. First the forward change, then the just-today tweak.
+        fwd = Plan.objects.create(start_time=time(12, 0))
+        just = Plan.objects.create(start_time=time(18, 0))
+        # Forward change: brush -> fwd block from today on (template generation).
+        Schedule.objects.create(
+            habit=self.brush, plan=fwd, order=1, valid_from=self.today
+        )
+        # Now a just-today tweak moves brush to the `just` block (its row_id is the
+        # forward Schedule id /plan/ now emits for the slot).
+        rows = self._rows(self.client.get(reverse("habits:plan")))
+        brush_rid = next(rid for rid, h in rows.items() if h["id"] == self.brush.id)
+        resp = self._arrange(
+            date=self.today.isoformat(),
+            items=[{"id": brush_rid, "order": 1, "plan": just.id}],
+        )
+        self.assertEqual(resp.status_code, 200)
+        # TODAY: the just-today tweak wins -> brush sits in `just`, not `fwd`.
+        groups = json.loads(self.client.get(reverse("habits:plan")).content)
+        block_of = {h["id"]: g["id"] for g in groups for h in g["habits"]}
+        self.assertEqual(block_of[self.brush.id], just.id)
+        # TOMORROW: no just-today override there -> follows the forward change.
+        groups_t = json.loads(self._plan(self.tomorrow).content)
+        block_of_t = {h["id"]: g["id"] for g in groups_t for h in g["habits"]}
+        self.assertEqual(block_of_t[self.brush.id], fwd.id)
 
     def _anytime_ids(self, response):
         """Habit ids in the trailing "Anytime" (id=None) group of a /plan/ payload."""

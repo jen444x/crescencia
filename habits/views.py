@@ -1050,11 +1050,29 @@ def arrange_day(request):
     `routine` / `tier` / `plan` are only changed when their key is present (null
     clears the tag); `tier` takes a level 1/2/3 or null.
 
-    Freezing: editing a day freezes it first. We snapshot whether the day was
-    already frozen, then call freeze_day (idempotent). On a NOT-yet-frozen day the
-    `id`s the client holds are template Schedule ids (that's what /plan/ emitted),
-    so we translate them through the freeze map to the ScheduleDay rows we just
-    created; on an already-frozen day they're ScheduleDay ids already.
+    Only PAST days lock. The write path forks on whether the edited day is in the
+    past:
+
+      * PAST day -> freeze the WHOLE day first (idempotent ScheduleDay snapshot),
+        then translate the client's template Schedule ids through the freeze map to
+        the ScheduleDay rows and apply the moves. A past day is real history, so it
+        reads all-or-nothing from its photo; editing it edits that photo. (Behavior
+        unchanged from before.)
+
+      * TODAY / FUTURE day -> NEVER freeze the whole day. Today and future always
+        follow the recurring template + "going forward" change; an edit here is a
+        per-habit "just today" tweak LAYERED ON TOP, so we create/update a
+        ScheduleDay OVERRIDE row ONLY for each habit actually moved/placed and leave
+        every other habit following the template. Moving one habit "just today" must
+        NOT lock the rest of the day. The override (the per-day layer) WINS over a
+        forward change for that habit on that date — same precedence as
+        PlanDay > PlanTime.
+
+    A move's `id` is the row's `row_id` from /plan/: on today/future that's the
+    ScheduleDay id if the slot already has an override for the date, else the
+    template Schedule id. We disambiguate by checking ScheduleDay-for-this-date
+    first (the exact reverse of what /plan/ emitted), then fall back to resolving a
+    Schedule id to its slot and upserting the override.
     """
     try:
         body = json.loads(request.body or b"{}")
@@ -1163,69 +1181,151 @@ def arrange_day(request):
     # Map tier level (1/2/3) -> Tier row id, for any items setting a slot's tier.
     tier_by_level = {t.level: t.id for t in Tier.objects.all()}
 
-    # A bad row id must NOT leave the day frozen (the freeze runs inside the same
-    # transaction). We signal it with this exception so the atomic block rolls the
-    # whole thing — freeze included — back, then turn it into a clean 400 outside.
+    # Only PAST days lock (freeze the whole day); today/future stay template-driven
+    # and an edit is a per-habit override layered on top.
+    today = timezone.localdate()
+    is_past_day = target_date < today
+
+    # A bad row id must NOT leave the day half-edited (or, on a past day, frozen).
+    # We signal it with this exception so the atomic block rolls the whole thing
+    # back, then turn it into a clean 400 outside.
     class _BadRowId(Exception):
         def __init__(self, row_id):
             self.row_id = row_id
 
     try:
         with transaction.atomic():
-            # Freeze the day if needed, then resolve each move's id to a
-            # ScheduleDay row. On a not-yet-frozen day the client's ids are
-            # template Schedule ids, so we translate them through the freeze map;
-            # on a frozen day they're already ScheduleDay ids.
-            was_frozen = ScheduleDay.objects.filter(date=target_date).exists()
-            freeze_map = freeze_day(target_date)   # {schedule_id: scheduleday_id}; {} if was_frozen
+            if is_past_day:
+                # PAST day: freeze the whole day (idempotent), then resolve each
+                # move's id to a ScheduleDay row. On a not-yet-frozen past day the
+                # client's ids are template Schedule ids, translated through the
+                # freeze map; on an already-frozen one they're ScheduleDay ids.
+                was_frozen = ScheduleDay.objects.filter(date=target_date).exists()
+                freeze_map = freeze_day(target_date)   # {schedule_id: scheduleday_id}; {} if frozen
 
-            resolved = []   # (ScheduleDay id, entry) pairs to apply
-            for e in moves:
-                sd_id = e["id"] if was_frozen else freeze_map.get(e["id"])
-                if sd_id is None:
-                    # A Schedule id that wasn't part of the freeze (e.g. a habit
-                    # that didn't exist on that day, so it has no row).
-                    raise _BadRowId(e["id"])
-                resolved.append((sd_id, e))
+                resolved = []   # (ScheduleDay id, entry) pairs to apply
+                for e in moves:
+                    sd_id = e["id"] if was_frozen else freeze_map.get(e["id"])
+                    if sd_id is None:
+                        # A Schedule id that wasn't part of the freeze (e.g. a habit
+                        # that didn't exist on that day, so it has no row).
+                        raise _BadRowId(e["id"])
+                    resolved.append((sd_id, e))
 
-            rows = ScheduleDay.objects.in_bulk([sd_id for sd_id, _ in resolved])
-            # A ScheduleDay id the client sent that doesn't exist (frozen-day case).
-            for sd_id, e in resolved:
-                if sd_id not in rows:
-                    raise _BadRowId(e["id"])
-            fields = {"order"}
-            for sd_id, e in resolved:
-                row = rows[sd_id]
-                row.order = e["order"]
-                if "routine" in e:
-                    row.routine_id = e["routine"]
-                    fields.add("routine")
-                if "plan" in e:
-                    row.plan_id = e["plan"]
-                    fields.add("plan")
-                if "tier" in e:
-                    row.tier_id = (
-                        tier_by_level.get(e["tier"]) if e["tier"] is not None else None
-                    )
-                    fields.add("tier")
-            if rows:
-                ScheduleDay.objects.bulk_update(rows.values(), list(fields))
+                rows = ScheduleDay.objects.in_bulk([sd_id for sd_id, _ in resolved])
+                # A ScheduleDay id the client sent that doesn't exist.
+                for sd_id, e in resolved:
+                    if sd_id not in rows:
+                        raise _BadRowId(e["id"])
+                fields = {"order"}
+                for sd_id, e in resolved:
+                    row = rows[sd_id]
+                    row.order = e["order"]
+                    if "routine" in e:
+                        row.routine_id = e["routine"]
+                        fields.add("routine")
+                    if "plan" in e:
+                        row.plan_id = e["plan"]
+                        fields.add("plan")
+                    if "tier" in e:
+                        row.tier_id = (
+                            tier_by_level.get(e["tier"]) if e["tier"] is not None else None
+                        )
+                        fields.add("tier")
+                if rows:
+                    ScheduleDay.objects.bulk_update(rows.values(), list(fields))
+                touched = list(rows.values())
+            else:
+                # TODAY / FUTURE: never freeze the whole day. Each move becomes a
+                # per-habit override (one ScheduleDay row for the moved slot only),
+                # so every untouched habit keeps following the template. The move's
+                # id is either an existing override (ScheduleDay-for-this-date) or a
+                # template Schedule id — disambiguate by checking the former first,
+                # exactly reversing what /plan/ emitted.
+                existing_overrides = ScheduleDay.objects.in_bulk(
+                    [e["id"] for e in moves], field_name="id"
+                )
+                existing_overrides = {
+                    sd_id: sd for sd_id, sd in existing_overrides.items()
+                    if sd.date == target_date
+                }
+                # Template Schedule rows for any ids that aren't existing overrides.
+                template_ids = [e["id"] for e in moves if e["id"] not in existing_overrides]
+                template_rows = Schedule.objects.in_bulk(template_ids) if template_ids else {}
+
+                touched = []
+                for e in moves:
+                    rid = e["id"]
+                    if rid in existing_overrides:
+                        # An override already exists for this slot/date: edit it.
+                        row = existing_overrides[rid]
+                    else:
+                        # A template Schedule id: seed a fresh per-day override from
+                        # the template slot (so an order-only move keeps the slot in
+                        # its template block), keyed on the slot's (habit, tier).
+                        sched = template_rows.get(rid)
+                        if sched is None:
+                            raise _BadRowId(rid)
+                        row, _ = ScheduleDay.objects.get_or_create(
+                            date=target_date,
+                            habit_id=sched.habit_id,
+                            tier_id=sched.tier_id,
+                            defaults={
+                                "habit_name": sched.habit.name,
+                                "plan_id": sched.plan_id,
+                                "routine_id": sched.routine_id,
+                                "order": sched.order,
+                            },
+                        )
+                    # Apply the move to this override row (the per-day layer).
+                    row.order = e["order"]
+                    if "routine" in e:
+                        row.routine_id = e["routine"]
+                    if "plan" in e:
+                        row.plan_id = e["plan"]
+                    if "tier" in e:
+                        row.tier_id = (
+                            tier_by_level.get(e["tier"]) if e["tier"] is not None else None
+                        )
+                    row.save()
+                    touched.append(row)
 
             # New per-day placements: a habit dragged from Anytime that has no row
             # this day. Create a ScheduleDay row for it (mirrors create_schedule's
-            # append logic, on the per-day layer), snapshotting habit_name.
+            # append logic, on the per-day layer), snapshotting habit_name. Same on
+            # past and today/future: a placement is always a per-day override.
             habit_names = dict(
                 Habit.objects.filter(id__in=habit_ids).values_list("id", "name")
             )
             created = []
+            # For appending on today/future, the block also shows TEMPLATE habits
+            # (no override yet), so "append to the bottom" must clear the highest
+            # EFFECTIVE order in that block — template Schedule rows in effect for
+            # this date PLUS any ScheduleDay overrides — not just the override rows.
+            # On a past (frozen) day the day reads all-or-nothing from ScheduleDay,
+            # so only those rows count (template_max stays empty).
+            template_max_by_plan = {}
+            if not is_past_day:
+                for s in _effective_schedules(target_date):
+                    # The slot's effective placement is its override if one exists.
+                    # We only need a ceiling, so the template order is a safe lower
+                    # bound even when an override moved the slot elsewhere.
+                    if s.plan_id is not None and s.order is not None:
+                        cur = template_max_by_plan.get(s.plan_id)
+                        if cur is None or s.order > cur:
+                            template_max_by_plan[s.plan_id] = s.order
             for e in places:
                 order = e["order"]
                 if order is None:
-                    # Append: one past this block's current highest order that day.
-                    highest = ScheduleDay.objects.filter(
+                    # Append: one past this block's current highest order that day,
+                    # across overrides and (today/future) the template.
+                    highest_sd = ScheduleDay.objects.filter(
                         date=target_date, plan_id=e["plan"]
                     ).aggregate(m=Max("order"))["m"]
-                    order = (highest or 0) + 1
+                    highest = max(
+                        highest_sd or 0, template_max_by_plan.get(e["plan"], 0)
+                    )
+                    order = highest + 1
                 sd = ScheduleDay.objects.create(
                     date=target_date,
                     habit_id=e["habit"],
@@ -1239,11 +1339,13 @@ def arrange_day(request):
             {"error": f"Unknown row id for this day: {bad.row_id}."}, status=400
         )
 
-    # Return the day's updated arrangement (touched rows), like reorder_schedules.
-    touched = list(rows.values()) + created
+    # Return the day's updated arrangement (touched + created rows), like
+    # reorder_schedules. `touched` is set in both branches above (moved/edited
+    # override rows); `created` is the new per-day placements.
+    all_rows = touched + created
     updated = [
         {"id": sd.id, "order": sd.order, "plan": sd.plan_id, "routine": sd.routine_id}
-        for sd in sorted(touched, key=lambda sd: (sd.order is None, sd.order or 0, sd.id))
+        for sd in sorted(all_rows, key=lambda sd: (sd.order is None, sd.order or 0, sd.id))
     ]
     return JsonResponse({"date": target_date, "updated": updated})
 
