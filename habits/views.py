@@ -339,10 +339,16 @@ def plan(request):
     if is_past_day and not ScheduleDay.objects.filter(date=target_date).exists():
         freeze_day(target_date)
 
-    # A day is "frozen" iff it has ScheduleDay rows: its arrangement was snapshotted
-    # so it reads from that copy, not the live template (which would let a later
-    # plan edit rewrite the past). No rows = project the template, as before.
-    is_frozen = ScheduleDay.objects.filter(date=target_date).exists()
+    # A day is "frozen" — read all-or-nothing from its ScheduleDay photo — ONLY when
+    # it is in the PAST and has that photo. Past history must stay immutable: a later
+    # plan edit can't rewrite a day already lived. TODAY and FUTURE days are NEVER
+    # frozen for reads: they always follow the recurring template + any "going
+    # forward" change, with any per-habit "just today" tweak LAYERED ON TOP per slot
+    # (see the not-frozen path below) — exactly how time already layers PlanDay over
+    # PlanTime over Plan.start_time. (A whole-day ScheduleDay snapshot may still exist
+    # for today/future from an older freeze, but it is now treated as per-slot
+    # overrides, not an all-or-nothing read.)
+    is_frozen = is_past_day and ScheduleDay.objects.filter(date=target_date).exists()
 
     # That day's logs, grouped per habit into per-version buckets (logs are keyed
     # per VERSION now — see _day_logs / _version_status). Habits with no log
@@ -454,35 +460,79 @@ def plan(request):
                 )
             )
     else:
-        # One query for the plans + their schedules + habits, with schedules sorted
-        # by their saved position so /plan/ reflects reordering. Habits with no
-        # explicit order (nulls) go last; id breaks ties so the list is stable.
+        # TODAY / FUTURE (never frozen): project the recurring template + any
+        # "going forward" change (_effective_schedules), then OVERLAY each habit's
+        # per-day "just today" tweak (its ScheduleDay row for this exact date) ON
+        # TOP, per logical slot. This is the placement twin of how time layers
+        # PlanDay > PlanTime > Plan.start_time: a slot with a ScheduleDay override
+        # for this date uses that override's cycle/order; EVERY other slot keeps
+        # following the template/forward arrangement. A one-habit "just today" move
+        # therefore never locks the rest of the day.
+        #
+        # The slot key is (habit_id, tier_id) — the same key _effective_schedules,
+        # ScheduleDay and HabitLog all version on. We merge by slot:
+        #   - template slot with NO override -> the Schedule row (row_id = its id)
+        #   - template slot WITH an override -> the ScheduleDay row (row_id = its id)
+        #   - override slot NOT in the template (e.g. an Anytime habit dropped in
+        #     "just today", which has no Schedule row) -> the ScheduleDay row
+        # A ScheduleDay override may also move a slot to Anytime (plan=None); that's
+        # carried through naturally as plan_id=None below.
         #
         # Only habits that already existed on the viewed day are shown: a habit you
-        # add today shouldn't appear when you scroll back to last week, since it
-        # didn't exist then. (For today/future days this filter matches everything,
-        # so it's a no-op there.)
-        # _effective_schedules drops older generations per slot (one row per
-        # (habit, tier) — the row with the greatest valid_from <= target_date), so
-        # a habit moved "from D forward" shows in its NEW cycle from D and never
-        # twice. order_by mirrors the old query: saved position first (nulls last),
-        # id breaks ties for a stable list.
+        # add today shouldn't appear when you scroll back. (For today/future this is
+        # a no-op.) _effective_schedules drops older generations per slot so a habit
+        # moved "from D forward" shows in its NEW cycle from D and never twice.
         effective = _effective_schedules(target_date)
-        ordered_schedules = sorted(
-            effective,
-            key=lambda s: (s.order is None, s.order or 0, s.id),
-        )
-        for schedule in ordered_schedules:
-            # Each Schedule row carries its own habit, block, and order, so we
-            # just emit each one. The frontend groups them by time block.
-            by_plan[schedule.plan_id].append(
+        overrides = {
+            (sd.habit_id, sd.tier_id): sd
+            for sd in (ScheduleDay.objects.filter(date=target_date)
+                       .select_related("habit", "routine", "tier"))
+            if sd.habit_id is not None
+        }
+
+        # Build the merged placement list. Each entry is a small uniform record so
+        # the same sort/emit handles a template row and an override row. `kind`
+        # marks which so we key row_id correctly (Schedule id vs ScheduleDay id).
+        merged = []
+        for schedule in effective:
+            slot = (schedule.habit_id, schedule.tier_id)
+            if slot in overrides:
+                continue   # the per-day override below replaces this template slot
+            merged.append({
+                "habit": schedule.habit,
+                "plan_id": schedule.plan_id,
+                "routine_id": schedule.routine_id,
+                "routine_name": schedule.routine.name if schedule.routine_id else None,
+                "order": schedule.order,
+                "tier": schedule.tier,
+                "row_id": schedule.id,        # template slot -> Schedule id
+                "schedule_id": schedule.id,
+            })
+        for sd in overrides.values():
+            merged.append({
+                "habit": sd.habit,
+                "plan_id": sd.plan_id,
+                "routine_id": sd.routine_id,
+                "routine_name": sd.routine.name if sd.routine_id else None,
+                "order": sd.order,
+                "tier": sd.tier,
+                "row_id": sd.id,              # overridden slot -> ScheduleDay id
+                "schedule_id": None,          # this slot reads from its per-day row
+            })
+
+        # Saved position first (nulls last), id breaks ties for a stable list —
+        # mirrors the frozen/template orderings.
+        merged.sort(key=lambda m: (m["order"] is None, m["order"] or 0, m["row_id"]))
+        for m in merged:
+            by_plan[m["plan_id"]].append(
                 habit_payload(
-                    schedule.habit,
-                    schedule_id=schedule.id,
-                    routine=schedule.routine_id,
-                    routine_name=schedule.routine.name if schedule.routine_id else None,
-                    order=schedule.order,
-                    tier=schedule.tier,   # this slot's tier (None = untiered slot)
+                    m["habit"],
+                    schedule_id=m["schedule_id"],
+                    row_id=m["row_id"],
+                    routine=m["routine_id"],
+                    routine_name=m["routine_name"],
+                    order=m["order"],
+                    tier=m["tier"],   # this slot's tier (None = untiered slot)
                 )
             )
 
@@ -541,12 +591,15 @@ def plan(request):
         ]
     else:
         # Two sources, both legitimately "Anytime" on a not-frozen day:
-        #   - rows whose effective generation has plan=None (a habit explicitly
-        #     placed at Anytime, e.g. via a forward-write) — already in by_plan[None]
-        #   - habits with NO effective Schedule row at all for this date
-        # `placed_ids` is every habit with an effective row, so the second query
-        # excludes those (whichever cycle, incl. Anytime) and won't double-list.
-        placed_ids = {s.habit_id for s in effective}
+        #   - merged rows whose effective placement has plan=None (a habit placed at
+        #     Anytime via a forward-write OR moved there "just today" by an override)
+        #     — already in by_plan[None]
+        #   - habits with NO effective placement at all for this date (no template
+        #     Schedule row AND no per-day override row)
+        # `placed_ids` is every habit that appears in `merged` (template or override),
+        # so the second query excludes those (whichever cycle, incl. Anytime) and
+        # won't double-list one already shown.
+        placed_ids = {m["habit"].id for m in merged}
         unscheduled = Habit.objects.filter(
             date_added__date__lte=target_date
         ).exclude(id__in=placed_ids)

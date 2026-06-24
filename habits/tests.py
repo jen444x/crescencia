@@ -1334,6 +1334,87 @@ class FreezeDayTests(TestCase):
         brush_row = next(h for h in after.values() if h["id"] == self.brush.id)
         self.assertEqual(brush_row["order"], 1)
 
+    # --- only PAST days lock: today/future follow the template ----------------
+
+    def test_today_is_not_frozen_all_or_nothing_with_scheduleday_rows(self):
+        # A leftover whole-day ScheduleDay snapshot on TODAY (e.g. from an old
+        # freeze) must NOT make today read all-or-nothing from the photo. Today is
+        # never "frozen" for reads, so a slot WITHOUT a per-day tweak still follows
+        # the template/forward change; only the exact overridden slot keeps its
+        # override (per-slot precedence, like PlanDay over PlanTime). This is why
+        # STEP 3 clears a stale whole-day snapshot — but the read must already be
+        # per-slot, not all-or-nothing.
+        freeze_day(self.today)                       # leftover whole-day snapshot
+        self.assertTrue(ScheduleDay.objects.filter(date=self.today).exists())
+
+        # Forward change to WASH (which has an override -> override wins, snapshot
+        # block) and a forward change is reflected for any slot that lacks one. Drop
+        # the brush override so brush follows the template again, then move brush.
+        ScheduleDay.objects.filter(date=self.today, habit=self.brush).delete()
+        other = Plan.objects.create(start_time=time(18, 0))
+        Schedule.objects.filter(id=self.s_brush.id).update(plan=other)
+
+        groups = json.loads(self.client.get(reverse("habits:plan")).content)
+        block_of = {h["id"]: g["id"] for g in groups for h in g["habits"]}
+        # Brush has no override now -> follows the forward template change.
+        self.assertEqual(block_of[self.brush.id], other.id)
+        # Wash still has its snapshot override -> stays in the original block.
+        self.assertEqual(block_of[self.wash.id], self.plan.id)
+
+    def test_forward_change_shows_on_today_and_future_without_a_freeze(self):
+        # No whole-day freeze anywhere. A forward placement change must show on
+        # today AND a future day, following the template.
+        self.assertFalse(ScheduleDay.objects.filter(date=self.today).exists())
+        other = Plan.objects.create(start_time=time(18, 0))
+        Schedule.objects.filter(id=self.s_brush.id).update(plan=other)
+
+        for date in (self.today, self.tomorrow):
+            resp = (self.client.get(reverse("habits:plan")) if date == self.today
+                    else self._plan(date))
+            groups = json.loads(resp.content)
+            block_of_brush = next(
+                g["id"] for g in groups
+                for h in g["habits"] if h["id"] == self.brush.id
+            )
+            self.assertEqual(block_of_brush, other.id, f"forward change missing on {date}")
+        # No day got frozen by merely reading today/future.
+        self.assertFalse(ScheduleDay.objects.filter(date=self.today).exists())
+        self.assertFalse(ScheduleDay.objects.filter(date=self.tomorrow).exists())
+
+    def test_just_today_override_layers_over_template_per_habit(self):
+        # A single-habit ScheduleDay override for TODAY layers on top: that habit
+        # uses the override's block, every OTHER habit keeps following the template.
+        other = Plan.objects.create(start_time=time(18, 0))
+        ScheduleDay.objects.create(
+            date=self.today, habit=self.brush, habit_name="Brush teeth",
+            plan=other, order=1,
+        )
+        groups = json.loads(self.client.get(reverse("habits:plan")).content)
+        block_of = {
+            h["id"]: g["id"] for g in groups for h in g["habits"]
+        }
+        self.assertEqual(block_of[self.brush.id], other.id)   # override wins
+        self.assertEqual(block_of[self.wash.id], self.plan.id)  # sibling unchanged
+        # The overridden row is keyed on its ScheduleDay id, the sibling on Schedule.
+        rows = self._rows(self.client.get(reverse("habits:plan")))
+        sd = ScheduleDay.objects.get(date=self.today, habit=self.brush)
+        self.assertIn(sd.id, rows)
+        self.assertEqual(rows[sd.id]["schedule_id"], None)
+        self.assertIn(self.s_wash.id, rows)
+
+    def test_past_frozen_day_unchanged_by_overlay_change(self):
+        # A PAST frozen day stays byte-identical (history preserved) even when a
+        # forward template change lands.
+        self._plan(self.yesterday)                   # freeze yesterday
+        before = self._rows(self._plan(self.yesterday))
+        other = Plan.objects.create(start_time=time(18, 0))
+        Schedule.objects.filter(id=self.s_brush.id).update(plan=other)
+        after = self._rows(self._plan(self.yesterday))
+        self.assertEqual(
+            {rid: (h["id"], h["order"]) for rid, h in before.items()},
+            {rid: (h["id"], h["order"]) for rid, h in after.items()},
+        )
+
     # --- /days/arrange/ ------------------------------------------------------
 
     def test_arrange_reorders_a_frozen_day_without_touching_template(self):
