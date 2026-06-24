@@ -52,6 +52,7 @@ import {
   slotPlacement,
 } from "./plan/tier";
 import PlanToolbar from "./plan/PlanToolbar";
+import { buildForwardItems } from "./plan/forward";
 
 // Read a habit's state, tolerating an older payload that only had done_today.
 function isDone(habit: Habit) {
@@ -1442,6 +1443,63 @@ function DateNav({
   );
 }
 
+// The "Apply to future days" switch, sitting just under the date header. OFF is
+// the quiet default (recording today); ON flips it into an unmistakable filled
+// state with an explicit caption, so the mode she's in is never ambiguous —
+// placement edits then write the recurring routine from today forward.
+function ApplyForwardToggle({
+  on,
+  onToggle,
+}: {
+  on: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      className={`mb-4 flex items-center justify-between gap-3 rounded-xl border px-3 py-2 transition-colors ${
+        on
+          ? "border-emerald-300 bg-emerald-50"
+          : "border-calm-200 bg-white"
+      }`}
+    >
+      <div className="flex flex-col">
+        <span
+          className={`text-sm font-medium ${
+            on ? "text-emerald-800" : "text-calm-700"
+          }`}
+        >
+          Apply to future days
+        </span>
+        <span
+          className={`text-[11px] ${
+            on ? "text-emerald-600" : "text-calm-400"
+          }`}
+        >
+          {on
+            ? "Editing your routine — every day from today"
+            : "Off — changes affect just today"}
+        </span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="Apply placement changes to future days"
+        onClick={onToggle}
+        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+          on ? "bg-emerald-500" : "bg-calm-300"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+            on ? "translate-x-[22px]" : "translate-x-0.5"
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
 // The ⏱ "running late" control on a time block. Pushing this cycle later moves
 // it AND everything after it that day (the backend cascades + clamps); it's a
 // per-day override, so the recurring routine is untouched. Deliberately separate
@@ -2626,6 +2684,28 @@ function PlansPage() {
   // Bump to force a re-fetch of the current day (e.g. after a "running late" shift).
   const [reloadToken, setReloadToken] = useState(0);
 
+  // "Apply to future days" — PLACEMENT scope. OFF by default and intentionally
+  // NOT persisted (every reload starts in record-today mode), so a forward edit
+  // is always a deliberate, visible choice. Only meaningful while viewing today:
+  // forward edits anchor to today, so the toggle hides on any other day. When on,
+  // a placement gesture writes the recurring routine from today forward (a dated
+  // Schedule generation) instead of just today's per-day layer.
+  const [applyToFuture, setApplyToFuture] = useState(false);
+  // Forward mode only applies on today; navigating to any other day drops you
+  // out of it (see the DateNav handlers below) so an edit can't anchor to the
+  // wrong day. The toggle itself is only rendered on today, so it can only turn
+  // on there — and `isViewingToday` is re-checked at every routing call site.
+  // Leaving today: go back to today and exit forward mode.
+  const leaveForwardMode = () => setApplyToFuture(false);
+
+  // The clarity gate (Jennifer's #1 rule: nothing silently permanent). When a
+  // forward placement is about to stick, we stash a one-line, placement-only
+  // summary + the action here and show a confirm dialog. null = nothing pending.
+  const [pendingForward, setPendingForward] = useState<{
+    summary: string;
+    run: () => void;
+  } | null>(null);
+
   // The habit order the viewed day loaded with — the target "Reset order"
   // returns to ("back to before" = how the day looked when you opened it).
   const [baselineOrder, setBaselineOrder] = useState<Plan[] | null>(null);
@@ -2979,6 +3059,59 @@ function PlansPage() {
     }
   }
 
+  // The toggle-ON placement writer. Sends the WHOLE affected cycle(s) — read off
+  // the OPTIMISTIC post-move state — to /schedules/arrange-forward/ as fresh
+  // 1..N items, anchored to today (from_date defaults to today; we send it
+  // explicitly for clarity). On success we re-fetch /plan/ so the day reflects
+  // the new generation (today is mirrored even when frozen). On failure we roll
+  // the optimistic state back. Placement only — never touches time/status.
+  async function persistForward(
+    optimisticPlans: Plan[],
+    affectedPlanIds: Array<number | null>,
+    snapshot: Plan[],
+  ): Promise<boolean> {
+    const items = buildForwardItems(optimisticPlans, affectedPlanIds);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/schedules/arrange-forward/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ from_date: toYMD(new Date()), items }),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      // The forward write re-projects today (and forward) — re-fetch so row_ids,
+      // ordering, and the mirrored-into-today copy all reconcile.
+      setReloadToken((token) => token + 1);
+      return true;
+    } catch {
+      setPlans(snapshot);
+      toast("Couldn't apply that change", { variant: "error" });
+      return false;
+    }
+  }
+
+  // Open the clarity gate for a forward placement: show a placement-only,
+  // one-line summary ("... — every day from today") and run the writer only on
+  // confirm. Cancel leaves everything untouched (nothing optimistic happened
+  // yet). This is the single funnel every toggle-ON gesture passes through.
+  function confirmForward(
+    summary: string,
+    optimistic: () => Plan[],
+    affectedPlanIds: Array<number | null>,
+  ) {
+    setPendingForward({
+      summary,
+      run: () => {
+        const snapshot = plansRef.current;
+        const next = optimistic();
+        setPlans(next);
+        void persistForward(next, affectedPlanIds, snapshot);
+      },
+    });
+  }
+
   // Persist a plan's habit order for the VIEWED DAY only (no toast). Optimistic,
   // with a snapshot we restore if the save fails. Shared by a drag and its Undo.
   // Writes the per-day layer via /days/arrange/ — never the recurring template.
@@ -3012,8 +3145,21 @@ function PlansPage() {
   // Drag entry point: remember the block's order *before* the move, apply it,
   // then offer a one-tap Undo (the app's standard toast pattern, same as retime)
   // that puts the habit back where it was.
+  //
+  // Forward mode (toggle on) instead routes the within-cycle reorder through the
+  // clarity gate and the recurring forward-writer — no optimistic move happens
+  // until she confirms.
   async function reorderPlan(planId: number, orderedHabits: Habit[]) {
     if (orderedHabits.length === 0) return;
+    if (applyToFuture) {
+      const cyclePlan = plans.find((p) => p.id === planId);
+      confirmForward(
+        `Reorder ${cycleLabel(cyclePlan?.habits ?? orderedHabits, cyclePlan?.time ?? null)} — every day from today`,
+        () => applyPlanOrder(plansRef.current, planId, orderedHabits),
+        [planId],
+      );
+      return;
+    }
     const previousHabits = plans.find((p) => p.id === planId)?.habits ?? [];
     await postReorder(planId, orderedHabits);
     if (previousHabits.length === 0) return;
@@ -3104,6 +3250,27 @@ function PlansPage() {
     const idx = at >= 0 ? at : origTo.length;
     const newTo = [...origTo.slice(0, idx), movedNew, ...origTo.slice(idx)];
 
+    // Forward mode: route the cross-cycle move through the clarity gate + the
+    // recurring forward-writer. Both cycles are re-sent fresh, since the source
+    // shrinks and the target grows. No optimistic move until she confirms.
+    if (applyToFuture) {
+      const fromId = fromPlan.id;
+      const toId = toPlan.id;
+      confirmForward(
+        `Move "${moved.name}" into ${cycleLabel(toPlan.habits, toPlan.time)} — every day from today`,
+        () =>
+          plansRef.current.map((p) =>
+            p.id === fromId
+              ? { ...p, habits: newFrom.map((h, i) => ({ ...h, order: i + 1 })) }
+              : p.id === toId
+                ? { ...p, habits: newTo.map((h, i) => ({ ...h, order: i + 1 })) }
+                : p,
+          ),
+        [fromId, toId],
+      );
+      return;
+    }
+
     setPlans((prev) =>
       prev.map((p) =>
         p.id === fromPlan.id
@@ -3163,23 +3330,41 @@ function PlansPage() {
   // the new row's row_id. Lands at the bottom (omit order = append).
   async function placeHabit(habitId: number, planId: number) {
     const snapshot = plansRef.current;
-    setPlans((prev) => {
-      const habit = prev
+    // The optimistic move: pull the habit out of Anytime and append it to the
+    // target cycle. Shared by both scopes (per-day below, forward via the gate).
+    const moveOut = (plans: Plan[]): Plan[] => {
+      const habit = plans
         .find((p) => p.id == null)
         ?.habits.find((h) => h.id === habitId);
-      if (!habit) return prev;
-      const placed: Habit = {
-        ...habit,
-        routine: null,
-      };
-      return prev.map((p) =>
+      if (!habit) return plans;
+      const placed: Habit = { ...habit, routine: null };
+      return plans.map((p) =>
         p.id == null
           ? { ...p, habits: p.habits.filter((h) => h.id !== habitId) }
           : p.id === planId
             ? { ...p, habits: [...p.habits, placed] }
             : p,
       );
-    });
+    };
+
+    // Forward mode: confirm, then send the WHOLE target cycle (the habit lands
+    // at the bottom) to the recurring forward-writer. Only the target cycle is
+    // re-sent — the Anytime group isn't a cycle, so we don't pin its members.
+    if (applyToFuture) {
+      const habit = snapshot
+        .find((p) => p.id == null)
+        ?.habits.find((h) => h.id === habitId);
+      const targetPlan = snapshot.find((p) => p.id === planId);
+      if (!habit || !targetPlan) return;
+      confirmForward(
+        `Move "${habit.name}" into ${cycleLabel(targetPlan.habits, targetPlan.time)} — every day from today`,
+        () => moveOut(plansRef.current),
+        [planId],
+      );
+      return;
+    }
+
+    setPlans(moveOut);
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/days/arrange/`, {
         method: "POST",
@@ -4033,10 +4218,26 @@ function PlansPage() {
             the title, so there's no separate hero taking up space. */}
         <DateNav
           date={viewedDate}
-          onPrev={() => setViewedDate((d) => addDays(d, -1))}
-          onNext={() => setViewedDate((d) => addDays(d, 1))}
+          onPrev={() => {
+            leaveForwardMode();
+            setViewedDate((d) => addDays(d, -1));
+          }}
+          onNext={() => {
+            leaveForwardMode();
+            setViewedDate((d) => addDays(d, 1));
+          }}
           onToday={() => setViewedDate(startOfDay(new Date()))}
         />
+        {/* "Apply to future days" — placement scope. Only on today (forward edits
+            anchor to today), off by default. When ON it's unmistakable (a filled
+            bar + an explicit caption) so she always knows she's editing the
+            recurring routine, not just recording today. */}
+        {isViewingToday && (
+          <ApplyForwardToggle
+            on={applyToFuture}
+            onToggle={() => setApplyToFuture((v) => !v)}
+          />
+        )}
         {/* Day-level controls: the tier picker, the main-only filter, and
             the rare actions (new routine / skip day / reset), grouped into one
             compact bar. See ./plan/PlanToolbar. */}
@@ -4125,6 +4326,25 @@ function PlansPage() {
         destructive
         onConfirm={confirmSkipDay}
         onCancel={() => setSkipDayOpen(false)}
+      />
+
+      {/* The clarity gate for a forward placement (Jennifer's #1 rule): show
+          exactly what's changing and the scope before it sticks. Placement only —
+          the summary never mentions time. */}
+      <ConfirmDialog
+        open={pendingForward != null}
+        title="Apply to future days?"
+        message={
+          pendingForward
+            ? `${pendingForward.summary}. This changes where the habit sits — not when your cycles run. Past days stay exactly as they were.`
+            : undefined
+        }
+        confirmLabel="Apply going forward"
+        onConfirm={() => {
+          pendingForward?.run();
+          setPendingForward(null);
+        }}
+        onCancel={() => setPendingForward(null)}
       />
     </>
   );
