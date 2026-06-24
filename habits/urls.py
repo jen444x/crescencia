@@ -39,6 +39,7 @@ urlpatterns = [
     path("plans/<int:plan_id>/name/", views.name_plan, name="name_plan"),
     path("plans/shift/", views.shift_plans, name="shift_plans"),
     path("plans/retime/", views.retime_plan, name="retime_plan"),
+    path("plans/retime-forward/", views.retime_forward, name="retime_forward"),
     path("areas/", views.areas, name="areas"),
     path("areas/<int:area_id>/", views.area, name="area"),
 ]

@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from .models import (
     Area, BASE_VALID_FROM, Habit, HabitLog, HabitTier, Note, Plan, PlanDay,
-    Routine, Schedule, ScheduleDay, Tier, TierValue,
+    PlanTime, Routine, Schedule, ScheduleDay, Tier, TierValue,
 )
 from .views import FREEZE_CATCHUP_DAYS, freeze_day
 
@@ -1994,3 +1994,255 @@ class ArrangeForwardTests(TestCase):
         self.assertEqual(read_sd_after.id, read_sd_before.id)
         self.assertEqual(read_sd_after.plan_id, read_sd_before.plan_id)
         self.assertEqual(read_sd_after.order, read_sd_before.order)
+
+
+class RetimeForwardTests(TestCase):
+    """apply-to-future Phase 3: /plans/retime-forward/ writes a dated `PlanTime`
+    row so a CYCLE'S TIME change sticks every day from a date forward, read via
+    the precedence frozen-PlanDay > PlanTime > Plan.start_time. Independent of
+    placement: it never touches Schedule/ScheduleDay, only the one cycle's time."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        self.tomorrow = self.today + timedelta(days=1)
+
+        # Three cycles. A couple of habits, backdated so they "existed" on past
+        # days (so the existed-by-then read filter doesn't hide them).
+        self.morning = Plan.objects.create(start_time=time(7, 0))
+        self.midday = Plan.objects.create(start_time=time(12, 0))
+        self.evening = Plan.objects.create(start_time=time(20, 0))
+        self.stretch = Habit.objects.create(name="Stretch")
+        self.read = Habit.objects.create(name="Read")
+        for h in (self.stretch, self.read):
+            Habit.objects.filter(id=h.id).update(
+                date_added=timezone.now() - timedelta(days=30)
+            )
+        # Stretch lives in Morning, Read in Midday (so each cycle has a habit and
+        # therefore renders / freezes a PlanDay).
+        Schedule.objects.create(habit=self.stretch, plan=self.morning, order=1)
+        Schedule.objects.create(habit=self.read, plan=self.midday, order=1)
+
+    def _forward(self, **body):
+        return self.client.post(
+            reverse("habits:retime_forward"),
+            data=json.dumps(body), content_type="application/json",
+        )
+
+    def _plan(self, date):
+        return self.client.get(reverse("habits:plan"), {"date": date.isoformat()})
+
+    def _time_of(self, response, plan_id):
+        """The effective time string a /plan/ response shows for a cycle, or None."""
+        for g in json.loads(response.content):
+            if g["id"] == plan_id:
+                return g["time"]
+        return None
+
+    def _placement(self, response):
+        out = {}
+        for g in json.loads(response.content):
+            for h in g["habits"]:
+                out.setdefault(h["id"], []).append(g["id"])
+        return out
+
+    # --- forward time shows on future days ----------------------------------
+
+    def test_forward_time_shows_on_unfrozen_future_day(self):
+        # Move Morning to 08:00 from today forward.
+        resp = self._forward(plan=self.morning.id, time="08:00")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.content)["from_date"], self.today.isoformat())
+
+        # Tomorrow (not frozen): reads the new time via PlanTime.
+        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+                         "08:00:00")
+        # Exactly one PlanTime row, for this cycle, at today.
+        rows = PlanTime.objects.filter(plan=self.morning)
+        self.assertEqual(rows.count(), 1)
+        self.assertEqual(rows.first().valid_from, self.today)
+        self.assertEqual(rows.first().start_time, time(8, 0))
+
+    def test_past_day_unchanged(self):
+        self._forward(plan=self.morning.id, time="08:00")
+        # Yesterday: still the recurring 07:00 (PlanTime.valid_from=today doesn't
+        # reach back; a frozen past day keeps its own locked time).
+        self.assertEqual(self._time_of(self._plan(self.yesterday), self.morning.id),
+                         "07:00:00")
+
+    # --- per-cycle only ------------------------------------------------------
+
+    def test_only_the_named_cycle_moves(self):
+        self._forward(plan=self.morning.id, time="08:00")
+        groups = self._plan(self.tomorrow)
+        # The other two cycles keep their recurring times.
+        self.assertEqual(self._time_of(groups, self.midday.id), "12:00:00")
+        self.assertEqual(self._time_of(groups, self.evening.id), "20:00:00")
+        # And no PlanTime row was written for them.
+        self.assertFalse(PlanTime.objects.filter(plan=self.midday).exists())
+        self.assertFalse(PlanTime.objects.filter(plan=self.evening).exists())
+
+    # --- placement untouched (independence) ---------------------------------
+
+    def test_placement_untouched(self):
+        sched_before = {
+            (s.habit_id, s.plan_id, s.valid_from)
+            for s in Schedule.objects.all()
+        }
+        sd_before = ScheduleDay.objects.count()
+        self._forward(plan=self.morning.id, time="08:00")
+        sched_after = {
+            (s.habit_id, s.plan_id, s.valid_from)
+            for s in Schedule.objects.all()
+        }
+        self.assertEqual(sched_before, sched_after)   # no Schedule generation
+        self.assertEqual(ScheduleDay.objects.count(), sd_before)  # no ScheduleDay write
+        # The habits still sit where they were on a forward day.
+        future = self._placement(self._plan(self.tomorrow))
+        self.assertEqual(future[self.stretch.id], [self.morning.id])
+        self.assertEqual(future[self.read.id], [self.midday.id])
+
+    # --- frozen today is reflected ------------------------------------------
+
+    def test_frozen_today_is_mirrored(self):
+        freeze_day(self.today)   # today now reads its PlanDay-locked times
+        self.assertTrue(ScheduleDay.objects.filter(date=self.today).exists())
+
+        self._forward(plan=self.morning.id, time="08:00")
+
+        # Today shows the new time (via the PlanDay mirror, since a frozen day
+        # ignores PlanTime).
+        self.assertEqual(self._time_of(self._plan(self.today), self.morning.id),
+                         "08:00:00")
+        pd = PlanDay.objects.get(plan=self.morning, date=self.today)
+        self.assertEqual(pd.start_time, time(8, 0))
+        # Tomorrow (still not frozen) shows it via PlanTime.
+        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+                         "08:00:00")
+
+    def test_frozen_today_mirror_touches_only_the_named_cycle(self):
+        freeze_day(self.today)
+        midday_pd_before = PlanDay.objects.get(plan=self.midday, date=self.today)
+
+        self._forward(plan=self.morning.id, time="08:00")
+
+        # The OTHER cycle's locked time for today is byte-for-byte unchanged.
+        midday_pd_after = PlanDay.objects.get(plan=self.midday, date=self.today)
+        self.assertEqual(midday_pd_after.id, midday_pd_before.id)
+        self.assertEqual(midday_pd_after.start_time, midday_pd_before.start_time)
+        self.assertEqual(self._time_of(self._plan(self.today), self.midday.id),
+                         "12:00:00")
+
+    def test_non_frozen_today_needs_no_mirror(self):
+        # Today is NOT frozen, so it reads PlanTime directly — no PlanDay written.
+        self._forward(plan=self.morning.id, time="08:00")
+        self.assertFalse(
+            PlanDay.objects.filter(plan=self.morning, date=self.today).exists()
+        )
+        self.assertEqual(self._time_of(self._plan(self.today), self.morning.id),
+                         "08:00:00")
+
+    def test_frozen_future_day_keeps_its_own_time(self):
+        # A deliberately pre-edited (frozen) FUTURE day keeps its locked time (D3).
+        freeze_day(self.tomorrow)   # locks Morning at its recurring 07:00 for tomorrow
+        self._forward(plan=self.morning.id, time="08:00")
+        # Tomorrow still 07:00 (frozen PlanDay wins over the PlanTime).
+        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+                         "07:00:00")
+        # The day AFTER tomorrow (not frozen) does get the new time.
+        day_after = self.tomorrow + timedelta(days=1)
+        self.assertEqual(self._time_of(self._plan(day_after), self.morning.id),
+                         "08:00:00")
+
+    # --- precedence ----------------------------------------------------------
+
+    def test_planday_beats_plantime_on_a_frozen_day(self):
+        # PlanTime moves Morning to 08:00 forward...
+        self._forward(plan=self.morning.id, time="08:00")
+        # ...but tomorrow gets a per-day PlanDay shift to 09:30 (e.g. running late),
+        # then is frozen with that time.
+        PlanDay.objects.create(plan=self.morning, date=self.tomorrow,
+                               start_time=time(9, 30))
+        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+                         "09:30:00")   # PlanDay wins for that date
+
+    def test_latest_plantime_wins(self):
+        # Two forward retimes; the later valid_from should win going forward.
+        PlanTime.objects.create(plan=self.morning, valid_from=self.yesterday,
+                                start_time=time(6, 30))
+        self._forward(plan=self.morning.id, time="08:00")  # valid_from=today
+        # Yesterday reads the 06:30 generation; tomorrow the 08:00 one.
+        self.assertEqual(self._time_of(self._plan(self.yesterday), self.morning.id),
+                         "06:30:00")
+        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+                         "08:00:00")
+
+    # --- idempotency ---------------------------------------------------------
+
+    def test_idempotent_repeat_updates_not_duplicates(self):
+        self._forward(plan=self.morning.id, time="08:00")
+        self._forward(plan=self.morning.id, time="09:15")   # same slot again
+        rows = PlanTime.objects.filter(plan=self.morning, valid_from=self.today)
+        self.assertEqual(rows.count(), 1)                   # updated, not a 2nd row
+        self.assertEqual(rows.first().start_time, time(9, 15))
+
+    # --- defaults / validation ----------------------------------------------
+
+    def test_from_date_defaults_to_today(self):
+        self._forward(plan=self.morning.id, time="08:00")
+        self.assertTrue(
+            PlanTime.objects.filter(plan=self.morning, valid_from=self.today).exists()
+        )
+
+    def test_honors_explicit_from_date(self):
+        future = self.today + timedelta(days=5)
+        resp = self._forward(plan=self.morning.id, time="08:00",
+                             from_date=future.isoformat())
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(
+            PlanTime.objects.filter(plan=self.morning, valid_from=future).exists()
+        )
+        # Tomorrow (before the from_date) is still the recurring time.
+        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+                         "07:00:00")
+
+    def test_rejects_bad_input(self):
+        self.assertEqual(self._forward(plan=999999, time="08:00").status_code, 400)
+        self.assertEqual(self._forward(plan=self.morning.id, time="nope").status_code, 400)
+        self.assertEqual(self._forward(plan=self.morning.id, time="25:00").status_code, 400)
+        self.assertEqual(self._forward(time="08:00").status_code, 400)  # missing plan
+        self.assertEqual(self._forward(plan=self.morning.id).status_code, 400)  # missing time
+        self.assertEqual(
+            self._forward(plan=self.morning.id, time="08:00",
+                          from_date="not-a-date").status_code,
+            400,
+        )
+
+    # --- zero-PlanTime behavior unchanged -----------------------------------
+
+    def test_zero_plantime_reads_recurring_time(self):
+        # With no PlanTime rows at all, every day reads the plain recurring time —
+        # identical to pre-Phase-3 behavior.
+        self.assertFalse(PlanTime.objects.exists())
+        for d in (self.yesterday, self.today, self.tomorrow):
+            self.assertEqual(self._time_of(self._plan(d), self.morning.id), "07:00:00")
+            self.assertEqual(self._time_of(self._plan(d), self.midday.id), "12:00:00")
+
+    # --- OFF path (per-day retime) still per-day ----------------------------
+
+    def test_off_path_retime_is_today_only(self):
+        # The toggle-OFF gesture hits /plans/retime/ and must stay per-day: write a
+        # PlanDay, never a PlanTime, and never reach tomorrow.
+        resp = self.client.post(
+            reverse("habits:retime_plan"),
+            data=json.dumps({"plan": self.morning.id, "time": "08:00"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(PlanTime.objects.exists())   # no recurring write
+        self.assertTrue(
+            PlanDay.objects.filter(plan=self.morning, date=self.today).exists()
+        )
+        # Tomorrow is back to the recurring time (per-day only).
+        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+                         "07:00:00")

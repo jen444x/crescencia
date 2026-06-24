@@ -1471,8 +1471,9 @@ function DateNav({
 
 // The "Apply to future days" switch, sitting just under the date header. OFF is
 // the quiet default (recording today); ON flips it into an unmistakable filled
-// state with an explicit caption, so the mode she's in is never ambiguous —
-// placement edits then write the recurring routine from today forward.
+// state with an explicit caption, so the mode she's in is never ambiguous — both
+// placement edits (where a habit sits) AND a cycle's retime (when it runs) then
+// write the recurring routine from today forward instead of just today's layer.
 function ApplyForwardToggle({
   on,
   onToggle,
@@ -2710,12 +2711,13 @@ function PlansPage() {
   // Bump to force a re-fetch of the current day (e.g. after a "running late" shift).
   const [reloadToken, setReloadToken] = useState(0);
 
-  // "Apply to future days" — PLACEMENT scope. OFF by default and intentionally
-  // NOT persisted (every reload starts in record-today mode), so a forward edit
-  // is always a deliberate, visible choice. Only meaningful while viewing today:
-  // forward edits anchor to today, so the toggle hides on any other day. When on,
-  // a placement gesture writes the recurring routine from today forward (a dated
-  // Schedule generation) instead of just today's per-day layer.
+  // "Apply to future days" — recurring scope for BOTH placement and time edits.
+  // OFF by default and intentionally NOT persisted (every reload starts in
+  // record-today mode), so a forward edit is always a deliberate, visible choice.
+  // Only meaningful while viewing today: forward edits anchor to today, so the
+  // toggle hides on any other day. When on, a placement gesture writes a dated
+  // Schedule generation and a cycle retime writes a dated PlanTime row — the
+  // recurring routine from today forward — instead of just today's per-day layer.
   const [applyToFuture, setApplyToFuture] = useState(false);
   // Forward mode only applies on today, defended at three layers: the toggle is
   // only rendered on today (so it can only turn ON there); navigating away
@@ -2734,12 +2736,23 @@ function PlansPage() {
   }, [isViewingToday]);
 
   // The clarity gate (Jennifer's #1 rule: nothing silently permanent). When a
-  // forward placement is about to stick, we stash a one-line, placement-only
-  // summary + the action here and show a confirm dialog. null = nothing pending.
+  // forward edit is about to stick, we stash a one-line summary + the scope
+  // detail (a sentence explaining exactly what does and doesn't change) + the
+  // action here and show a confirm dialog. `detail` differs by edit kind —
+  // placement ("where the habit sits") vs time ("when this cycle runs") — so the
+  // message is always honest about scope. null = nothing pending.
   const [pendingForward, setPendingForward] = useState<{
     summary: string;
+    detail: string;
     run: () => void;
   } | null>(null);
+
+  // The two scope sentences the clarity gate appends after the one-line summary,
+  // so each edit kind reads honestly about what it touches (and leaves alone).
+  const PLACEMENT_DETAIL =
+    "This changes where the habit sits — not when your cycles run. Past days stay exactly as they were.";
+  const TIME_DETAIL =
+    "This changes when this cycle runs — not where any habit sits, and no other cycle moves. Past days stay exactly as they were.";
 
   // The habit order the viewed day loaded with — the target "Reset order"
   // returns to ("back to before" = how the day looked when you opened it).
@@ -3151,6 +3164,7 @@ function PlansPage() {
   ) {
     setPendingForward({
       summary,
+      detail: PLACEMENT_DETAIL,   // placement funnel: never mentions time
       run: () => {
         const snapshot = plansRef.current;
         const next = optimistic();
@@ -3712,11 +3726,54 @@ function PlansPage() {
     }
   }
 
+  // POST one cycle's new absolute time PERMANENTLY from today forward (a dated
+  // PlanTime row) and re-fetch — /plan/ returns the new effective times (today is
+  // mirrored even when frozen), already re-sorted. The forward-time twin of
+  // postRetime; writes ONLY this cycle's time, never any placement.
+  async function postRetimeForward(planId: number, time: string) {
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/plans/retime-forward/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // from_date defaults to today server-side; send it explicitly for clarity.
+          body: JSON.stringify({ plan: planId, time, from_date: toYMD(new Date()) }),
+        },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? "Couldn't move that cycle");
+      }
+      setReloadToken((token) => token + 1); // re-fetch the day's new times
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Couldn't move that cycle", {
+        variant: "error",
+      });
+    }
+  }
+
   // Drag handler: remember the block's time *before* the move, apply it, then
   // offer a one-tap Undo (the app's standard toast pattern, same as Skip day)
   // that puts it back. When there was no override, the previous effective time IS
   // the recurring time — so undoing all the way home clears the override.
+  //
+  // Forward mode (toggle on, on today): instead of a per-day override, route the
+  // retime through the clarity gate and the recurring forward-writer so the new
+  // time sticks every day from today. Time-only — never touches placement, and
+  // (unlike shift) only THIS cycle moves. No optimistic move until she confirms.
   async function retimePlan(planId: number, time: string) {
+    if (applyToFuture && isViewingToday) {
+      const cyclePlan = plans.find((p) => p.id === planId);
+      const label =
+        cyclePlan?.name || cycleLabel(cyclePlan?.habits ?? [], cyclePlan?.time ?? null);
+      setPendingForward({
+        summary: `Move ${label} to ${formatTime(time)} — every day from today`,
+        detail: TIME_DETAIL,
+        run: () => void postRetimeForward(planId, time),
+      });
+      return;
+    }
     const previousTime = plans.find((p) => p.id === planId)?.time ?? null;
     const ok = await postRetime(planId, time);
     if (!ok || previousTime == null) return;
@@ -4068,7 +4125,8 @@ function PlansPage() {
             >
               {plan.id != null && plan.time ? (
                 // Timed cycle: the whole block is the unit you retime — grab the
-                // header strip and it lifts to a new time (today only).
+                // header strip and it lifts to a new time. OFF = today only; with
+                // "Apply to future days" ON it sticks every day from today.
                 <RetimeBlock
                   planId={plan.id}
                   time={plan.time}
@@ -4397,15 +4455,16 @@ function PlansPage() {
         onCancel={() => setSkipDayOpen(false)}
       />
 
-      {/* The clarity gate for a forward placement (Jennifer's #1 rule): show
-          exactly what's changing and the scope before it sticks. Placement only —
-          the summary never mentions time. */}
+      {/* The clarity gate for a forward edit (Jennifer's #1 rule): show exactly
+          what's changing and the scope before it sticks. The `detail` sentence is
+          honest per edit kind — placement ("where the habit sits") vs time ("when
+          this cycle runs") — so neither overstates what it touches. */}
       <ConfirmDialog
         open={pendingForward != null}
         title="Apply to future days?"
         message={
           pendingForward
-            ? `${pendingForward.summary}. This changes where the habit sits — not when your cycles run. Past days stay exactly as they were.`
+            ? `${pendingForward.summary}. ${pendingForward.detail}`
             : undefined
         }
         confirmLabel="Apply going forward"

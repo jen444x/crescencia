@@ -12,7 +12,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Routine, Habit, Plan, PlanDay, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
+from .models import Area, Routine, Habit, Plan, PlanDay, PlanTime, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -184,6 +184,64 @@ def _effective_schedules(target_date):
     return list(by_slot.values())
 
 
+def _plan_times_for_date(target_date):
+    """The recurring time in effect for `target_date` per cycle, from `PlanTime` —
+    the forward-time twin of `_effective_schedules`'s placement projection.
+
+    `PlanTime` is the "this and every following day" time change (vs `PlanDay`'s
+    one-day shift). A cycle can have several rows over time; for a given date we
+    keep the one with the GREATEST `valid_from <= target_date` (id breaks a
+    same-day tie, last write wins), so a forward retime sticks from its date on
+    and an older one keeps covering earlier dates. Returns `{plan_id: start_time}`
+    — only cycles that have a PlanTime row in effect by this date appear.
+
+    With ZERO `PlanTime` rows this is an empty dict, so every time read falls back
+    exactly as before (Plan.start_time) — behavior is byte-identical to pre-Phase-3.
+    """
+    rows = (
+        PlanTime.objects.filter(valid_from__lte=target_date)
+        # Greatest valid_from (then id) last, so the dict write below keeps the
+        # latest generation per plan.
+        .order_by("valid_from", "id")
+        .values_list("plan_id", "start_time")
+    )
+    by_plan = {}
+    for plan_id, start_time in rows:
+        by_plan[plan_id] = start_time
+    return by_plan
+
+
+def _effective_plan_times(target_date):
+    """Each cycle's effective start time for `target_date`, with the full Phase-3
+    precedence applied PER CYCLE:
+
+        frozen day's PlanDay (this date)  >  latest PlanTime (valid_from <= date)
+                                          >  Plan.start_time (the recurring time)
+
+    `PlanDay` (the per-day layer — a "running late" shift, or the time locked in
+    when a day freezes) wins for that specific date; otherwise the recurring
+    forward-time (`PlanTime`) wins; otherwise the plan's own `start_time`. Returns
+    `{plan_id: start_time}` for EVERY plan (timeless plans map to None).
+
+    This is the single source the time reads share (`plan`, `freeze_day`,
+    `shift_plans`) so they can never disagree. With zero PlanDay and zero PlanTime
+    rows it returns `{p.id: p.start_time}` — identical to today's behavior.
+    """
+    day_overrides = dict(
+        PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
+    )
+    forward_times = _plan_times_for_date(target_date)
+    out = {}
+    for p in Plan.objects.all():
+        if p.id in day_overrides:
+            out[p.id] = day_overrides[p.id]            # per-day layer wins for this date
+        elif p.id in forward_times:
+            out[p.id] = forward_times[p.id]            # recurring forward-time
+        else:
+            out[p.id] = p.start_time                   # the plan's own recurring time
+    return out
+
+
 @transaction.atomic
 def freeze_day(target_date):
     """Snapshot a day's current template arrangement into `ScheduleDay` (and lock
@@ -212,15 +270,15 @@ def freeze_day(target_date):
     schedules = _effective_schedules(target_date)
 
     # Lock each block's time for the day. A plan's effective time is its existing
-    # override if one was set (a "running late" shift), else its recurring time;
-    # timeless plans (no start_time) have nothing to freeze and are skipped.
-    overrides = dict(
-        PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
-    )
+    # per-day override if one was set (a "running late" shift), else the recurring
+    # forward-time in effect that day (PlanTime), else its plain recurring time —
+    # the same Phase-3 precedence /plan/ reads (_effective_plan_times). Freezing
+    # the resolved time means a later PlanTime edit can't rewrite this day's photo.
+    # Timeless plans (no effective time) have nothing to freeze and are skipped.
+    effective_times = _effective_plan_times(target_date)
     plan_ids = {s.plan_id for s in schedules if s.plan_id is not None}
     for pid in plan_ids:
-        plan_obj = Plan.objects.get(id=pid)
-        effective = overrides.get(pid, plan_obj.start_time)
+        effective = effective_times.get(pid)
         if effective is None:
             continue
         PlanDay.objects.get_or_create(
@@ -291,13 +349,13 @@ def plan(request):
     # default to PENDING / "" via the helpers below.
     day_logs = _day_logs(target_date)
 
-    # Per-day time overrides for this day (from a "running late" shift). A plan
-    # with no override here just uses its normal recurring time. Lets a
-    # pushed-back cycle show its real time for the day without touching the
-    # recurring Plan row.
-    time_by_plan = dict(
-        PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
-    )
+    # Each cycle's effective time for THIS day, with the full Phase-3 precedence:
+    # this date's PlanDay (a "running late" shift, or the time a frozen day locked
+    # in) > the recurring forward-time in effect (PlanTime) > the plan's recurring
+    # start_time. With zero PlanDay and zero PlanTime rows this is just the plain
+    # recurring times — unchanged from before Phase 3. (_effective_plan_times maps
+    # EVERY plan, so the .get fallback below is only a defensive guard.)
+    time_by_plan = _effective_plan_times(target_date)
 
     # The habit's tier list, each entry {level,name,value,status,done} for THIS
     # day, memoized so a habit with several tier-slots only builds it once. EVERY
@@ -1469,14 +1527,11 @@ def shift_plans(request):
     if date_error:
         return date_error
 
-    # Each plan's effective time this day: its override if one exists, else its
-    # recurring time. Timeless plans (no start_time) can't anchor or move.
-    overrides = dict(
-        PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
-    )
-    effective = {
-        p.id: overrides.get(p.id, p.start_time) for p in Plan.objects.all()
-    }
+    # Each plan's effective time this day, with the full Phase-3 precedence
+    # (PlanDay override > PlanTime forward-time > recurring start_time) so a shift
+    # anchors on what the cycle actually reads as today. Timeless plans (no
+    # effective time) can't anchor or move.
+    effective = _effective_plan_times(target_date)
 
     if from_plan_id not in effective:
         return JsonResponse({"error": f"Unknown plan id: {from_plan_id}."}, status=400)
@@ -1568,6 +1623,96 @@ def retime_plan(request):
             )
 
     return JsonResponse({"date": target_date, "plan": plan_id, "time": new_time})
+
+
+@csrf_exempt
+@require_POST
+def retime_forward(request):
+    """Move ONE cycle to a new time PERMANENTLY from a date forward — the
+    "every day from today" twin of retime_plan's per-day override, and the
+    forward-time half of apply-to-future (Phase 3).
+
+    Body: {"plan": <plan id>, "time": "HH:MM", "from_date"?: "YYYY-MM-DD"}.
+
+    Upserts ONE `PlanTime` row (plan, valid_from=from_date, start_time) so this
+    cycle's new time sticks from `from_date` (default today) forward — read via
+    _effective_plan_times. It writes ONLY this cycle's time: no other cycle moves
+    (independence from shift's cascade), and it never touches any Schedule /
+    ScheduleDay placement (independence from the placement half). Re-running the
+    same forward retime UPDATEs the from_date row rather than duplicating it.
+
+    Frozen TODAY: a frozen day reads each block's locked-in PlanDay time, so a
+    pure PlanTime write would be invisible to today, making "every day from today"
+    visibly skip today. So when from_date == today and today is frozen we ALSO
+    mirror the new time into today's PlanDay for THIS cycle — exactly as
+    arrange_forward mirrors placement into today's ScheduleDay. We do this ONLY
+    for today; a frozen FUTURE day is a deliberate pre-edit and stays untouched
+    (D3), and a non-frozen day reads PlanTime directly so it needs no mirror.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    plan_id = body.get("plan")
+    # bool is a subclass of int, so reject it explicitly.
+    if not isinstance(plan_id, int) or isinstance(plan_id, bool):
+        return JsonResponse({"error": "'plan' must be a plan id (integer)."}, status=400)
+
+    raw_time = body.get("time")
+    if not isinstance(raw_time, str):
+        return JsonResponse({"error": "'time' must be an 'HH:MM' string."}, status=400)
+    try:
+        new_time = parse_time(raw_time)   # None if the format is wrong
+    except ValueError:
+        new_time = None                   # right shape, impossible time (e.g. 25:00)
+    if new_time is None:
+        return JsonResponse(
+            {"error": f"'time' must be a valid 'HH:MM' time, got {raw_time!r}."},
+            status=400,
+        )
+    # The app works at minute precision; drop seconds/micros so reads compare clean.
+    new_time = new_time.replace(second=0, microsecond=0)
+
+    # from_date is optional and defaults to today (inclusive — "this and
+    # following"). Mirrors arrange_forward: today never reaches the past.
+    raw_from = body.get("from_date")
+    if raw_from is None:
+        from_date = timezone.localdate()
+    else:
+        from_date, date_error = _resolve_date(raw_from)
+        if date_error:
+            return date_error
+
+    try:
+        plan = Plan.objects.get(id=plan_id)
+    except Plan.DoesNotExist:
+        return JsonResponse({"error": f"Unknown plan id: {plan_id}."}, status=400)
+
+    today = timezone.localdate()
+    # Only mirror into a frozen day when that day is TODAY. A frozen FUTURE day is
+    # a deliberate pre-edit and stays untouched (D3).
+    reflect_today = (
+        from_date == today
+        and ScheduleDay.objects.filter(date=today).exists()
+    )
+
+    with transaction.atomic():
+        # UPSERT this cycle's from_date PlanTime generation: re-running updates it
+        # rather than duplicating. Only THIS plan is touched.
+        PlanTime.objects.update_or_create(
+            plan=plan, valid_from=from_date, defaults={"start_time": new_time}
+        )
+        if reflect_today:
+            # Keep today (frozen) in sync so "every day from today" visibly
+            # includes today. Upsert ONLY this cycle's PlanDay for today.
+            PlanDay.objects.update_or_create(
+                plan=plan, date=today, defaults={"start_time": new_time}
+            )
+
+    return JsonResponse(
+        {"from_date": from_date.isoformat(), "plan": plan_id, "time": new_time}
+    )
 
 
 def _habit_detail(habit):
