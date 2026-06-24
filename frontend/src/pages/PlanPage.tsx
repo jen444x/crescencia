@@ -2772,6 +2772,10 @@ function PlansPage() {
   useEffect(() => {
     plansRef.current = plans;
   }, [plans]);
+  // The day (YMD) the last /plan/ fetch was for, so a refetch can tell a pure
+  // RELOAD (same day, e.g. after a placement) from a DATE CHANGE. Only a reload
+  // may carry pre-fetch state forward — never across days. null until first load.
+  const fetchedDateRef = useRef<string | null>(null);
 
   const toast = useToast();
 
@@ -3570,14 +3574,46 @@ function PlansPage() {
           fetch(notesUrl, { method: "GET", headers: {} }),
         ]);
 
-        const data = await res.json();
+        const data: Plan[] = await res.json();
         if (!res.ok) {
-          setError(data.error);
+          setError((data as unknown as { error?: string }).error ?? "");
           return;
         }
-        setPlans(data);
+
+        // Carry freeze-stripped Anytime habits across a same-day RELOAD. Placing
+        // a habit (or any per-day arrange) FREEZES the day, and a frozen /plan/
+        // only lists Anytime habits that have a saved row — so the day's OTHER
+        // unscheduled habits (row_id null, never placed) drop out of the refetch
+        // even though they're still unscheduled. Re-attach any such habit we
+        // already had whose id is now absent everywhere in `data`, so the screen
+        // matches a fresh (unfrozen) GET. Only on a reload of the SAME day (never
+        // across a date change, which would leak the prior day's Anytime).
+        const ymd = toYMD(viewedDate);
+        const isReload = fetchedDateRef.current === ymd;
+        let merged = data;
+        if (isReload) {
+          const presentIds = new Set(
+            data.flatMap((p) => p.habits.map((h) => h.id)),
+          );
+          const dropped = (
+            plansRef.current.find((p) => p.id == null)?.habits ?? []
+          ).filter((h) => h.row_id == null && !presentIds.has(h.id));
+          if (dropped.length > 0) {
+            const hasAnytime = data.some((p) => p.id == null);
+            merged = hasAnytime
+              ? data.map((p) =>
+                  p.id == null
+                    ? { ...p, habits: [...p.habits, ...dropped] }
+                    : p,
+                )
+              : [...data, { id: null, time: null, name: "", habits: dropped }];
+          }
+        }
+        fetchedDateRef.current = ymd;
+
+        setPlans(merged);
         // The order this day loaded with — what "Reset order" returns to.
-        setBaselineOrder(data);
+        setBaselineOrder(merged);
 
         // Notes are additive: if the endpoint isn't live yet or errors, fall back
         // to the legacy per-habit string by clearing the new-model notes.
