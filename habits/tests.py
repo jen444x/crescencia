@@ -1814,6 +1814,50 @@ class ArrangeForwardTests(TestCase):
             400,
         )
 
+    def test_rejects_duplicate_slot_in_items(self):
+        # The same (habit, tier) slot listed twice is incoherent (last would
+        # silently win) — reject it up front before any DB write.
+        before = Schedule.objects.count()
+        resp = self._forward(items=[
+            {"habit": self.stretch.id, "plan": self.morning.id, "order": 1},
+            {"habit": self.stretch.id, "plan": self.evening.id, "order": 2},
+        ])
+        self.assertEqual(resp.status_code, 400)
+        # Nothing written (validation runs before the DB pass).
+        self.assertEqual(Schedule.objects.count(), before)
+
+    def test_duplicate_slot_differing_by_tier_is_allowed(self):
+        # Same habit but DIFFERENT tiers are distinct slots and may co-exist.
+        resp = self._forward(items=[
+            {"habit": self.stretch.id, "plan": self.morning.id, "tier": 1, "order": 1},
+            {"habit": self.stretch.id, "plan": self.evening.id, "tier": 2, "order": 1},
+        ])
+        self.assertEqual(resp.status_code, 200)
+
+    def test_preexisting_duplicate_rows_return_409_not_500(self):
+        # Simulate legacy/edge data: two Schedule rows already share the exact
+        # (habit, tier, valid_from) the writer upserts. update_or_create would
+        # raise MultipleObjectsReturned; the view must catch it and 409.
+        Schedule.objects.create(
+            habit=self.water, plan=self.morning, tier=None,
+            order=1, valid_from=self.today,
+        )
+        Schedule.objects.create(
+            habit=self.water, plan=self.evening, tier=None,
+            order=2, valid_from=self.today,
+        )
+        resp = self._forward(items=[
+            {"habit": self.water.id, "plan": self.morning.id, "order": 1},
+        ])
+        self.assertEqual(resp.status_code, 409)
+        # Rolled back: the two pre-existing rows are untouched, none added.
+        self.assertEqual(
+            Schedule.objects.filter(
+                habit=self.water, tier__isnull=True, valid_from=self.today
+            ).count(),
+            2,
+        )
+
     # --- per-day path stays untouched ---------------------------------------
 
     def test_per_day_arrange_path_unchanged(self):

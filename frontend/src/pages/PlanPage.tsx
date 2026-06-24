@@ -2691,12 +2691,21 @@ function PlansPage() {
   // a placement gesture writes the recurring routine from today forward (a dated
   // Schedule generation) instead of just today's per-day layer.
   const [applyToFuture, setApplyToFuture] = useState(false);
-  // Forward mode only applies on today; navigating to any other day drops you
-  // out of it (see the DateNav handlers below) so an edit can't anchor to the
-  // wrong day. The toggle itself is only rendered on today, so it can only turn
-  // on there — and `isViewingToday` is re-checked at every routing call site.
-  // Leaving today: go back to today and exit forward mode.
+  // Forward mode only applies on today, defended at three layers: the toggle is
+  // only rendered on today (so it can only turn ON there); navigating away
+  // drops out of it (the DateNav handlers below call leaveForwardMode, and an
+  // effect below force-clears it whenever we're not on today); and every
+  // placement routing guard re-checks `applyToFuture && isViewingToday` before
+  // taking the forward path, so an edit can never anchor to the wrong day.
   const leaveForwardMode = () => setApplyToFuture(false);
+
+  // Safety net: forward mode can never stay armed while its control is hidden.
+  // The toggle only renders on today, so if the viewed day ever stops being
+  // today (any path — DateNav, an external date change, a midnight rollover)
+  // force forward mode off, so a stale "on" can't survive onto another day.
+  useEffect(() => {
+    if (!isViewingToday) setApplyToFuture(false);
+  }, [isViewingToday]);
 
   // The clarity gate (Jennifer's #1 rule: nothing silently permanent). When a
   // forward placement is about to stick, we stash a one-line, placement-only
@@ -3151,7 +3160,7 @@ function PlansPage() {
   // until she confirms.
   async function reorderPlan(planId: number, orderedHabits: Habit[]) {
     if (orderedHabits.length === 0) return;
-    if (applyToFuture) {
+    if (applyToFuture && isViewingToday) {
       const cyclePlan = plans.find((p) => p.id === planId);
       confirmForward(
         `Reorder ${cycleLabel(cyclePlan?.habits ?? orderedHabits, cyclePlan?.time ?? null)} — every day from today`,
@@ -3253,7 +3262,7 @@ function PlansPage() {
     // Forward mode: route the cross-cycle move through the clarity gate + the
     // recurring forward-writer. Both cycles are re-sent fresh, since the source
     // shrinks and the target grows. No optimistic move until she confirms.
-    if (applyToFuture) {
+    if (applyToFuture && isViewingToday) {
       const fromId = fromPlan.id;
       const toId = toPlan.id;
       confirmForward(
@@ -3350,7 +3359,7 @@ function PlansPage() {
     // Forward mode: confirm, then send the WHOLE target cycle (the habit lands
     // at the bottom) to the recurring forward-writer. Only the target cycle is
     // re-sent — the Anytime group isn't a cycle, so we don't pin its members.
-    if (applyToFuture) {
+    if (applyToFuture && isViewingToday) {
       const habit = snapshot
         .find((p) => p.id == null)
         ?.habits.find((h) => h.id === habitId);
@@ -4226,7 +4235,10 @@ function PlansPage() {
             leaveForwardMode();
             setViewedDate((d) => addDays(d, 1));
           }}
-          onToday={() => setViewedDate(startOfDay(new Date()))}
+          onToday={() => {
+            leaveForwardMode();
+            setViewedDate(startOfDay(new Date()));
+          }}
         />
         {/* "Apply to future days" — placement scope. Only on today (forward edits
             anchor to today), off by default. When ON it's unmistakable (a filled

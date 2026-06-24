@@ -2,6 +2,7 @@ import json
 from collections import defaultdict
 from datetime import time as dt_time, timedelta
 
+from django.core.exceptions import MultipleObjectsReturned
 from django.db import transaction
 from django.db.models import F, Max, Prefetch
 from django.http import JsonResponse
@@ -1218,6 +1219,20 @@ def arrange_forward(request):
             entry["routine"] = item["routine"]   # None or a routine id
         cleaned.append(entry)
 
+    # A coherent arrangement places each logical slot (habit + tier) exactly once.
+    # Two items naming the SAME slot would upsert the same Schedule row twice in
+    # one pass (last-write-wins, silently dropping the first) — reject it up front,
+    # before any DB write, so a malformed payload can't half-apply a generation.
+    seen_slots = set()
+    for e in cleaned:
+        slot = (e["habit"], e["tier"])
+        if slot in seen_slots:
+            return JsonResponse(
+                {"error": "Each (habit, tier) slot may appear at most once in 'items'."},
+                status=400,
+            )
+        seen_slots.add(slot)
+
     # Validate referenced foreign keys up front.
     habit_ids = {e["habit"] for e in cleaned}
     known = set(Habit.objects.filter(id__in=habit_ids).values_list("id", flat=True))
@@ -1251,42 +1266,66 @@ def arrange_forward(request):
     )
 
     written = []
-    with transaction.atomic():
-        for e in cleaned:
-            tier_id = (
-                tier_by_level.get(e["tier"]) if e["tier"] is not None else None
-            )
-            defaults = {"plan_id": e["plan"], "order": e["order"]}
-            if "routine" in e:
-                defaults["routine_id"] = e["routine"]
-            # UPSERT the from_date generation of this slot (habit, tier): re-running
-            # the same forward edit updates it rather than duplicating it.
-            sched, _ = Schedule.objects.update_or_create(
-                habit_id=e["habit"],
-                tier_id=tier_id,
-                valid_from=from_date,
-                defaults=defaults,
-            )
-            written.append(sched)
-
-            if reflect_today:
-                # Keep today (frozen) in sync so "every day from today" visibly
-                # includes today. Upsert the matching ScheduleDay slot.
-                sd_defaults = {
-                    "plan_id": e["plan"],
-                    "order": e["order"],
-                    "habit_name": Habit.objects.values_list("name", flat=True).get(
-                        id=e["habit"]
-                    ),
-                }
+    try:
+        with transaction.atomic():
+            for e in cleaned:
+                tier_id = (
+                    tier_by_level.get(e["tier"]) if e["tier"] is not None else None
+                )
+                defaults = {"plan_id": e["plan"], "order": e["order"]}
                 if "routine" in e:
-                    sd_defaults["routine_id"] = e["routine"]
-                ScheduleDay.objects.update_or_create(
-                    date=today,
+                    defaults["routine_id"] = e["routine"]
+                # UPSERT the from_date generation of this slot (habit, tier):
+                # re-running the same forward edit updates it rather than
+                # duplicating it. There's no DB unique constraint on
+                # (habit, tier, valid_from) — the migration is kept purely
+                # additive — so pre-existing duplicate rows (legacy/edge data on
+                # Railway) would make update_or_create raise MultipleObjectsReturned.
+                # Catch it (below) and 409 rather than 500, leaving the data
+                # untouched for a human to reconcile.
+                sched, _ = Schedule.objects.update_or_create(
                     habit_id=e["habit"],
                     tier_id=tier_id,
-                    defaults=sd_defaults,
+                    valid_from=from_date,
+                    defaults=defaults,
                 )
+                written.append(sched)
+
+                if reflect_today:
+                    # Keep today (frozen) in sync so "every day from today"
+                    # visibly includes today. Upsert the matching ScheduleDay
+                    # slot. (ScheduleDay has a real (date, habit, tier) unique
+                    # constraint, so this branch can't itself dup; the catch
+                    # below still covers it defensively.)
+                    sd_defaults = {
+                        "plan_id": e["plan"],
+                        "order": e["order"],
+                        "habit_name": Habit.objects.values_list("name", flat=True).get(
+                            id=e["habit"]
+                        ),
+                    }
+                    if "routine" in e:
+                        sd_defaults["routine_id"] = e["routine"]
+                    ScheduleDay.objects.update_or_create(
+                        date=today,
+                        habit_id=e["habit"],
+                        tier_id=tier_id,
+                        defaults=sd_defaults,
+                    )
+    except MultipleObjectsReturned:
+        # A pre-existing duplicate (habit, tier, valid_from) row means this slot's
+        # generation is ambiguous — update_or_create can't pick one. The atomic
+        # block has rolled back, so nothing was written. Surface a clear 409 (a
+        # conflict in stored data) instead of an opaque 500.
+        return JsonResponse(
+            {
+                "error": (
+                    "This slot has duplicate schedule rows for the same date; "
+                    "the arrangement was not saved. Please reconcile the data."
+                )
+            },
+            status=409,
+        )
 
     updated = [
         {
