@@ -161,6 +161,11 @@ class Schedule(models.Model):
     # behavior.
     valid_from = models.DateField(default=BASE_VALID_FROM)
 
+    # NOTE: "at most one row per (habit, tier, valid_from)" — the rule that makes a
+    # forward-write idempotent (re-running UPDATEs the generation, never duplicates
+    # it) — is enforced in the writer (views.arrange_forward upserts per slot), not
+    # by a DB constraint, to keep this migration purely additive (valid_from only).
+
     def __str__(self):
         return f"{self.plan.start_time} - {self.habit.name}"
 

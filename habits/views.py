@@ -145,6 +145,44 @@ def _version_status(specific, fallback, level, is_past):
     return MISSED_STATUS if is_past else HabitLog.Status.PENDING
 
 
+def _effective_schedules(target_date):
+    """The recurring `Schedule` rows in effect for `target_date`, one per logical
+    slot — the generation-aware projection both `/plan/`'s live path and
+    `freeze_day` read from, so they can never disagree.
+
+    The template is versioned by date (`Schedule.valid_from`). A "from D forward"
+    placement edit writes a NEW generation of the affected slot(s) stamped
+    `valid_from = D`; the old rows stay so they keep covering dates < D. For a
+    given date a slot can therefore have several rows, and we must pick exactly
+    one: the one that's actually in effect that day.
+
+    A logical slot is `(habit_id, tier_id)` — the same key `ScheduleDay`/`HabitLog`
+    version on (a habit can sit in two cycles via two tier-slots, e.g. Roots at
+    11am + Growth at 7:30, so each tier is its own slot). For each slot we keep the
+    row with the GREATEST `valid_from <= target_date`, dropping older generations
+    of that same slot so a moved habit never shows twice and is gone from its old
+    cycle for dates >= the edit. `id` breaks a same-day tie (last write wins).
+
+    Also enforces the existing "didn't exist yet" rule (only habits added by then).
+    With a single base generation (today's data) this returns the identical set as
+    a plain `Schedule.objects.filter(...)` did, so behavior is unchanged.
+    """
+    rows = (
+        Schedule.objects.filter(
+            habit__date_added__date__lte=target_date,
+            valid_from__lte=target_date,
+        )
+        .select_related("habit", "routine", "tier")
+        # Greatest valid_from (then id) last, so the dict write below keeps the
+        # latest generation per slot.
+        .order_by("valid_from", "id")
+    )
+    by_slot = {}
+    for s in rows:
+        by_slot[(s.habit_id, s.tier_id)] = s
+    return list(by_slot.values())
+
+
 @transaction.atomic
 def freeze_day(target_date):
     """Snapshot a day's current template arrangement into `ScheduleDay` (and lock
@@ -168,17 +206,9 @@ def freeze_day(target_date):
         return {}   # already frozen — no-op, exactly like PlanDay's "no row" rule
 
     # The same set `/plan/` projects for this date: only habits that already
-    # existed by then (a habit added later didn't run on a past day).
-    schedules = list(
-        Schedule.objects.filter(
-            habit__date_added__date__lte=target_date,
-            # Phase 1: single generation, so this filter is a no-op today; Phase 2
-            # adds latest-generation-per-slot selection when multiple generations
-            # exist.
-            valid_from__lte=target_date,
-        )
-        .select_related("habit")
-    )
+    # existed by then, and the generation in effect for the date (latest
+    # valid_from <= target_date per slot) — see _effective_schedules.
+    schedules = _effective_schedules(target_date)
 
     # Lock each block's time for the day. A plan's effective time is its existing
     # override if one was set (a "running late" shift), else its recurring time;
@@ -373,15 +403,16 @@ def plan(request):
         # add today shouldn't appear when you scroll back to last week, since it
         # didn't exist then. (For today/future days this filter matches everything,
         # so it's a no-op there.)
-        ordered_schedules = Schedule.objects.select_related(
-            "habit", "routine", "tier"
-        ).filter(
-            habit__date_added__date__lte=target_date,
-            # Phase 1: single generation, so this filter is a no-op today; Phase 2
-            # adds latest-generation-per-slot selection when multiple generations
-            # exist.
-            valid_from__lte=target_date,
-        ).order_by(F("order").asc(nulls_last=True), "id")
+        # _effective_schedules drops older generations per slot (one row per
+        # (habit, tier) — the row with the greatest valid_from <= target_date), so
+        # a habit moved "from D forward" shows in its NEW cycle from D and never
+        # twice. order_by mirrors the old query: saved position first (nulls last),
+        # id breaks ties for a stable list.
+        effective = _effective_schedules(target_date)
+        ordered_schedules = sorted(
+            effective,
+            key=lambda s: (s.order is None, s.order or 0, s.id),
+        )
         for schedule in ordered_schedules:
             # Each Schedule row carries its own habit, block, and order, so we
             # just emit each one. The frontend groups them by time block.
@@ -422,14 +453,26 @@ def plan(request):
 
     # The "Anytime" group: habits with no placement this day. Frozen = any
     # ScheduleDay row sitting in no plan (placed at Anytime that day); not frozen =
-    # habits with no Schedule row at all. Same "existed by then" rule, always last.
+    # habits with no EFFECTIVE Schedule row at all for this date. We key off the
+    # generation actually in effect (not `schedule__isnull`), so a habit whose only
+    # Schedule row is a future generation (valid_from > T) correctly sits in Anytime
+    # for earlier dates. Same "existed by then" rule, always last.
     if is_frozen:
         anytime_habits = by_plan.get(None, [])
     else:
+        # Two sources, both legitimately "Anytime" on a not-frozen day:
+        #   - rows whose effective generation has plan=None (a habit explicitly
+        #     placed at Anytime, e.g. via a forward-write) — already in by_plan[None]
+        #   - habits with NO effective Schedule row at all for this date
+        # `placed_ids` is every habit with an effective row, so the second query
+        # excludes those (whichever cycle, incl. Anytime) and won't double-list.
+        placed_ids = {s.habit_id for s in effective}
         unscheduled = Habit.objects.filter(
-            schedule__isnull=True, date_added__date__lte=target_date
-        )
-        anytime_habits = [habit_payload(h) for h in unscheduled]
+            date_added__date__lte=target_date
+        ).exclude(id__in=placed_ids)
+        anytime_habits = by_plan.get(None, []) + [
+            habit_payload(h) for h in unscheduled
+        ]
     data = plan_groups + [{
         "id": None,
         "time": None,
@@ -1070,6 +1113,193 @@ def arrange_day(request):
         for sd in sorted(touched, key=lambda sd: (sd.order is None, sd.order or 0, sd.id))
     ]
     return JsonResponse({"date": target_date, "updated": updated})
+
+
+@csrf_exempt
+@require_POST
+def arrange_forward(request):
+    """Apply a placement arrangement (which cycle a habit is in + its order)
+    PERMANENTLY from a date forward — the "every day from today" twin of
+    arrange_day's per-day write. This is the ONLY sanctioned recurring placement
+    writer (the legacy /schedules/create|reorder/ are retired); it writes a DATED
+    `Schedule` generation, never a dateless one, so it can never reach into the
+    past (apply-to-future Phase 2 / docs/contracts/apply-to-future.md).
+
+    Body (placement only — time is a separate Phase-3 edit):
+        {
+          "from_date": "YYYY-MM-DD",   # optional, defaults to today; inclusive (D2)
+          "items": [
+            {"habit": 9, "plan": 7, "tier": 2|null, "order": 1},
+            {"habit": 3, "plan": null, "order": 2},   # plan null = Anytime
+            ...
+          ]
+        }
+
+    For each item we UPSERT a `Schedule` row at `valid_from = from_date` for the
+    logical slot (habit, tier), setting its plan + order (+ routine if sent). Send
+    the WHOLE affected cycle(s) as fresh 1..N orders — whole-list & idempotent, the
+    pattern reorder used. We NEVER touch earlier-generation rows: they keep covering
+    dates < from_date. Re-running the same edit UPDATEs the from_date generation
+    (matched on (habit, tier, valid_from)) instead of duplicating it.
+
+    Moving a habit to a new cycle needs nothing more than writing its new
+    (plan, order) at from_date: the per-slot read (_effective_schedules) drops the
+    habit's older-generation row for dates >= from_date, so it leaves the old cycle
+    automatically and is never shown twice.
+
+    Frozen days: a frozen day reads its own ScheduleDay, so this template write is
+    invisible to it — which is exactly right for a pre-edited FUTURE day (D3: its
+    deliberate arrangement wins, it's skipped). The one exception is TODAY: if
+    from_date == today and today is already frozen, a pure template write wouldn't
+    show on today, so "every day from today" would visibly exclude today. To keep
+    it honest we ALSO mirror the new placement into today's ScheduleDay. We do this
+    ONLY for today, never a frozen future day.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    # from_date is optional and defaults to today (inclusive — "this and
+    # following", D2). Unlike arrange_day's required per-day date, a missing
+    # from_date here is a safe default: today never reaches the past.
+    raw_from = body.get("from_date")
+    if raw_from is None:
+        from_date = timezone.localdate()
+    else:
+        from_date, date_error = _resolve_date(raw_from)
+        if date_error:
+            return date_error
+
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        return JsonResponse({"error": "'items' must be a non-empty list."}, status=400)
+
+    # Validate everything before touching the DB, so a bad item can never leave a
+    # half-applied generation behind (mirrors reorder_schedules/arrange_day).
+    cleaned = []
+    for item in items:
+        if not isinstance(item, dict):
+            return JsonResponse({"error": "Each item must be an object."}, status=400)
+        hid, order = item.get("habit"), item.get("order")
+        # bool is a subclass of int, so reject it explicitly.
+        if not isinstance(hid, int) or isinstance(hid, bool) \
+                or not isinstance(order, int) or isinstance(order, bool):
+            return JsonResponse(
+                {"error": "Each item needs an integer 'habit' and 'order'."},
+                status=400,
+            )
+        entry = {"habit": hid, "order": order}
+        # `plan` is REQUIRED for a placement (which cycle), but null is allowed and
+        # means "Anytime" (no block) — the forward twin of arrange_day's
+        # null-plan-clears behavior.
+        if "plan" not in item:
+            return JsonResponse(
+                {"error": "Each item needs a 'plan' (id or null)."}, status=400
+            )
+        p = item["plan"]
+        if p is not None and (not isinstance(p, int) or isinstance(p, bool)):
+            return JsonResponse(
+                {"error": "'plan' must be a plan id (integer) or null."}, status=400
+            )
+        entry["plan"] = p
+        if "tier" in item:
+            t = item["tier"]   # None (untiered slot) or a tier level 1/2/3
+            if t is not None and (
+                not isinstance(t, int) or isinstance(t, bool) or t not in (1, 2, 3)
+            ):
+                return JsonResponse(
+                    {"error": "'tier' must be 1, 2, 3, or null."}, status=400
+                )
+            entry["tier"] = t
+        else:
+            entry["tier"] = None
+        if "routine" in item:
+            entry["routine"] = item["routine"]   # None or a routine id
+        cleaned.append(entry)
+
+    # Validate referenced foreign keys up front.
+    habit_ids = {e["habit"] for e in cleaned}
+    known = set(Habit.objects.filter(id__in=habit_ids).values_list("id", flat=True))
+    unknown = sorted(habit_ids - known)
+    if unknown:
+        return JsonResponse({"error": f"Unknown habit ids: {unknown}."}, status=400)
+
+    plan_ids = {e["plan"] for e in cleaned if e["plan"] is not None}
+    if plan_ids:
+        known_p = set(Plan.objects.filter(id__in=plan_ids).values_list("id", flat=True))
+        unknown_p = sorted(plan_ids - known_p)
+        if unknown_p:
+            return JsonResponse({"error": f"Unknown plan ids: {unknown_p}."}, status=400)
+
+    routine_ids = {e["routine"] for e in cleaned if e.get("routine") is not None}
+    if routine_ids:
+        known_r = set(Routine.objects.filter(id__in=routine_ids).values_list("id", flat=True))
+        unknown_r = sorted(routine_ids - known_r)
+        if unknown_r:
+            return JsonResponse({"error": f"Unknown routine ids: {unknown_r}."}, status=400)
+
+    # Map tier level (1/2/3) -> Tier row id.
+    tier_by_level = {t.level: t.id for t in Tier.objects.all()}
+
+    today = timezone.localdate()
+    # Only mirror into a frozen day when that day is TODAY (D2/today-reflect). A
+    # frozen FUTURE day is a deliberate pre-edit and stays untouched (D3).
+    reflect_today = (
+        from_date == today
+        and ScheduleDay.objects.filter(date=today).exists()
+    )
+
+    written = []
+    with transaction.atomic():
+        for e in cleaned:
+            tier_id = (
+                tier_by_level.get(e["tier"]) if e["tier"] is not None else None
+            )
+            defaults = {"plan_id": e["plan"], "order": e["order"]}
+            if "routine" in e:
+                defaults["routine_id"] = e["routine"]
+            # UPSERT the from_date generation of this slot (habit, tier): re-running
+            # the same forward edit updates it rather than duplicating it.
+            sched, _ = Schedule.objects.update_or_create(
+                habit_id=e["habit"],
+                tier_id=tier_id,
+                valid_from=from_date,
+                defaults=defaults,
+            )
+            written.append(sched)
+
+            if reflect_today:
+                # Keep today (frozen) in sync so "every day from today" visibly
+                # includes today. Upsert the matching ScheduleDay slot.
+                sd_defaults = {
+                    "plan_id": e["plan"],
+                    "order": e["order"],
+                    "habit_name": Habit.objects.values_list("name", flat=True).get(
+                        id=e["habit"]
+                    ),
+                }
+                if "routine" in e:
+                    sd_defaults["routine_id"] = e["routine"]
+                ScheduleDay.objects.update_or_create(
+                    date=today,
+                    habit_id=e["habit"],
+                    tier_id=tier_id,
+                    defaults=sd_defaults,
+                )
+
+    updated = [
+        {
+            "id": s.id,
+            "habit": s.habit_id,
+            "plan": s.plan_id,
+            "tier": s.tier.level if s.tier_id else None,
+            "order": s.order,
+            "valid_from": s.valid_from.isoformat(),
+        }
+        for s in sorted(written, key=lambda s: (s.order is None, s.order or 0, s.id))
+    ]
+    return JsonResponse({"from_date": from_date.isoformat(), "updated": updated})
 
 
 @csrf_exempt

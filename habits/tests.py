@@ -9,8 +9,8 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .models import (
-    Area, Habit, HabitLog, HabitTier, Note, Plan, PlanDay, Routine, Schedule,
-    ScheduleDay, Tier, TierValue,
+    Area, BASE_VALID_FROM, Habit, HabitLog, HabitTier, Note, Plan, PlanDay,
+    Routine, Schedule, ScheduleDay, Tier, TierValue,
 )
 from .views import FREEZE_CATCHUP_DAYS, freeze_day
 
@@ -1597,3 +1597,245 @@ class RetiredRecurringWritersTests(TestCase):
             data={"items": []}, content_type="application/json",
         )
         self.assertEqual(resp.status_code, 404)
+
+
+class ArrangeForwardTests(TestCase):
+    """apply-to-future Phase 2: /schedules/arrange-forward/ writes a DATED
+    `Schedule` generation so a placement change applies from a date forward
+    (inclusive of today, D2) without ever rewriting the past. Reads are
+    generation-aware: for date T each logical slot (habit, tier) shows the row
+    with the greatest valid_from <= T, so a moved habit appears in its new cycle
+    going forward, stays in the old cycle for past dates, and never shows twice."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        self.tomorrow = self.today + timedelta(days=1)
+
+        # Two cycles, two habits. Habits backdated so they "existed" on past days.
+        self.morning = Plan.objects.create(start_time=time(7, 0))
+        self.evening = Plan.objects.create(start_time=time(20, 0))
+        self.stretch = Habit.objects.create(name="Stretch")
+        self.read = Habit.objects.create(name="Read")
+        self.water = Habit.objects.create(name="Drink water")   # starts in Anytime
+        for h in (self.stretch, self.read, self.water):
+            Habit.objects.filter(id=h.id).update(
+                date_added=timezone.now() - timedelta(days=30)
+            )
+        # Base generation (the sentinel): Stretch + Read both in Morning.
+        self.s_stretch = Schedule.objects.create(
+            habit=self.stretch, plan=self.morning, order=1
+        )
+        self.s_read = Schedule.objects.create(
+            habit=self.read, plan=self.morning, order=2
+        )
+
+    def _forward(self, **body):
+        return self.client.post(
+            reverse("habits:arrange_forward"),
+            data=json.dumps(body), content_type="application/json",
+        )
+
+    def _plan(self, date):
+        return self.client.get(reverse("habits:plan"), {"date": date.isoformat()})
+
+    def _placement(self, response):
+        """{habit_id: plan_id} across a /plan/ response (None plan = Anytime)."""
+        groups = json.loads(response.content)
+        out = {}
+        for g in groups:
+            for h in g["habits"]:
+                out.setdefault(h["id"], []).append(g["id"])
+        return out
+
+    # --- move forward --------------------------------------------------------
+
+    def test_move_forward_new_cycle_tomorrow_old_yesterday_no_dup(self):
+        # Move Stretch into Evening from today forward.
+        resp = self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+        self.assertEqual(resp.status_code, 200)
+
+        # Tomorrow: Stretch is in Evening (the new generation), and ONLY there.
+        future = self._placement(self._plan(self.tomorrow))
+        self.assertEqual(future[self.stretch.id], [self.evening.id])
+
+        # Yesterday: untouched — Stretch still in Morning (the base generation).
+        past = self._placement(self._plan(self.yesterday))
+        self.assertEqual(past[self.stretch.id], [self.morning.id])
+
+        # The base row was never modified or deleted (it still covers the past).
+        self.assertTrue(
+            Schedule.objects.filter(
+                id=self.s_stretch.id, plan=self.morning, valid_from=BASE_VALID_FROM
+            ).exists()
+        )
+
+    def test_reorder_forward(self):
+        # Reorder within Morning from today: Read first, Stretch second.
+        resp = self._forward(items=[
+            {"habit": self.read.id, "plan": self.morning.id, "order": 1},
+            {"habit": self.stretch.id, "plan": self.morning.id, "order": 2},
+        ])
+        self.assertEqual(resp.status_code, 200)
+
+        groups = json.loads(self._plan(self.tomorrow).content)
+        morning = next(g for g in groups if g["id"] == self.morning.id)
+        names = [h["name"] for h in morning["habits"]]
+        self.assertEqual(names, ["Read", "Stretch"])
+
+        # Past unchanged: original order (Stretch, Read).
+        groups_past = json.loads(self._plan(self.yesterday).content)
+        morning_past = next(g for g in groups_past if g["id"] == self.morning.id)
+        self.assertEqual(
+            [h["name"] for h in morning_past["habits"]], ["Stretch", "Read"]
+        )
+
+    def test_place_from_anytime_forward(self):
+        # Drink water starts in Anytime (no Schedule row). Place it into Evening.
+        resp = self._forward(items=[{"habit": self.water.id, "plan": self.evening.id, "order": 1}])
+        self.assertEqual(resp.status_code, 200)
+
+        future = self._placement(self._plan(self.tomorrow))
+        self.assertEqual(future[self.water.id], [self.evening.id])
+
+        # Past: the forward placement never reaches back. Yesterday water has no
+        # effective Schedule row (its only generation is future), so it is NOT in
+        # the Evening cycle there — it stays Anytime. (On a frozen past day an
+        # Anytime habit leaves no row, matching existing freeze behavior, so we
+        # assert it never appears in a cycle, not specifically in Anytime.)
+        past = self._placement(self._plan(self.yesterday))
+        self.assertNotIn(self.evening.id, past.get(self.water.id, []))
+
+    # --- frozen days ---------------------------------------------------------
+
+    def test_frozen_future_day_is_skipped(self):
+        # Pre-edit (freeze) tomorrow with its own arrangement: Stretch stays put.
+        self._plan(self.tomorrow)   # not auto-frozen (future); freeze explicitly:
+        freeze_day(self.tomorrow)
+        self.assertTrue(ScheduleDay.objects.filter(date=self.tomorrow).exists())
+
+        # Forward-write moving Stretch to Evening from today.
+        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+
+        # Tomorrow keeps its frozen arrangement (Stretch still in Morning).
+        future = self._placement(self._plan(self.tomorrow))
+        self.assertEqual(future[self.stretch.id], [self.morning.id])
+        # The day-after (not frozen) DOES get the new placement.
+        day_after = self._placement(self._plan(self.tomorrow + timedelta(days=1)))
+        self.assertEqual(day_after[self.stretch.id], [self.evening.id])
+
+    def test_frozen_today_is_reflected(self):
+        # Freeze today, then forward-write from today: the change must show today.
+        freeze_day(self.today)
+        self.assertTrue(ScheduleDay.objects.filter(date=self.today).exists())
+
+        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+
+        today = self._placement(self._plan(self.today))
+        self.assertEqual(today[self.stretch.id], [self.evening.id])
+        # Today reads ScheduleDay, so the mirror is what made it visible.
+        sd = ScheduleDay.objects.get(
+            date=self.today, habit=self.stretch, tier__isnull=True
+        )
+        self.assertEqual(sd.plan_id, self.evening.id)
+
+    def test_frozen_future_scheduleday_not_mirrored(self):
+        # A from_date in the future that is frozen must NOT be mirrored (D3): only
+        # today gets the ScheduleDay reflect.
+        freeze_day(self.tomorrow)
+        before = {
+            (sd.habit_id, sd.plan_id)
+            for sd in ScheduleDay.objects.filter(date=self.tomorrow)
+        }
+        self._forward(
+            from_date=self.tomorrow.isoformat(),
+            items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}],
+        )
+        after = {
+            (sd.habit_id, sd.plan_id)
+            for sd in ScheduleDay.objects.filter(date=self.tomorrow)
+        }
+        self.assertEqual(before, after)   # frozen future day untouched
+
+    # --- idempotency ---------------------------------------------------------
+
+    def test_idempotent_repeat(self):
+        items = [{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}]
+        self._forward(items=items)
+        self._forward(items=items)   # same edit again
+        # Exactly one from_date generation for the slot — not duplicated.
+        gen = Schedule.objects.filter(
+            habit=self.stretch, tier__isnull=True, valid_from=self.today
+        )
+        self.assertEqual(gen.count(), 1)
+        self.assertEqual(gen.first().plan_id, self.evening.id)
+
+    def test_repeat_with_new_order_updates_generation(self):
+        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 5}])
+        gen = Schedule.objects.get(
+            habit=self.stretch, tier__isnull=True, valid_from=self.today
+        )
+        self.assertEqual(gen.order, 5)   # updated, not a second row
+
+    # --- defaults / validation ----------------------------------------------
+
+    def test_from_date_defaults_to_today(self):
+        resp = self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+        self.assertEqual(json.loads(resp.content)["from_date"], self.today.isoformat())
+        self.assertTrue(
+            Schedule.objects.filter(habit=self.stretch, valid_from=self.today).exists()
+        )
+
+    def test_place_at_anytime_with_null_plan(self):
+        # plan: null moves Stretch out of Morning into Anytime, going forward.
+        self._forward(items=[{"habit": self.stretch.id, "plan": None, "order": 1}])
+        future = self._placement(self._plan(self.tomorrow))
+        self.assertEqual(future[self.stretch.id], [None])
+        # Past still in Morning.
+        past = self._placement(self._plan(self.yesterday))
+        self.assertEqual(past[self.stretch.id], [self.morning.id])
+
+    def test_rejects_bad_input(self):
+        self.assertEqual(self._forward(items=[]).status_code, 400)          # empty
+        self.assertEqual(
+            self._forward(items=[{"habit": self.stretch.id, "order": 1}]).status_code,
+            400,
+        )   # missing plan
+        self.assertEqual(
+            self._forward(items=[{"habit": 99999, "plan": self.morning.id, "order": 1}]).status_code,
+            400,
+        )   # unknown habit
+        self.assertEqual(
+            self._forward(
+                from_date="not-a-date",
+                items=[{"habit": self.stretch.id, "plan": self.morning.id, "order": 1}],
+            ).status_code,
+            400,
+        )
+
+    # --- per-day path stays untouched ---------------------------------------
+
+    def test_per_day_arrange_path_unchanged(self):
+        # The toggle-OFF writer (/days/arrange/) must still write ScheduleDay only,
+        # never a Schedule generation, and only affect its one day.
+        before = Schedule.objects.count()
+        resp = self.client.post(
+            reverse("habits:arrange_day"),
+            data=json.dumps({
+                "date": self.today.isoformat(),
+                "items": [
+                    {"habit": self.water.id, "plan": self.evening.id, "order": 1},
+                ],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        # No new Schedule rows (no recurring write).
+        self.assertEqual(Schedule.objects.count(), before)
+        # Tomorrow (template) does NOT see the per-day placement.
+        future = self._placement(self._plan(self.tomorrow))
+        self.assertEqual(future.get(self.water.id), [None])   # still Anytime
+        # Today (now frozen) DOES.
+        today = self._placement(self._plan(self.today))
+        self.assertEqual(today[self.water.id], [self.evening.id])
