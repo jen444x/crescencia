@@ -1,4 +1,10 @@
-import { useState, useEffect, type CSSProperties, type ReactNode } from "react";
+import {
+  useState,
+  useEffect,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 import Header from "../components/layout/Header";
 import { useToast } from "../components/Toast";
 import {
@@ -116,11 +122,21 @@ function HabitTierRow({
 }) {
   const tier = habit.tiers.find((t) => t.level === level);
   const done = tier?.done ?? false;
+  // The other settable states for this version. SKIPPED/MISSED render their own
+  // tint + badge (matching the Plan page) instead of looking like plain pending.
+  const skipped = tier?.status === "SKIPPED";
+  const missed = tier?.status === "MISSED";
 
   return (
     <div
       className={`flex select-none items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${
-        done ? "bg-calm-50" : "bg-white shadow-sm"
+        done
+          ? "bg-calm-50"
+          : skipped
+            ? "bg-stone-50"
+            : missed
+              ? "bg-rose-50"
+              : "bg-white shadow-sm"
       }`}
     >
       {handle}
@@ -132,7 +148,13 @@ function HabitTierRow({
       <div className="min-w-0 flex-1">
         <span
           className={`block break-words text-sm font-medium ${
-            done ? "text-calm-400 line-through" : "text-calm-900"
+            done
+              ? "text-calm-400 line-through"
+              : skipped
+                ? "text-stone-400"
+                : missed
+                  ? "text-rose-400"
+                  : "text-calm-900"
           }`}
         >
           {habit.name}
@@ -146,8 +168,20 @@ function HabitTierRow({
         )}
       </div>
 
+      {skipped && (
+        <span className="shrink-0 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-500">
+          Skipped
+        </span>
+      )}
+      {missed && (
+        <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-500">
+          Missed
+        </span>
+      )}
+
       <button
         type="button"
+        data-no-menu
         aria-label={done ? `Undo ${habit.name}` : `Complete ${habit.name}`}
         aria-pressed={done}
         onClick={() =>
@@ -164,6 +198,155 @@ function HabitTierRow({
         <CheckIcon />
       </button>
     </div>
+  );
+}
+
+// Wraps a tier row so a TAP anywhere on it opens the status menu (Finch-style:
+// pick Complete / Skip / Miss). The grip and the complete dot are marked
+// data-no-menu, so dragging or a quick one-tap complete still work without
+// popping the menu. A tap (not a scroll) is what fires onClick, so scrolling the
+// list never opens a menu by accident.
+function HabitRowWithMenu({
+  habit,
+  level,
+  onLog,
+  handle,
+}: {
+  habit: HabitRow;
+  level: number;
+  onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
+  handle?: ReactNode;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  return (
+    <div
+      onClick={(e) => {
+        // Let the grip (drag) and the dot (quick complete) do their own thing.
+        if ((e.target as HTMLElement).closest("[data-no-menu]")) return;
+        setMenuOpen(true);
+      }}
+      className="cursor-pointer"
+    >
+      <HabitTierRow habit={habit} level={level} onLog={onLog} handle={handle} />
+
+      <HabitStatusSheet
+        open={menuOpen}
+        habit={habit}
+        level={level}
+        onPick={(status) => {
+          onLog(habit.id, status, level);
+          setMenuOpen(false);
+        }}
+        onClose={() => setMenuOpen(false)}
+      />
+    </div>
+  );
+}
+
+// The tap menu: pick Complete / Skip / Miss for one habit version, or Clear to
+// reset it to pending. Same overlay style as ConfirmDialog (backdrop tap +
+// Escape close); portaled to the body so nothing can clip it. The current
+// status gets a check so you can see what it's set to.
+function HabitStatusSheet({
+  open,
+  habit,
+  level,
+  onPick,
+  onClose,
+}: {
+  open: boolean;
+  habit: HabitRow;
+  level: number;
+  onPick: (status: HabitStatus) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const tier = habit.tiers.find((t) => t.level === level);
+  // The version's current state, so the menu can tick the active choice. A done
+  // row reads COMPLETED even when a higher version cascaded it (tier.done).
+  const current: HabitStatus = tier?.done
+    ? "COMPLETED"
+    : (tier?.status ?? "PENDING");
+
+  const options: { status: HabitStatus; label: string; className: string }[] = [
+    {
+      status: "COMPLETED",
+      label: "Complete",
+      className: "bg-calm-600 text-white hover:bg-calm-700",
+    },
+    {
+      status: "SKIPPED",
+      label: "Skip",
+      className: "bg-stone-100 text-stone-600 hover:bg-stone-200",
+    },
+    {
+      status: "MISSED",
+      label: "Miss",
+      className: "bg-rose-50 text-rose-600 hover:bg-rose-100",
+    },
+    {
+      status: "PENDING",
+      label: "Clear",
+      className: "border border-calm-200 text-calm-700 hover:bg-calm-50",
+    },
+  ];
+
+  return createPortal(
+    // React events bubble up the COMPONENT tree even though this is portaled to
+    // <body>, so without stopPropagation a click in here would reach the row's
+    // tap handler and instantly re-open the menu. Stop it at the root.
+    <div
+      onClick={(e) => e.stopPropagation()}
+      className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center"
+    >
+      <div
+        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Set status for ${habit.name}`}
+        className="animate-sheet-in relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl"
+      >
+        <p className="px-2 pb-3 text-sm font-medium text-calm-900">
+          {habit.name}
+        </p>
+        <div className="flex flex-col gap-2">
+          {options.map((o) => (
+            <button
+              key={o.status}
+              type="button"
+              onClick={() => onPick(o.status)}
+              className={`flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition-colors ${o.className}`}
+            >
+              {o.label}
+              {current === o.status && <span aria-hidden>✓</span>}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-2 w-full rounded-xl py-3 text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -194,6 +377,7 @@ function SortableHabitTierRow({
   const handle = (
     <button
       type="button"
+      data-no-menu
       aria-label="Drag to reorder"
       {...attributes}
       {...listeners}
@@ -207,7 +391,12 @@ function SortableHabitTierRow({
   );
   return (
     <div ref={setNodeRef} style={style}>
-      <HabitTierRow habit={habit} level={level} onLog={onLog} handle={handle} />
+      <HabitRowWithMenu
+        habit={habit}
+        level={level}
+        onLog={onLog}
+        handle={handle}
+      />
     </div>
   );
 }
@@ -266,7 +455,12 @@ function TierSection({
   ) : (
     <div className="space-y-1.5">
       {rows.map((habit) => (
-        <HabitTierRow key={habit.id} habit={habit} level={level} onLog={onLog} />
+        <HabitRowWithMenu
+          key={habit.id}
+          habit={habit}
+          level={level}
+          onLog={onLog}
+        />
       ))}
     </div>
   );
