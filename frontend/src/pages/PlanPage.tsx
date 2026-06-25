@@ -18,7 +18,8 @@ import {
   DndContext,
   DragOverlay,
   closestCorners,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useSensor,
   useSensors,
   useDroppable,
@@ -542,7 +543,7 @@ function HabitCard({
   const hasNotes = dayNotes.length > 0 || legacyNote !== "";
   return (
     <div
-      className={`group flex flex-col rounded-xl px-4 py-2 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
+      className={`group flex select-none flex-col rounded-xl px-4 py-2 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
         done
           ? "bg-calm-50"
           : skipped
@@ -911,7 +912,10 @@ function SortableRow({
       {...listeners}
       // Don't let a tap on the grip open the habit's detail page.
       onClick={(e) => e.stopPropagation()}
-      className="shrink-0 cursor-grab touch-none text-calm-300 hover:text-calm-500 active:cursor-grabbing"
+      // -m-2 + p-2 doubles the tap target (16px -> 32px) without shifting the
+      // layout. No `touch-none` here: a quick swipe on the grip should still
+      // scroll the page; only a held press (see TouchSensor delay) starts a drag.
+      className="-m-2 shrink-0 cursor-grab select-none p-2 text-calm-300 hover:text-calm-500 active:cursor-grabbing"
     >
       <GripIcon />
     </button>
@@ -3142,10 +3146,16 @@ function PlansPage() {
     plan.habits.length > 0 || (plan.id != null && newPlanIds.has(plan.id));
 
   // One shared drag context spans every block (lifted out of PlanBoard) so a row
-  // can be dragged from one time block into another. A 6px threshold keeps a
-  // plain tap working as a click (toggle / open detail).
+  // can be dragged from one time block into another.
   const planSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    // Mouse: a tiny 6px threshold so a plain click still toggles / opens detail.
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    // Touch: press-and-HOLD ~200ms to pick a row up. A quick swipe moves more
+    // than `tolerance` before the delay elapses, so it stays a scroll and never
+    // grabs a habit by accident — the standard mobile reorder gesture.
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 200, tolerance: 8 },
+    }),
   );
 
   // The loose, movable rows of a block — the same subset PlanBoard makes
