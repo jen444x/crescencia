@@ -4,7 +4,8 @@ import { useToast } from "../components/Toast";
 import {
   DndContext,
   closestCenter,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -118,7 +119,7 @@ function HabitTierRow({
 
   return (
     <div
-      className={`flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${
+      className={`flex select-none items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${
         done ? "bg-calm-50" : "bg-white shadow-sm"
       }`}
     >
@@ -196,7 +197,10 @@ function SortableHabitTierRow({
       aria-label="Drag to reorder"
       {...attributes}
       {...listeners}
-      className="shrink-0 cursor-grab touch-none text-calm-300 hover:text-calm-500 active:cursor-grabbing"
+      // -m-2 + p-2 doubles the tap target (16px -> 32px) without shifting the
+      // layout. No `touch-none`: a quick swipe on the grip should still scroll;
+      // only a held press (see TouchSensor delay) starts a drag.
+      className="-m-2 shrink-0 cursor-grab select-none p-2 text-calm-300 hover:text-calm-500 active:cursor-grabbing"
     >
       <GripIcon />
     </button>
@@ -352,10 +356,14 @@ function HabitsPage() {
     }
   }
 
-  // Pointer drag with a small threshold so a tap (to complete) isn't misread as
-  // the start of a drag.
+  // Mouse keeps a tiny 6px threshold so a tap (to complete) isn't misread as a
+  // drag. Touch needs a ~200ms press-and-HOLD, so a scroll-swipe never grabs a
+  // row by accident — the standard mobile reorder gesture.
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 200, tolerance: 8 },
+    }),
   );
 
   // A row was dragged within a tier section. The section is only a SUBSET of all
