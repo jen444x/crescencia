@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { DAY_TIERS } from "./tier";
+import { DAY_TIERS } from "../tier";
 
 // Filled star (duplicated from PlanPage's card icon — a tiny self-contained svg,
 // so the toolbar doesn't pull in a shared icons module).

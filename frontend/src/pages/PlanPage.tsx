@@ -10,6 +10,9 @@ import {
 import { createPortal } from "react-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../components/Toast";
+import { LoadingSpinner } from "../components/LoadingSpinner";
+import { ErrorBanner } from "../components/ErrorBanner";
+import { EmptyState } from "../components/EmptyState";
 import { useNavigate } from "react-router-dom";
 import {
   DndContext,
@@ -51,8 +54,10 @@ import {
   rowCompleteTier,
   slotPlacement,
 } from "./plan/tier";
-import PlanToolbar from "./plan/PlanToolbar";
+import PlanToolbar from "./plan/components/PlanToolbar";
+import { DateNav } from "./plan/components/DateNav";
 import { forwardItemForPlan } from "./plan/forward";
+import { startOfDay, toYMD, addDays, isSameDay, dayLabel } from "./plan/dates";
 
 // Read a habit's state, tolerating an older payload that only had done_today.
 function isDone(habit: Habit) {
@@ -133,50 +138,6 @@ function currentBlockId(plans: Plan[]): number | null {
     }
   }
   return currentId ?? earliestId;
-}
-
-// --- Day navigation (browse other days) -------------------------------------
-
-// Local midnight — the canonical value we compare/store a viewed day by.
-function startOfDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-// Local "YYYY-MM-DD" for the API. NOT toISOString() — that's UTC and can land on
-// the wrong calendar day near midnight.
-function toYMD(date: Date): string {
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
-function addDays(date: Date, days: number): Date {
-  const result = startOfDay(date);
-  result.setDate(result.getDate() + days);
-  return result;
-}
-
-function isSameDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-// "Today" / "Yesterday" / "Tomorrow", else e.g. "Sat, Jun 13".
-function dayLabel(date: Date): string {
-  const diff = Math.round(
-    (startOfDay(date).getTime() - startOfDay(new Date()).getTime()) / 86_400_000,
-  );
-  if (diff === 0) return "Today";
-  if (diff === -1) return "Yesterday";
-  if (diff === 1) return "Tomorrow";
-  return date.toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
 }
 
 // Row + Segment types now live in ./plan/types. buildSegments turns a plan's
@@ -564,8 +525,8 @@ function HabitCard({
   const tierValue =
     tierToSend != null
       ? (habit.tiers?.find((t) => t.level === tierToSend)?.value ??
-         habit.tier_value ??
-         null)
+        habit.tier_value ??
+        null)
       : rowDisplayValue(habit, dayTier);
   // Per-version state: this card shows ITS rung's status (cascade already folded
   // in by the backend), so completing the easy version never ticks the harder one.
@@ -592,141 +553,143 @@ function HabitCard({
       }`}
     >
       <div className="flex items-center gap-3">
-      {handle}
-      {/* The name is a plain heading again, so a normal tap bubbles up and opens
+        {handle}
+        {/* The name is a plain heading again, so a normal tap bubbles up and opens
           the habit detail page. A tier-slot appends its value (e.g. "· 7:30") in
           a lighter span, dimmed further once the slot is done. */}
-      <div className="min-w-0 flex-1">
-        <h3
-          className={`break-words font-medium ${
-            done
-              ? "text-calm-400 line-through"
-              : skipped
-                ? "text-stone-400"
-                : missed
-                  ? "text-rose-400"
-                  : "text-calm-900"
-          }`}
-        >
-          {habit.name}
-          {tierValue && (
-            <span
-              className={`font-normal ${
-                done ? "text-calm-300" : "text-stone-400"
-              }`}
-            >
-              {" · "}
-              {tierValue}
-            </span>
-          )}
-        </h3>
-      </div>
+        <div className="min-w-0 flex-1">
+          <h3
+            className={`break-words font-medium ${
+              done
+                ? "text-calm-400 line-through"
+                : skipped
+                  ? "text-stone-400"
+                  : missed
+                    ? "text-rose-400"
+                    : "text-calm-900"
+            }`}
+          >
+            {habit.name}
+            {tierValue && (
+              <span
+                className={`font-normal ${
+                  done ? "text-calm-300" : "text-stone-400"
+                }`}
+              >
+                {" · "}
+                {tierValue}
+              </span>
+            )}
+          </h3>
+        </div>
 
-      {skipped && (
-        <span className="shrink-0 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-500">
-          Skipped
-        </span>
-      )}
+        {skipped && (
+          <span className="shrink-0 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-500">
+            Skipped
+          </span>
+        )}
 
-      {missed && (
-        <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-500">
-          Missed
-        </span>
-      )}
+        {missed && (
+          <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-500">
+            Missed
+          </span>
+        )}
 
-      {/* Per-day note. data-no-swipe + stopPropagation so it doesn't start a
+        {/* Per-day note. data-no-swipe + stopPropagation so it doesn't start a
           swipe or open the detail page. Accented once a note exists. */}
-      <button
-        type="button"
-        data-no-swipe
-        aria-label={hasNotes ? "Edit notes" : "Add note"}
-        onClick={(e) => {
-          e.stopPropagation();
-          onOpenNote(habit);
-        }}
-        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors ${
-          hasNotes
-            ? "text-calm-600 hover:bg-calm-100"
-            : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
-        }`}
-      >
-        <NoteIcon />
-      </button>
-
-      {/* Skipped/missed habits are "parked": the right button restores them to
-          today's list (PENDING) so they can be acted on again. Active habits get
-          the usual complete toggle. Both are data-no-swipe + stopPropagation so a
-          tap neither starts a swipe nor opens the detail page. */}
-      {skipped || missed ? (
         <button
           type="button"
           data-no-swipe
-          aria-label="Move back to today"
+          aria-label={hasNotes ? "Edit notes" : "Add note"}
           onClick={(e) => {
             e.stopPropagation();
-            onStatus(habit.id, "PENDING", tierToSend);
+            onOpenNote(habit);
           }}
-          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
-            skipped
-              ? "border-stone-300 text-stone-400 hover:border-stone-500 hover:text-stone-600"
-              : "border-rose-300 text-rose-400 hover:border-rose-500 hover:text-rose-600"
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors ${
+            hasNotes
+              ? "text-calm-600 hover:bg-calm-100"
+              : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
           }`}
         >
-          <RestoreIcon />
+          <NoteIcon />
         </button>
-      ) : (
-        <>
-          {/* "Missed" — close THIS version off the list as "didn't do it" (NOT a
-              skip). Per-version: missing the hard rung never touches the easy one.
-              Only offered while the rung is still open (a done rung just un-checks). */}
-          {!done && (
-            <button
-              type="button"
-              data-no-swipe
-              aria-label="Mark as missed today"
-              onClick={(e) => {
-                e.stopPropagation();
-                onStatus(habit.id, "MISSED", tierToSend);
-              }}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-rose-200 text-rose-300 transition-colors hover:border-rose-400 hover:text-rose-500"
-            >
-              <MissedIcon />
-            </button>
-          )}
+
+        {/* Skipped/missed habits are "parked": the right button restores them to
+          today's list (PENDING) so they can be acted on again. Active habits get
+          the usual complete toggle. Both are data-no-swipe + stopPropagation so a
+          tap neither starts a swipe nor opens the detail page. */}
+        {skipped || missed ? (
           <button
             type="button"
             data-no-swipe
-            aria-label={done ? "Mark as not done today" : "Mark as done today"}
-            aria-pressed={done}
+            aria-label="Move back to today"
             onClick={(e) => {
               e.stopPropagation();
-              if (done) {
-                // Undo STEPS DOWN: uncomplete the highest done rung. Its easier
-                // rungs (marked done on completion) stay, so a tiered card drops
-                // one level — Growth -> Roots -> open — instead of snapping back.
-                const top = isCaseB(habit)
-                  ? (highestDoneLevel(habit) ?? tierToSend)
-                  : tierToSend;
-                onStatus(habit.id, "PENDING", top);
-              } else if (isCaseB(habit) && tierToSend != null) {
-                // Completing a rung means you did the easier ones too — mark them
-                // all done so the step-down has real rungs to land on.
-                for (const lvl of levelsUpTo(habit, tierToSend))
-                  onStatus(habit.id, "COMPLETED", lvl);
-              } else {
-                onStatus(habit.id, "COMPLETED", tierToSend);
-              }
+              onStatus(habit.id, "PENDING", tierToSend);
             }}
             className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
-              done
-                ? "border-calm-600 bg-calm-600 text-white"
-                : "border-calm-300 text-transparent hover:border-calm-500"
+              skipped
+                ? "border-stone-300 text-stone-400 hover:border-stone-500 hover:text-stone-600"
+                : "border-rose-300 text-rose-400 hover:border-rose-500 hover:text-rose-600"
             }`}
           >
-            <CheckIcon />
+            <RestoreIcon />
           </button>
-        </>
-      )}
+        ) : (
+          <>
+            {/* "Missed" — close THIS version off the list as "didn't do it" (NOT a
+              skip). Per-version: missing the hard rung never touches the easy one.
+              Only offered while the rung is still open (a done rung just un-checks). */}
+            {!done && (
+              <button
+                type="button"
+                data-no-swipe
+                aria-label="Mark as missed today"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStatus(habit.id, "MISSED", tierToSend);
+                }}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-rose-200 text-rose-300 transition-colors hover:border-rose-400 hover:text-rose-500"
+              >
+                <MissedIcon />
+              </button>
+            )}
+            <button
+              type="button"
+              data-no-swipe
+              aria-label={
+                done ? "Mark as not done today" : "Mark as done today"
+              }
+              aria-pressed={done}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (done) {
+                  // Undo STEPS DOWN: uncomplete the highest done rung. Its easier
+                  // rungs (marked done on completion) stay, so a tiered card drops
+                  // one level — Growth -> Roots -> open — instead of snapping back.
+                  const top = isCaseB(habit)
+                    ? (highestDoneLevel(habit) ?? tierToSend)
+                    : tierToSend;
+                  onStatus(habit.id, "PENDING", top);
+                } else if (isCaseB(habit) && tierToSend != null) {
+                  // Completing a rung means you did the easier ones too — mark them
+                  // all done so the step-down has real rungs to land on.
+                  for (const lvl of levelsUpTo(habit, tierToSend))
+                    onStatus(habit.id, "COMPLETED", lvl);
+                } else {
+                  onStatus(habit.id, "COMPLETED", tierToSend);
+                }
+              }}
+              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                done
+                  ? "border-calm-600 bg-calm-600 text-white"
+                  : "border-calm-300 text-transparent hover:border-calm-500"
+              }`}
+            >
+              <CheckIcon />
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1390,85 +1353,6 @@ function PlanBoard({
   );
 }
 
-// The ◀ [day] ▶ bar above the plan, for browsing other days. The layout is the
-// same every day; only each habit's done/skipped state changes. "Jump to today"
-// only appears once you've navigated away.
-function DateNav({
-  date,
-  onPrev,
-  onNext,
-  onToday,
-}: {
-  date: Date;
-  onPrev: () => void;
-  onNext: () => void;
-  onToday: () => void;
-}) {
-  const viewingToday = isSameDay(date, new Date());
-  return (
-    <div className="mb-4 flex items-center justify-between">
-      <button
-        type="button"
-        onClick={onPrev}
-        aria-label="Previous day"
-        className="flex h-9 w-9 items-center justify-center rounded-full text-calm-600 transition-colors hover:bg-calm-100"
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-5 w-5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M15 19l-7-7 7-7"
-          />
-        </svg>
-      </button>
-
-      <div className="flex flex-col items-center">
-        <span className="font-heading text-xl leading-tight text-calm-900">
-          {dayLabel(date)}
-        </span>
-        {!viewingToday && (
-          <button
-            type="button"
-            onClick={onToday}
-            className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
-          >
-            Jump to today
-          </button>
-        )}
-      </div>
-
-      <button
-        type="button"
-        onClick={onNext}
-        aria-label="Next day"
-        className="flex h-9 w-9 items-center justify-center rounded-full text-calm-600 transition-colors hover:bg-calm-100"
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-5 w-5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M9 5l7 7-7 7"
-          />
-        </svg>
-      </button>
-    </div>
-  );
-}
-
 // The "Apply to future days" switch, sitting just under the date header. OFF is
 // the quiet default (recording today); ON flips it into an unmistakable filled
 // state with an explicit caption, so the mode she's in is never ambiguous — both
@@ -1484,9 +1368,7 @@ function ApplyForwardToggle({
   return (
     <div
       className={`mb-4 flex items-center justify-between gap-3 rounded-xl border px-3 py-2 transition-colors ${
-        on
-          ? "border-emerald-300 bg-emerald-50"
-          : "border-calm-200 bg-white"
+        on ? "border-emerald-300 bg-emerald-50" : "border-calm-200 bg-white"
       }`}
     >
       <div className="flex flex-col">
@@ -1498,9 +1380,7 @@ function ApplyForwardToggle({
           Apply to future days
         </span>
         <span
-          className={`text-[11px] ${
-            on ? "text-emerald-600" : "text-calm-400"
-          }`}
+          className={`text-[11px] ${on ? "text-emerald-600" : "text-calm-400"}`}
         >
           {on
             ? "Editing your routine — every day from today"
@@ -1546,7 +1426,8 @@ function ShiftControl({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
@@ -2359,7 +2240,9 @@ function NoteSheet({
             })}
           </ul>
         ) : (
-          <p className="mt-4 text-sm text-calm-400">No notes yet for this day.</p>
+          <p className="mt-4 text-sm text-calm-400">
+            No notes yet for this day.
+          </p>
         )}
 
         <label className="mt-5 block text-[11px] font-medium uppercase tracking-wide text-calm-500">
@@ -2392,9 +2275,7 @@ function NoteSheet({
                     aria-pressed={on}
                     onClick={() =>
                       setAlsoHabitIds((prev) =>
-                        on
-                          ? prev.filter((id) => id !== h.id)
-                          : [...prev, h.id],
+                        on ? prev.filter((id) => id !== h.id) : [...prev, h.id],
                       )
                     }
                     className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
@@ -2481,7 +2362,8 @@ function RoutineSheet({
   // (ungrouped) ones. Habits already in a DIFFERENT routine are left out — it's
   // one routine per habit, so you'd remove them from the other one first.
   const choices = habits.filter(
-    (h) => h.routineId == null || (routine != null && h.routineId === routine.id),
+    (h) =>
+      h.routineId == null || (routine != null && h.routineId === routine.id),
   );
 
   // Keep the sheet above the on-screen keyboard (same approach as NoteSheet).
@@ -3046,7 +2928,9 @@ function PlansPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(
-            scope === "all" ? { scope: "all" } : { scope: "one", habit: habitId },
+            scope === "all"
+              ? { scope: "all" }
+              : { scope: "one", habit: habitId },
           ),
         },
       );
@@ -3164,7 +3048,7 @@ function PlansPage() {
   ) {
     setPendingForward({
       summary,
-      detail: PLACEMENT_DETAIL,   // placement funnel: never mentions time
+      detail: PLACEMENT_DETAIL, // placement funnel: never mentions time
       run: () => {
         const snapshot = plansRef.current;
         const next = optimistic();
@@ -3315,7 +3199,8 @@ function PlansPage() {
 
     const newFrom = origFrom.filter((h) => h.row_id !== rid);
     const movedNew: Habit = { ...moved, routine: null };
-    const at = overRid != null ? origTo.findIndex((h) => h.row_id === overRid) : -1;
+    const at =
+      overRid != null ? origTo.findIndex((h) => h.row_id === overRid) : -1;
     const idx = at >= 0 ? at : origTo.length;
     const newTo = [...origTo.slice(0, idx), movedNew, ...origTo.slice(idx)];
 
@@ -3333,9 +3218,15 @@ function PlansPage() {
         () =>
           plansRef.current.map((p) =>
             p.id === fromId
-              ? { ...p, habits: newFrom.map((h, i) => ({ ...h, order: i + 1 })) }
+              ? {
+                  ...p,
+                  habits: newFrom.map((h, i) => ({ ...h, order: i + 1 })),
+                }
               : p.id === toId
-                ? { ...p, habits: newTo.map((h, i) => ({ ...h, order: i + 1 })) }
+                ? {
+                    ...p,
+                    habits: newTo.map((h, i) => ({ ...h, order: i + 1 })),
+                  }
                 : p,
           ),
         moved.id,
@@ -3738,7 +3629,11 @@ function PlansPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           // from_date defaults to today server-side; send it explicitly for clarity.
-          body: JSON.stringify({ plan: planId, time, from_date: toYMD(new Date()) }),
+          body: JSON.stringify({
+            plan: planId,
+            time,
+            from_date: toYMD(new Date()),
+          }),
         },
       );
       if (!res.ok) {
@@ -3766,7 +3661,8 @@ function PlansPage() {
     if (applyToFuture && isViewingToday) {
       const cyclePlan = plans.find((p) => p.id === planId);
       const label =
-        cyclePlan?.name || cycleLabel(cyclePlan?.habits ?? [], cyclePlan?.time ?? null);
+        cyclePlan?.name ||
+        cycleLabel(cyclePlan?.habits ?? [], cyclePlan?.time ?? null);
       setPendingForward({
         summary: `Move ${label} to ${formatTime(time)} — every day from today`,
         detail: TIME_DETAIL,
@@ -3778,7 +3674,10 @@ function PlansPage() {
     const ok = await postRetime(planId, time);
     if (!ok || previousTime == null) return;
     toast(`Moved to ${formatTime(time)}`, {
-      action: { label: "Undo", onClick: () => postRetime(planId, previousTime) },
+      action: {
+        label: "Undo",
+        onClick: () => postRetime(planId, previousTime),
+      },
     });
   }
 
@@ -3804,7 +3703,9 @@ function PlansPage() {
       if (!res.ok) throw new Error("Request failed");
       const data = await res.json(); // { id, name }
       setPlans((prev) =>
-        prev.map((p) => (p.id === planId ? { ...p, name: data.name ?? "" } : p)),
+        prev.map((p) =>
+          p.id === planId ? { ...p, name: data.name ?? "" } : p,
+        ),
       );
     } catch {
       setPlans(snapshot);
@@ -3890,15 +3791,13 @@ function PlansPage() {
   // habit.notes today — no extra prop threading through the tree.
   const visiblePlans = useMemo(
     () =>
-      plans
-        .filter(keepBlock)
-        .map((plan) => ({
-          ...plan,
-          habits: plan.habits.map((habit) => ({
-            ...habit,
-            dayNotes: notesByHabit.get(habit.id) ?? [],
-          })),
+      plans.filter(keepBlock).map((plan) => ({
+        ...plan,
+        habits: plan.habits.map((habit) => ({
+          ...habit,
+          dayNotes: notesByHabit.get(habit.id) ?? [],
         })),
+      })),
     [plans, notesByHabit, newPlanIds],
   );
 
@@ -4021,316 +3920,312 @@ function PlansPage() {
   if (isLoading && plans.length === 0) {
     // First load only — when switching days we keep the current list visible
     // (dimmed) instead of flashing a spinner.
-    body = (
-      <div className="flex items-center justify-center py-12">
-        <div className="w-6 h-6 border-2 border-calm-300 border-t-calm-600 rounded-full animate-spin"></div>
-        <span className="ml-3 text-stone-400 text-sm">Loading habits...</span>
-      </div>
-    );
+    body = <LoadingSpinner label="habits" />;
   } else if (error) {
+    body = <ErrorBanner error={error} />;
+  } else if (plans.length === 0) {
     body = (
-      <div className="bg-red-50 rounded-xl p-4 text-center">
-        <p className="text-red-500 text-sm">{error}</p>
-      </div>
+      <EmptyState
+        title="No habits yet"
+        subtitle="Create your first habit to push your limits"
+      />
     );
   } else if (tierVisiblePlans.length === 0 && stretchSlots.length === 0) {
+    // plans isn't empty here, so it's a day with nothing scheduled.
     body = (
-      <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
-        <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-accent-100 flex items-center justify-center">
-          <span className="text-3xl">&#x1F331;</span>
-        </div>
-        <h3 className="font-heading text-xl text-stone-900 mb-2">
-          {plans.length === 0 ? "No habits yet" : "Nothing this day"}
-        </h3>
-        <p className="text-stone-400 text-sm">
-          {plans.length === 0
-            ? "Create your first habit to push your limits"
-            : "No habits were scheduled for this day"}
-        </p>
-      </div>
+      <EmptyState
+        title="Nothing this day"
+        subtitle="No habits were scheduled for this day"
+      />
     );
   } else {
     const draggingHabit =
       dragId != null
-        ? shownPlans
+        ? (shownPlans
             .flatMap((p) => p.habits)
             .find((h) =>
               dragId.startsWith("new-")
                 ? h.id === Number(dragId.slice("new-".length))
                 : h.row_id === Number(dragId),
-            ) ?? null
+            ) ?? null)
         : null;
     body = (
       <>
-      <DndContext
-        sensors={planSensors}
-        collisionDetection={closestCorners}
-        onDragStart={(e) => setDragId(String(e.active.id))}
-        onDragCancel={() => setDragId(null)}
-        onDragEnd={handlePlanDragEnd}
-      >
-        <div
-          className={`space-y-6 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
+        <DndContext
+          sensors={planSensors}
+          collisionDetection={closestCorners}
+          onDragStart={(e) => setDragId(String(e.active.id))}
+          onDragCancel={() => setDragId(null)}
+          onDragEnd={handlePlanDragEnd}
         >
-          {shownPlans.map((plan) => {
-          const key = plan.id ?? "anytime";
-          const isNow =
-            isViewingToday && plan.id != null && plan.id === nowBlockId;
-          // Session-only collapse: hide this cycle's habit list and show just
-          // its time + progress in the header. Default expanded.
-          const collapsed = collapsedCycles.has(String(key));
-          // Progress for the collapsed header — a member counts as handled when
-          // it's done OR skipped (same rule RoutineBlock uses). Counts the
-          // shown habits, so the header matches the cards (a Roots day excludes
-          // hidden Growth; "Main only" excludes the helpers).
-          const total = plan.habits.length;
-          const handled = plan.habits.filter(
-            (h) => isDone(h) || isSkipped(h),
-          ).length;
-          // PlanBoard renders from the FULL plan (all this cycle's habits, hidden
-          // ones included) and does its own tier filtering for display — so a
-          // reorder rebuilds the whole list and never drops a hidden habit from
-          // state. Fall back to the tier-filtered `plan` if no full match (can't
-          // happen, but keeps the type non-null).
-          const fullPlan = visiblePlans.find((p) => p.id === plan.id) ?? plan;
-          // The habit list is identical whether or not the block is retime-able;
-          // build it once and drop it into the right wrapper below. Drag the grip
-          // to reorder, swipe a card left to skip, tap the circle to complete,
-          // tap the note icon to jot a day note; completed ones collapse in place.
-          const planBoard = (
-            <PlanBoard
-              plan={fullPlan}
-              dayTier={dayTier}
-              inlineTierByHabit={inlineTierByHabit}
-              mainOnly={mainOnly}
-              onStatus={setHabitStatus}
-              onOpenNote={setEditingNote}
-              onRoutineLog={setRoutineStatus}
-              onEditRoutine={(id, name) =>
-                setRoutineSheet({ mode: "edit", id, name })
-              }
-              // Drag works on any viewed day — it writes the per-day layer
-              // (/days/arrange/), not the recurring template.
-              interactive
-            />
-          );
-          return (
-            <section
-              key={key}
-              ref={(el) => {
-                sectionRefs.current[String(key)] = el;
-              }}
-              // Leave a little breathing room above the block when we scroll to it.
-              className="scroll-mt-6"
-            >
-              {plan.id != null && plan.time ? (
-                // Timed cycle: the whole block is the unit you retime — grab the
-                // header strip and it lifts to a new time. OFF = today only; with
-                // "Apply to future days" ON it sticks every day from today.
-                <RetimeBlock
-                  planId={plan.id}
-                  time={plan.time}
-                  blockLabel={plan.name || cycleLabel(plan.habits, plan.time)}
-                  otherBlocks={visiblePlans.flatMap((p) =>
-                    p.id !== plan.id && p.time
-                      ? [
-                          {
-                            min: timeToMinutes(p.time),
-                            name: p.name || cycleLabel(p.habits, p.time),
-                          },
-                        ]
-                      : [],
-                  )}
-                  onRetime={retimePlan}
-                  header={
-                    <div className="flex items-center gap-3 mb-2">
-                      {/* Collapse/expand this cycle. Carries data-no-retime so
+          <div
+            className={`space-y-6 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
+          >
+            {shownPlans.map((plan) => {
+              const key = plan.id ?? "anytime";
+              const isNow =
+                isViewingToday && plan.id != null && plan.id === nowBlockId;
+              // Session-only collapse: hide this cycle's habit list and show just
+              // its time + progress in the header. Default expanded.
+              const collapsed = collapsedCycles.has(String(key));
+              // Progress for the collapsed header — a member counts as handled when
+              // it's done OR skipped (same rule RoutineBlock uses). Counts the
+              // shown habits, so the header matches the cards (a Roots day excludes
+              // hidden Growth; "Main only" excludes the helpers).
+              const total = plan.habits.length;
+              const handled = plan.habits.filter(
+                (h) => isDone(h) || isSkipped(h),
+              ).length;
+              // PlanBoard renders from the FULL plan (all this cycle's habits, hidden
+              // ones included) and does its own tier filtering for display — so a
+              // reorder rebuilds the whole list and never drops a hidden habit from
+              // state. Fall back to the tier-filtered `plan` if no full match (can't
+              // happen, but keeps the type non-null).
+              const fullPlan =
+                visiblePlans.find((p) => p.id === plan.id) ?? plan;
+              // The habit list is identical whether or not the block is retime-able;
+              // build it once and drop it into the right wrapper below. Drag the grip
+              // to reorder, swipe a card left to skip, tap the circle to complete,
+              // tap the note icon to jot a day note; completed ones collapse in place.
+              const planBoard = (
+                <PlanBoard
+                  plan={fullPlan}
+                  dayTier={dayTier}
+                  inlineTierByHabit={inlineTierByHabit}
+                  mainOnly={mainOnly}
+                  onStatus={setHabitStatus}
+                  onOpenNote={setEditingNote}
+                  onRoutineLog={setRoutineStatus}
+                  onEditRoutine={(id, name) =>
+                    setRoutineSheet({ mode: "edit", id, name })
+                  }
+                  // Drag works on any viewed day — it writes the per-day layer
+                  // (/days/arrange/), not the recurring template.
+                  interactive
+                />
+              );
+              return (
+                <section
+                  key={key}
+                  ref={(el) => {
+                    sectionRefs.current[String(key)] = el;
+                  }}
+                  // Leave a little breathing room above the block when we scroll to it.
+                  className="scroll-mt-6"
+                >
+                  {plan.id != null && plan.time ? (
+                    // Timed cycle: the whole block is the unit you retime — grab the
+                    // header strip and it lifts to a new time. OFF = today only; with
+                    // "Apply to future days" ON it sticks every day from today.
+                    <RetimeBlock
+                      planId={plan.id}
+                      time={plan.time}
+                      blockLabel={
+                        plan.name || cycleLabel(plan.habits, plan.time)
+                      }
+                      otherBlocks={visiblePlans.flatMap((p) =>
+                        p.id !== plan.id && p.time
+                          ? [
+                              {
+                                min: timeToMinutes(p.time),
+                                name: p.name || cycleLabel(p.habits, p.time),
+                              },
+                            ]
+                          : [],
+                      )}
+                      onRetime={retimePlan}
+                      header={
+                        <div className="flex items-center gap-3 mb-2">
+                          {/* Collapse/expand this cycle. Carries data-no-retime so
                           tapping it toggles instead of starting a time-drag. */}
-                      <button
-                        type="button"
-                        data-no-retime
-                        onClick={() => toggleCollapsed(String(key))}
-                        aria-expanded={!collapsed}
-                        aria-label={
-                          collapsed
-                            ? `Expand ${formatTime(plan.time)}`
-                            : `Collapse ${formatTime(plan.time)}`
-                        }
-                        className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
-                      >
-                        <ChevronIcon open={!collapsed} />
-                      </button>
-                      {/* Time label + a drag hint; the whole strip is grabbable. */}
-                      <span
-                        className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
-                          isNow ? "text-calm-700" : "text-calm-600"
-                        }`}
-                      >
-                        {formatTime(plan.time)}
-                        {collapsed ? (
-                          <span className="normal-case tracking-normal text-calm-400">
-                            · {handled}/{total} done
+                          <button
+                            type="button"
+                            data-no-retime
+                            onClick={() => toggleCollapsed(String(key))}
+                            aria-expanded={!collapsed}
+                            aria-label={
+                              collapsed
+                                ? `Expand ${formatTime(plan.time)}`
+                                : `Collapse ${formatTime(plan.time)}`
+                            }
+                            className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
+                          >
+                            <ChevronIcon open={!collapsed} />
+                          </button>
+                          {/* Time label + a drag hint; the whole strip is grabbable. */}
+                          <span
+                            className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
+                              isNow ? "text-calm-700" : "text-calm-600"
+                            }`}
+                          >
+                            {formatTime(plan.time)}
+                            {collapsed ? (
+                              <span className="normal-case tracking-normal text-calm-400">
+                                · {handled}/{total} done
+                              </span>
+                            ) : (
+                              <span className="text-calm-300">
+                                <RetimeHandleIcon />
+                              </span>
+                            )}
                           </span>
-                        ) : (
-                          <span className="text-calm-300">
-                            <RetimeHandleIcon />
-                          </span>
-                        )}
-                      </span>
-                      {/* The cycle's name (or the cycleLabel fallback when
+                          {/* The cycle's name (or the cycleLabel fallback when
                           unnamed) — tap to name/rename. data-no-retime inside,
                           so editing doesn't start the header's time-drag. */}
-                      {!collapsed && (
-                        <CycleNameControl
-                          name={plan.name ?? ""}
-                          label={
-                            plan.name
-                              ? plan.name
-                              : cycleLabel(plan.habits, plan.time)
-                          }
-                          onSave={(n) => renamePlan(plan.id!, n)}
-                        />
-                      )}
-                      {isNow && (
-                        <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
-                          Now
-                        </span>
-                      )}
-                      <div className="flex-1 h-px bg-calm-200" />
-                      {/* "Running late" shift stays tappable — opt it out of the
+                          {!collapsed && (
+                            <CycleNameControl
+                              name={plan.name ?? ""}
+                              label={
+                                plan.name
+                                  ? plan.name
+                                  : cycleLabel(plan.habits, plan.time)
+                              }
+                              onSave={(n) => renamePlan(plan.id!, n)}
+                            />
+                          )}
+                          {isNow && (
+                            <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                              Now
+                            </span>
+                          )}
+                          <div className="flex-1 h-px bg-calm-200" />
+                          {/* "Running late" shift stays tappable — opt it out of the
                           block's retime drag. */}
-                      <div data-no-retime>
-                        <ShiftControl planId={plan.id} onShift={shiftFromPlan} />
-                      </div>
-                    </div>
-                  }
-                >
-                  {collapsed ? null : planBoard}
-                </RetimeBlock>
-              ) : (
-                // "Anytime" group: no time, so nothing to retime.
-                <>
-                  <div className="flex items-center gap-3 mb-2">
-                    {/* Collapse/expand toggle (no retime here, so no opt-out). */}
-                    <button
-                      type="button"
-                      onClick={() => toggleCollapsed(String(key))}
-                      aria-expanded={!collapsed}
-                      aria-label={
-                        collapsed
-                          ? `Expand ${formatTime(plan.time)}`
-                          : `Collapse ${formatTime(plan.time)}`
+                          <div data-no-retime>
+                            <ShiftControl
+                              planId={plan.id}
+                              onShift={shiftFromPlan}
+                            />
+                          </div>
+                        </div>
                       }
-                      className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
                     >
-                      <ChevronIcon open={!collapsed} />
-                    </button>
-                    <span className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-calm-600">
-                      {formatTime(plan.time)}
-                      {collapsed && (
-                        <span className="normal-case tracking-normal text-calm-400">
-                          · {handled}/{total} done
+                      {collapsed ? null : planBoard}
+                    </RetimeBlock>
+                  ) : (
+                    // "Anytime" group: no time, so nothing to retime.
+                    <>
+                      <div className="flex items-center gap-3 mb-2">
+                        {/* Collapse/expand toggle (no retime here, so no opt-out). */}
+                        <button
+                          type="button"
+                          onClick={() => toggleCollapsed(String(key))}
+                          aria-expanded={!collapsed}
+                          aria-label={
+                            collapsed
+                              ? `Expand ${formatTime(plan.time)}`
+                              : `Collapse ${formatTime(plan.time)}`
+                          }
+                          className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
+                        >
+                          <ChevronIcon open={!collapsed} />
+                        </button>
+                        <span className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-calm-600">
+                          {formatTime(plan.time)}
+                          {collapsed && (
+                            <span className="normal-case tracking-normal text-calm-400">
+                              · {handled}/{total} done
+                            </span>
+                          )}
                         </span>
-                      )}
-                    </span>
-                    <div className="flex-1 h-px bg-calm-200" />
-                  </div>
-                  {!collapsed && planBoard}
-                </>
-              )}
-            </section>
-          );
-        })}
+                        <div className="flex-1 h-px bg-calm-200" />
+                      </div>
+                      {!collapsed && planBoard}
+                    </>
+                  )}
+                </section>
+              );
+            })}
 
-        {/* Stretch: the day's harder versions, gathered at the bottom. A Case-A
+            {/* Stretch: the day's harder versions, gathered at the bottom. A Case-A
             slot above today plus each Case-B rung above today shows here as a
             standalone card — swipe to skip, star, tap to open, and a check that
             completes THAT rung (completeTier). Only rendered when there's at least
             one, so a plain day shows nothing extra. */}
-        {stretchSlots.length > 0 && (
-          <section className="pt-1">
-            <div className="mb-2 flex items-baseline gap-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
-                Stretch
-              </span>
-              <span className="text-[11px] text-stone-300">
-                harder versions — do more if you want
-              </span>
-            </div>
-            <ul className="space-y-1.5">
-              {stretchSlots.map(({ habit, level }) => (
-                <li key={`stretch-${habit.id}-${level}`}>
-                  <SwipeableCard
-                    habit={habit}
-                    dayTier={dayTier}
-                    completeTier={level}
-                    onStatus={setHabitStatus}
-                    onOpenNote={setEditingNote}
-                  />
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-        </div>
-        {/* Floating copy that follows the finger so the dragged habit stays
-            visible as it crosses between blocks. */}
-        <DragOverlay>
-          {draggingHabit ? (
-            <div className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm text-stone-800 shadow-lg ring-1 ring-calm-200">
-              <span className="text-calm-400">
-                <GripIcon />
-              </span>
-              {draggingHabit.name}
-            </div>
-          ) : null}
-        </DragOverlay>
-      </DndContext>
-
-      {/* ＋ Add time: make a new (empty) cycle at a time you pick, then drag a
-          habit into it. Reuses the block if one already exists at that time. */}
-      <div className="mt-6">
-        {addingTime ? (
-          <div className="flex items-center gap-2">
-            <input
-              type="time"
-              value={newTime}
-              onChange={(e) => setNewTime(e.target.value)}
-              className="rounded-lg border border-calm-200 px-2 py-1.5 text-sm text-stone-800"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                addTime(newTime);
-                setAddingTime(false);
-                setNewTime("");
-              }}
-              disabled={!newTime}
-              className="rounded-lg bg-calm-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
-            >
-              Add
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAddingTime(false);
-                setNewTime("");
-              }}
-              className="rounded-lg px-2 py-1.5 text-sm text-calm-500"
-            >
-              Cancel
-            </button>
+            {stretchSlots.length > 0 && (
+              <section className="pt-1">
+                <div className="mb-2 flex items-baseline gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                    Stretch
+                  </span>
+                  <span className="text-[11px] text-stone-300">
+                    harder versions — do more if you want
+                  </span>
+                </div>
+                <ul className="space-y-1.5">
+                  {stretchSlots.map(({ habit, level }) => (
+                    <li key={`stretch-${habit.id}-${level}`}>
+                      <SwipeableCard
+                        habit={habit}
+                        dayTier={dayTier}
+                        completeTier={level}
+                        onStatus={setHabitStatus}
+                        onOpenNote={setEditingNote}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
           </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setAddingTime(true)}
-            className="w-full rounded-xl border border-dashed border-calm-300 px-3 py-2.5 text-sm font-medium text-calm-500 transition-colors hover:border-calm-400 hover:text-calm-700"
-          >
-            ＋ Add time
-          </button>
-        )}
-      </div>
+          {/* Floating copy that follows the finger so the dragged habit stays
+            visible as it crosses between blocks. */}
+          <DragOverlay>
+            {draggingHabit ? (
+              <div className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm text-stone-800 shadow-lg ring-1 ring-calm-200">
+                <span className="text-calm-400">
+                  <GripIcon />
+                </span>
+                {draggingHabit.name}
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+
+        {/* ＋ Add time: make a new (empty) cycle at a time you pick, then drag a
+          habit into it. Reuses the block if one already exists at that time. */}
+        <div className="mt-6">
+          {addingTime ? (
+            <div className="flex items-center gap-2">
+              <input
+                type="time"
+                value={newTime}
+                onChange={(e) => setNewTime(e.target.value)}
+                className="rounded-lg border border-calm-200 px-2 py-1.5 text-sm text-stone-800"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  addTime(newTime);
+                  setAddingTime(false);
+                  setNewTime("");
+                }}
+                disabled={!newTime}
+                className="rounded-lg bg-calm-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
+              >
+                Add
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAddingTime(false);
+                  setNewTime("");
+                }}
+                className="rounded-lg px-2 py-1.5 text-sm text-calm-500"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAddingTime(true)}
+              className="w-full rounded-xl border border-dashed border-calm-300 px-3 py-2.5 text-sm font-medium text-calm-500 transition-colors hover:border-calm-400 hover:text-calm-700"
+            >
+              ＋ Add time
+            </button>
+          )}
+        </div>
       </>
     );
   }
@@ -4401,8 +4296,8 @@ function PlansPage() {
         }}
         getNowTop={() =>
           nowBlockId != null
-            ? sectionRefs.current[String(nowBlockId)]?.getBoundingClientRect()
-                .top ?? null
+            ? (sectionRefs.current[String(nowBlockId)]?.getBoundingClientRect()
+                .top ?? null)
             : null
         }
       />
