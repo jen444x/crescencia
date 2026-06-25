@@ -444,45 +444,37 @@ function SharedNoteIcon() {
   );
 }
 
-// A U-turn arrow for "un-skip": send a skipped/missed habit back to today's list.
-function RestoreIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"
-      />
-    </svg>
-  );
-}
-
-// A small ✕ for the "missed / didn't do it" action — visually distinct from the
-// check, so a version can be closed off the list without marking it done.
-function MissedIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-3.5 w-3.5"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2.5}
-        d="M6 6l12 12M18 6L6 18"
-      />
-    </svg>
-  );
+// Apply a tap-menu choice to one habit slot, preserving the tier cascade:
+// completing a Case-B rung marks the easier ones done too (so Clear can step DOWN
+// a rung); Clear on a done card uncompletes the highest done rung. Shared by the
+// active card (dot + menu) and the completed-tray row so they behave identically.
+type StatusAction = "COMPLETE" | "SKIP" | "MISS" | "CLEAR";
+function applyStatusAction(
+  habit: Habit,
+  tierToSend: number | undefined,
+  action: StatusAction,
+  isDone: boolean,
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void,
+) {
+  if (action === "COMPLETE") {
+    if (isCaseB(habit) && tierToSend != null) {
+      for (const lvl of levelsUpTo(habit, tierToSend))
+        onStatus(habit.id, "COMPLETED", lvl);
+    } else {
+      onStatus(habit.id, "COMPLETED", tierToSend);
+    }
+  } else if (action === "SKIP") {
+    onStatus(habit.id, "SKIPPED", tierToSend);
+  } else if (action === "MISS") {
+    onStatus(habit.id, "MISSED", tierToSend);
+  } else {
+    // CLEAR -> back to pending. A done card steps DOWN from its highest done rung.
+    const top =
+      isDone && isCaseB(habit)
+        ? (highestDoneLevel(habit) ?? tierToSend)
+        : tierToSend;
+    onStatus(habit.id, "PENDING", top);
+  }
 }
 
 function HabitCard({
@@ -541,8 +533,19 @@ function HabitCard({
   const dayNotes = habit.dayNotes ?? [];
   const legacyNote = habit.notes?.trim() ?? "";
   const hasNotes = dayNotes.length > 0 || legacyNote !== "";
+
+  const navigate = useNavigate();
+  const [menuOpen, setMenuOpen] = useState(false);
+
   return (
     <div
+      // A tap anywhere on the card opens the status menu (Complete / Skip / Miss
+      // / Clear / Details). The grip, note, and dot carry data-no-swipe + their
+      // own stopPropagation, so they keep doing their own thing.
+      onClick={(e) => {
+        if ((e.target as HTMLElement).closest("[data-no-swipe]")) return;
+        setMenuOpen(true);
+      }}
       className={`group flex select-none flex-col rounded-xl px-4 py-2 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
         done
           ? "bg-calm-50"
@@ -615,202 +618,160 @@ function HabitCard({
           <NoteIcon />
         </button>
 
-        {/* Skipped/missed habits are "parked": the right button restores them to
-          today's list (PENDING) so they can be acted on again. Active habits get
-          the usual complete toggle. Both are data-no-swipe + stopPropagation so a
-          tap neither starts a swipe nor opens the detail page. */}
-        {skipped || missed ? (
-          <button
-            type="button"
-            data-no-swipe
-            aria-label="Move back to today"
-            onClick={(e) => {
-              e.stopPropagation();
-              onStatus(habit.id, "PENDING", tierToSend);
-            }}
-            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
-              skipped
-                ? "border-stone-300 text-stone-400 hover:border-stone-500 hover:text-stone-600"
-                : "border-rose-300 text-rose-400 hover:border-rose-500 hover:text-rose-600"
-            }`}
-          >
-            <RestoreIcon />
-          </button>
-        ) : (
-          <>
-            {/* "Missed" — close THIS version off the list as "didn't do it" (NOT a
-              skip). Per-version: missing the hard rung never touches the easy one.
-              Only offered while the rung is still open (a done rung just un-checks). */}
-            {!done && (
-              <button
-                type="button"
-                data-no-swipe
-                aria-label="Mark as missed today"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onStatus(habit.id, "MISSED", tierToSend);
-                }}
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-rose-200 text-rose-300 transition-colors hover:border-rose-400 hover:text-rose-500"
-              >
-                <MissedIcon />
-              </button>
-            )}
-            <button
-              type="button"
-              data-no-swipe
-              aria-label={
-                done ? "Mark as not done today" : "Mark as done today"
-              }
-              aria-pressed={done}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (done) {
-                  // Undo STEPS DOWN: uncomplete the highest done rung. Its easier
-                  // rungs (marked done on completion) stay, so a tiered card drops
-                  // one level — Growth -> Roots -> open — instead of snapping back.
-                  const top = isCaseB(habit)
-                    ? (highestDoneLevel(habit) ?? tierToSend)
-                    : tierToSend;
-                  onStatus(habit.id, "PENDING", top);
-                } else if (isCaseB(habit) && tierToSend != null) {
-                  // Completing a rung means you did the easier ones too — mark them
-                  // all done so the step-down has real rungs to land on.
-                  for (const lvl of levelsUpTo(habit, tierToSend))
-                    onStatus(habit.id, "COMPLETED", lvl);
-                } else {
-                  onStatus(habit.id, "COMPLETED", tierToSend);
-                }
-              }}
-              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
-                done
-                  ? "border-calm-600 bg-calm-600 text-white"
-                  : "border-calm-300 text-transparent hover:border-calm-500"
-              }`}
-            >
-              <CheckIcon />
-            </button>
-          </>
-        )}
+        {/* Quick one-tap Complete (toggles done/undo with the same cascade as the
+          menu). Skip / Miss / Clear / Details all live in the tap menu now. */}
+        <button
+          type="button"
+          data-no-swipe
+          aria-label={done ? "Mark as not done today" : "Mark as done today"}
+          aria-pressed={done}
+          onClick={(e) => {
+            e.stopPropagation();
+            applyStatusAction(
+              habit,
+              tierToSend,
+              done ? "CLEAR" : "COMPLETE",
+              done,
+              onStatus,
+            );
+          }}
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
+            done
+              ? "border-calm-600 bg-calm-600 text-white"
+              : "border-calm-300 text-transparent hover:border-calm-500"
+          }`}
+        >
+          <CheckIcon />
+        </button>
       </div>
+
+      <PlanStatusSheet
+        open={menuOpen}
+        title={habit.name}
+        current={cardStatus}
+        onPick={(action) => {
+          applyStatusAction(habit, tierToSend, action, done, onStatus);
+          setMenuOpen(false);
+        }}
+        onDetails={() => {
+          setMenuOpen(false);
+          navigate(`/habits/${habit.id}`);
+        }}
+        onClose={() => setMenuOpen(false)}
+      />
     </div>
   );
 }
 
-// Wraps a habit card with a left-swipe gesture to SKIP it. A plain tap opens the
-// habit. We hand-roll this with pointer events so it coexists with the drag
-// handle (grip) and the complete button, both of which are marked data-no-swipe
-// and ignored here.
-const SWIPE_TRIGGER = 70; // px past which a release fires the action
-const SWIPE_MAX = 110; // px the card is allowed to follow your finger
-
-function SwipeableCard({
-  habit,
-  dayTier,
-  completeTier,
-  onStatus,
-  onOpenNote,
-  handle,
+// The tap menu for a Plan-page habit slot: Complete / Skip / Miss / Clear, plus
+// Details to open the habit page. Same overlay as ConfirmDialog; portaled so the
+// card's drag transforms can't clip it, and a stopPropagation at the root keeps
+// a click inside from bubbling back to the card and re-opening the menu.
+function PlanStatusSheet({
+  open,
+  title,
+  current,
+  onPick,
+  onDetails,
+  onClose,
 }: {
-  habit: Habit;
-  dayTier: number;
-  completeTier?: number;
-  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
-  onOpenNote: (habit: Habit) => void;
-  handle?: ReactNode;
+  open: boolean;
+  title: string;
+  current: ReadStatus;
+  onPick: (action: "COMPLETE" | "SKIP" | "MISS" | "CLEAR") => void;
+  onDetails: () => void;
+  onClose: () => void;
 }) {
-  const navigate = useNavigate();
-  const [dx, setDx] = useState(0);
-  const [dragging, setDragging] = useState(false);
-  const startX = useRef<number | null>(null);
-  const moved = useRef(false);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
-  function onPointerDown(e: ReactPointerEvent) {
-    // Ignore presses that begin on the grip or the complete toggle.
-    if ((e.target as HTMLElement).closest("[data-no-swipe]")) return;
-    startX.current = e.clientX;
-    moved.current = false;
-    setDragging(true);
-  }
-  function onPointerMove(e: ReactPointerEvent) {
-    if (startX.current == null) return;
-    const delta = e.clientX - startX.current;
-    if (Math.abs(delta) > 6) moved.current = true;
-    // Left-only: clamp to <= 0 so a rightward drag does nothing.
-    setDx(Math.max(-SWIPE_MAX, Math.min(0, delta)));
-  }
-  function onPointerEnd() {
-    if (startX.current == null) return;
-    if (dx <= -SWIPE_TRIGGER)
-      onStatus(
-        habit.id,
-        "SKIPPED",
-        completeTier ?? rowCompleteTier(habit, dayTier),
-      );
-    startX.current = null;
-    setDragging(false);
-    setDx(0); // animate back to rest
-  }
-  function onClick() {
-    // A swipe shouldn't also count as a tap.
-    if (moved.current) {
-      moved.current = false;
-      return;
-    }
-    navigate(`/habits/${habit.id}`);
-  }
+  if (!open) return null;
 
-  return (
+  const options: {
+    action: "COMPLETE" | "SKIP" | "MISS" | "CLEAR";
+    status: ReadStatus;
+    label: string;
+    className: string;
+  }[] = [
+    {
+      action: "COMPLETE",
+      status: "COMPLETED",
+      label: "Complete",
+      className: "bg-calm-600 text-white hover:bg-calm-700",
+    },
+    {
+      action: "SKIP",
+      status: "SKIPPED",
+      label: "Skip",
+      className: "bg-stone-100 text-stone-600 hover:bg-stone-200",
+    },
+    {
+      action: "MISS",
+      status: "MISSED",
+      label: "Miss",
+      className: "bg-rose-50 text-rose-600 hover:bg-rose-100",
+    },
+    {
+      action: "CLEAR",
+      status: "PENDING",
+      label: "Clear",
+      className: "border border-calm-200 text-calm-700 hover:bg-calm-50",
+    },
+  ];
+
+  return createPortal(
     <div
-      className={`relative overflow-hidden rounded-xl transition-colors ${
-        dx < -8 ? "bg-amber-100" : ""
-      }`}
+      onClick={(e) => e.stopPropagation()}
+      className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center"
     >
-      {/* Always-visible "swipe left to skip" affordance on the right edge.
-          Faint at rest; intensifies to the amber Skip treatment as you drag. */}
       <div
-        className={`pointer-events-none absolute inset-0 flex items-center justify-end gap-1 px-5 text-xs font-semibold uppercase tracking-wide transition-colors ${
-          dx < -8 ? "text-amber-700" : "text-stone-300/70"
-        }`}
+        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Set status for ${title}`}
+        className="animate-sheet-in relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl"
       >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-3.5 w-3.5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
+        <p className="px-2 pb-3 text-sm font-medium text-calm-900">{title}</p>
+        <div className="flex flex-col gap-2">
+          {options.map((o) => (
+            <button
+              key={o.action}
+              type="button"
+              onClick={() => onPick(o.action)}
+              className={`flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition-colors ${o.className}`}
+            >
+              {o.label}
+              {current === o.status && <span aria-hidden>✓</span>}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={onDetails}
+            className="rounded-xl py-3 text-sm font-medium text-calm-500 transition-colors hover:bg-calm-50"
+          >
+            Details
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-2 w-full rounded-xl py-3 text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2.5}
-            d="M15 19l-7-7 7-7"
-          />
-        </svg>
-        <span>Skip</span>
+          Cancel
+        </button>
       </div>
-
-      <div
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerEnd}
-        onPointerCancel={onPointerEnd}
-        onClick={onClick}
-        style={{
-          transform: `translateX(${dx}px)`,
-          transition: dragging ? undefined : "transform 150ms ease",
-          touchAction: "pan-y", // let vertical scroll through; we take horizontal
-        }}
-      >
-        <HabitCard
-          habit={habit}
-          dayTier={dayTier}
-          completeTier={completeTier}
-          onStatus={onStatus}
-          onOpenNote={onOpenNote}
-          handle={handle}
-        />
-      </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -852,7 +813,7 @@ function RowLayout({
       {/* min-w-0 lets this column shrink below the note's width so the note can
           truncate instead of pushing the card (and its ✓ button) off-screen. */}
       <div className="min-w-0 flex-1">
-        <SwipeableCard
+        <HabitCard
           habit={habit}
           dayTier={dayTier}
           onStatus={onStatus}
@@ -937,7 +898,10 @@ function SortableRow({
 }
 
 // One completed habit in the collapsed tray: compact, faded, still tappable.
-// The filled check resets it to PENDING and sends it back up to the active list.
+// A tap opens the SAME status menu as the active rows (so a done habit behaves
+// like the rest — Complete/Skip/Miss/Clear/Details); the filled check is a quick
+// un-complete back to the active list. These habits are done, so menu actions
+// act on the rung that's actually done (highestDoneLevel).
 function CompletedRow({
   habit,
   onStatus,
@@ -948,13 +912,18 @@ function CompletedRow({
   onOpenNote: (habit: Habit) => void;
 }) {
   const navigate = useNavigate();
+  const [menuOpen, setMenuOpen] = useState(false);
   // Prefer the new Note model; fall back to the legacy per-habit string while
   // /days/notes/ rolls out. (Step 2 shows multiple notes; this shows the first
   // as a one-line preview, matching the old single-note behavior.)
   const note = (habit.dayNotes?.[0]?.body ?? habit.notes ?? "").trim();
+  const tierToSend = highestDoneLevel(habit) ?? undefined;
   return (
     <div
-      onClick={() => navigate(`/habits/${habit.id}`)}
+      onClick={(e) => {
+        if ((e.target as HTMLElement).closest("[data-no-swipe]")) return;
+        setMenuOpen(true);
+      }}
       className="flex cursor-pointer items-center gap-3 rounded-lg px-4 py-2 hover:bg-white"
     >
       <span className="min-w-0 flex-1 truncate text-sm text-calm-400 line-through">
@@ -963,6 +932,7 @@ function CompletedRow({
       {/* Jot a reflection even after it's done ("felt great after"). */}
       <button
         type="button"
+        data-no-swipe
         aria-label={note ? "Edit note" : "Add note"}
         onClick={(e) => {
           e.stopPropagation();
@@ -978,16 +948,32 @@ function CompletedRow({
       </button>
       <button
         type="button"
+        data-no-swipe
         aria-label="Mark as not done today"
         aria-pressed={true}
         onClick={(e) => {
           e.stopPropagation();
-          onStatus(habit.id, "PENDING");
+          applyStatusAction(habit, tierToSend, "CLEAR", true, onStatus);
         }}
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-calm-500 bg-calm-500 text-white transition-colors hover:bg-calm-600"
       >
         <CheckIcon />
       </button>
+
+      <PlanStatusSheet
+        open={menuOpen}
+        title={habit.name}
+        current="COMPLETED"
+        onPick={(action) => {
+          applyStatusAction(habit, tierToSend, action, true, onStatus);
+          setMenuOpen(false);
+        }}
+        onDetails={() => {
+          setMenuOpen(false);
+          navigate(`/habits/${habit.id}`);
+        }}
+        onClose={() => setMenuOpen(false)}
+      />
     </div>
   );
 }
@@ -4165,7 +4151,7 @@ function PlansPage() {
                 <ul className="space-y-1.5">
                   {stretchSlots.map(({ habit, level }) => (
                     <li key={`stretch-${habit.id}-${level}`}>
-                      <SwipeableCard
+                      <HabitCard
                         habit={habit}
                         dayTier={dayTier}
                         completeTier={level}
