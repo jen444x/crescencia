@@ -3057,11 +3057,14 @@ function PlansPage() {
     setPlans((prev) => applyPlanOrder(prev, planId, orderedHabits));
 
     // /days/arrange/ keys on row_id (the day's stable per-row key) and wants the
-    // whole list with fresh 1..N orders.
-    const items = orderedHabits.map((habit, i) => ({
-      id: habit.row_id,
-      order: i + 1,
-    }));
+    // whole list with fresh 1..N orders. A not-yet-saved row (placed this
+    // session, no row_id) is sent as a {habit, plan, order} placement instead of
+    // an {id: null} move — which the backend rejects — so the reorder persists.
+    const items = orderedHabits.map((habit, i) =>
+      habit.row_id != null
+        ? { id: habit.row_id, order: i + 1 }
+        : { habit: habit.id, plan: planId, order: i + 1 },
+    );
 
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/days/arrange/`, {
@@ -3074,7 +3077,9 @@ function PlansPage() {
       // re-fetch /plan/ to pick up the day's real keys + reconcile.
       setReloadToken((token) => token + 1);
     } catch {
+      // Don't silently snap back — surface it so a rejected save is visible.
       setPlans(snapshot);
+      toast("Couldn't reorder — try again", { variant: "error" });
     }
   }
 
@@ -3283,34 +3288,46 @@ function PlansPage() {
     });
   }
 
-  // Place an Anytime habit (no row yet) onto a real block FOR THE VIEWED DAY:
-  // /days/arrange/ with a placement item ({habit, plan}, no id) creates a
-  // ScheduleDay row for that day only — it does NOT add it to the recurring
-  // template. Optimistic move out of Anytime, then re-fetch /plan/ to pick up
-  // the new row's row_id. Lands at the bottom (omit order = append).
-  async function placeHabit(habitId: number, planId: number) {
+  // Place an Anytime habit onto a real block FOR THE VIEWED DAY, AT THE DROP
+  // POSITION. We send the WHOLE target cycle to /days/arrange/ with fresh 1..N
+  // orders — the placed habit as a {habit, plan, order} placement, the siblings
+  // as {id, order} moves — so it lands exactly where it was dropped (before
+  // `beforeRowId`, or appended when that's null) and never collides with a
+  // sibling's order. Optimistic, then re-fetch /plan/ to pick up the new row_id.
+  async function placeHabit(
+    habitId: number,
+    planId: number,
+    beforeRowId: number | null = null,
+  ) {
     const snapshot = plansRef.current;
-    // The optimistic move: pull the habit out of Anytime and append it to the
-    // target cycle. Shared by both scopes (per-day below, forward via the gate).
+    // The optimistic move: pull the habit out of Anytime and insert it into the
+    // target cycle at the drop position. Shared by both scopes (per-day below,
+    // forward via the gate).
     const moveOut = (plans: Plan[]): Plan[] => {
       const habit = plans
         .find((p) => p.id == null)
         ?.habits.find((h) => h.id === habitId);
       if (!habit) return plans;
       const placed: Habit = { ...habit, routine: null };
-      return plans.map((p) =>
-        p.id == null
-          ? { ...p, habits: p.habits.filter((h) => h.id !== habitId) }
-          : p.id === planId
-            ? { ...p, habits: [...p.habits, placed] }
-            : p,
-      );
+      return plans.map((p) => {
+        if (p.id == null)
+          return { ...p, habits: p.habits.filter((h) => h.id !== habitId) };
+        if (p.id !== planId) return p;
+        const at =
+          beforeRowId != null
+            ? p.habits.findIndex((h) => h.row_id === beforeRowId)
+            : -1;
+        const idx = at >= 0 ? at : p.habits.length;
+        return {
+          ...p,
+          habits: [...p.habits.slice(0, idx), placed, ...p.habits.slice(idx)],
+        };
+      });
     };
 
     // Forward mode: confirm, then write ONLY the placed habit's forward
-    // generation (fix #3). It lands at the bottom of the target cycle; the
-    // cycle's existing members keep their forward placement — we don't renumber
-    // them.
+    // generation (fix #3) — at its drop-position order; the cycle's existing
+    // members keep their forward placement, we don't renumber them.
     if (applyToFuture && isViewingToday) {
       const habit = snapshot
         .find((p) => p.id == null)
@@ -3326,24 +3343,31 @@ function PlansPage() {
       return;
     }
 
-    setPlans(moveOut);
-    try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/days/arrange/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          date: toYMD(viewedDate),
-          items: [{ habit: habitId, plan: planId }],
-        }),
-      });
-      if (!res.ok) throw new Error("Request failed");
-      // The freeze assigns the new row its row_id; re-fetch to reconcile.
-      setReloadToken((token) => token + 1);
-      toast("Habit placed");
-    } catch {
+    // Per-day: optimistic insert, then persist the whole target cycle's order so
+    // the drop position sticks (the placed habit as a placement, the siblings as
+    // ordered moves).
+    const next = moveOut(snapshot);
+    setPlans(next);
+    const block = next.find((p) => p.id === planId);
+    const items = (block?.habits ?? []).map(
+      (h, i): Record<string, number | null> => {
+        if (h.row_id == null) return { habit: h.id, plan: planId, order: i + 1 };
+        // An existing row in this block; force the placed habit's plan so it
+        // actually moves in even if it already had a row elsewhere (Anytime).
+        return h.id === habitId
+          ? { id: h.row_id, order: i + 1, plan: planId, routine: null }
+          : { id: h.row_id, order: i + 1 };
+      },
+    );
+    const ok = await persistItems(items);
+    if (!ok) {
       setPlans(snapshot);
       toast("Couldn't place that habit", { variant: "error" });
+      return;
     }
+    // The freeze assigns the new row its row_id; re-fetch to reconcile.
+    setReloadToken((token) => token + 1);
+    toast("Habit placed");
   }
 
   // "＋ Add time": make an empty time block (or reuse the one already at that
@@ -3415,9 +3439,10 @@ function PlansPage() {
         )?.id ?? null;
     }
 
-    // Placing a habit out of Anytime onto a real block.
+    // Placing a habit out of Anytime onto a real block, at the drop position
+    // (`overRid` = the row it landed on, or null when dropped on empty space).
     if (newHabitId != null) {
-      if (targetPlanId != null) placeHabit(newHabitId, targetPlanId);
+      if (targetPlanId != null) placeHabit(newHabitId, targetPlanId, overRid);
       return; // anytime -> anytime is a no-op
     }
 
