@@ -57,7 +57,7 @@ import {
 } from "./plan/tier";
 import PlanToolbar from "./plan/components/PlanToolbar";
 import { DateNav } from "./plan/components/DateNav";
-import { forwardItemForPlan } from "./plan/forward";
+import { forwardItemForMove, forwardItemForPlan } from "./plan/forward";
 import { startOfDay, toYMD, addDays, isSameDay, dayLabel } from "./plan/dates";
 
 // Read a habit's state, tolerating an older payload that only had done_today.
@@ -2312,13 +2312,20 @@ function NoteSheet({
 function RoutineSheet({
   routine,
   habits,
+  cycles,
+  currentCycleId,
   onCreate,
   onSave,
   onDelete,
+  onMoveCycle,
   onClose,
 }: {
   routine: { id: number; name: string } | null; // null = create mode
   habits: { scheduleId: number; name: string; routineId: number | null }[];
+  // The timed cycles this routine could live in, and which one it's in now
+  // (null if it isn't in a timed cycle). Drives the "Move to cycle" picker.
+  cycles: { id: number; label: string }[];
+  currentCycleId: number | null;
   onCreate: (name: string, scheduleIds: number[]) => Promise<boolean>;
   onSave: (
     routineId: number,
@@ -2327,6 +2334,14 @@ function RoutineSheet({
     removeIds: number[],
   ) => Promise<boolean>;
   onDelete: (routineId: number) => void;
+  // Move the whole routine to another cycle (every day from today), applied as
+  // part of Save. `memberScheduleIds` is the routine's membership after this
+  // save, so the move targets the final members. Resolves true on success.
+  onMoveCycle: (
+    routineId: number,
+    planId: number,
+    memberScheduleIds?: number[],
+  ) => Promise<boolean>;
   onClose: () => void;
 }) {
   // Schedule ids currently in THIS routine (edit mode): pre-checked, always shown.
@@ -2346,6 +2361,8 @@ function RoutineSheet({
   );
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // The cycle staged in the picker; the actual move runs on Save (see save()).
+  const [cycleId, setCycleId] = useState<number | null>(currentCycleId);
   const nameRef = useRef<HTMLInputElement>(null);
 
   // Habits you can put in this routine: its own members plus any loose
@@ -2402,6 +2419,12 @@ function RoutineSheet({
       const addIds = [...selected].filter((id) => !current.has(id));
       const removeIds = currentMemberIds.filter((id) => !selected.has(id));
       ok = await onSave(routine.id, trimmed, addIds, removeIds);
+      // Then, if the cycle was changed, move the routine. We pass the SAVED
+      // membership (selected) so an add/remove done in this same Save is honored
+      // — the move acts on the final members, not the stale pre-edit set.
+      if (ok && cycleId != null && cycleId !== currentCycleId) {
+        ok = await onMoveCycle(routine.id, cycleId, [...selected]);
+      }
     } else {
       ok = await onCreate(trimmed, [...selected]);
     }
@@ -2486,6 +2509,35 @@ function RoutineSheet({
           <p className="mt-2 text-sm text-stone-400">
             No scheduled habits to add yet — put a habit on your plan first.
           </p>
+        )}
+
+        {/* Move the whole routine to another time block. Picking a cycle here
+            only stages the choice — it's applied when you tap Save (every day
+            from today), with an Undo on the toast. Only shown in edit mode when
+            there's somewhere else to move it. */}
+        {routine && cycles.length > 1 && (
+          <div className="mt-5">
+            <label className="block text-xs font-medium text-calm-600">
+              Cycle
+            </label>
+            <p className="mt-0.5 text-[11px] text-calm-400">
+              Move the whole routine to another time block — applied on Save,
+              every day from today.
+            </p>
+            <select
+              value={cycleId ?? ""}
+              disabled={saving}
+              onChange={(e) => setCycleId(Number(e.target.value))}
+              className="mt-1 w-full rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none disabled:opacity-50"
+            >
+              {cycles.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                  {c.id === currentCycleId ? " (current)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
         )}
 
         <div className="mt-6 flex items-center justify-between gap-2">
@@ -2859,6 +2911,84 @@ function PlansPage() {
       toast("Routine deleted", { variant: "info" });
     } catch {
       toast("Couldn't delete the routine", { variant: "error" });
+    }
+  }
+
+  // Move a whole routine (all its member habits) into another cycle, PERMANENTLY
+  // from today — the menu twin of dragging a habit across blocks. Drag can't pick
+  // up a routine (it stays put inside its cycle by design), so this is how a
+  // routine relocates. We KEEP the routine tag (the members stay grouped) and
+  // reuse the forward writer, so the move lands every day from today AND is
+  // mirrored into a frozen today (arrange_forward's reflect-today) instead of
+  // silently skipping the day you're looking at. Members append to the bottom of
+  // the target cycle with consecutive orders, so the block lands in one piece.
+  //
+  // `memberScheduleIds` (from the sheet's Save) pins the members to the routine's
+  // SAVED membership, so an add/remove made in the same Save is honored. When it's
+  // omitted (the Undo path), we fall back to the current routine tag.
+  async function moveRoutineToCycle(
+    routineId: number,
+    targetPlanId: number,
+    memberScheduleIds?: number[],
+  ): Promise<boolean> {
+    const current = plansRef.current;
+    const allHabits = current.flatMap((p) => p.habits);
+    const members = memberScheduleIds
+      ? memberScheduleIds
+          .map((sid) => allHabits.find((h) => h.schedule_id === sid))
+          .filter((h): h is Habit => h != null)
+      : allHabits.filter((h) => h.routine === routineId);
+    if (members.length === 0) return false;
+
+    const sourcePlan = current.find(
+      (p) => p.id != null && p.habits.some((h) => members.includes(h)),
+    );
+    const targetPlan = current.find((p) => p.id === targetPlanId);
+    if (!targetPlan || targetPlan.id == null) return false;
+    if (sourcePlan?.id === targetPlanId) return true; // already there — no-op
+
+    // The target cycle AFTER the move: its current habits + the routine members
+    // appended (still tagged). forwardItemForMove numbers each member by its
+    // index here, so they take consecutive orders at the bottom and read as one
+    // block. We send ONLY the moved members; the per-slot forward read drops
+    // their old-cycle generation automatically, so they leave the source cycle.
+    const targetAfter = [...targetPlan.habits, ...members];
+    const items = members.map((m) =>
+      forwardItemForMove(m, targetPlanId, targetAfter, routineId),
+    );
+
+    const routineName =
+      members.find((m) => m.routine_name)?.routine_name ?? "routine";
+    const destLabel =
+      targetPlan.name || cycleLabel(targetPlan.habits, targetPlan.time);
+
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/schedules/arrange-forward/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ from_date: toYMD(new Date()), items }),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      setReloadToken((token) => token + 1);
+      const backTo = sourcePlan?.id ?? null;
+      toast(
+        `Moved "${routineName}" to ${destLabel}`,
+        backTo != null
+          ? {
+              action: {
+                label: "Undo",
+                onClick: () => void moveRoutineToCycle(routineId, backTo),
+              },
+            }
+          : undefined,
+      );
+      return true;
+    } catch {
+      toast("Couldn't move the routine", { variant: "error" });
+      return false;
     }
   }
 
@@ -4353,9 +4483,25 @@ function PlansPage() {
               : null
           }
           habits={scheduledHabits}
+          cycles={plans
+            .filter((p) => p.id != null)
+            .map((p) => ({
+              id: p.id!,
+              label: p.name || cycleLabel(p.habits, p.time),
+            }))}
+          currentCycleId={
+            routineSheet.mode === "edit"
+              ? (plans.find(
+                  (p) =>
+                    p.id != null &&
+                    p.habits.some((h) => h.routine === routineSheet.id),
+                )?.id ?? null)
+              : null
+          }
           onCreate={createRoutine}
           onSave={saveRoutine}
           onDelete={deleteRoutine}
+          onMoveCycle={moveRoutineToCycle}
           onClose={() => setRoutineSheet(null)}
         />
       )}
