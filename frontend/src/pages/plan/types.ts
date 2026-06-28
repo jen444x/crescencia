@@ -10,13 +10,13 @@
 export type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED" | "MISSED";
 export type ReadStatus = HabitStatus;
 
-export type Plan = {
+export type Chain = {
   // null for the "Anytime" group (habits with no schedule) — that group
   // can't be reordered.
   id: number | null;
   time: string | null;
-  // The cycle's optional user-given name. "" (or absent) when unnamed — the
-  // block header then falls back to cycleLabel(). Only timed blocks can be
+  // The chain's optional user-given name. "" (or absent) when unnamed — the
+  // block header then falls back to chainLabel(). Only timed blocks can be
   // named; the "Anytime" group (id == null) always reports "".
   name?: string;
   habits: Habit[];
@@ -96,9 +96,9 @@ export type DayNote = {
 
 export type SlotPlacement = "inline" | "stretch" | "hidden";
 
-// A row to render for one habit. `stepNumber` is its position within a cycle
+// A row to render for one habit. `stepNumber` is its position within a chain
 // (1, 2, 3...) or null if it's a standalone habit. `connectBelow` draws the
-// little connector line down to the next step when they're in the same cycle.
+// little connector line down to the next step when they're in the same chain.
 export type Row = {
   habit: Habit;
   stepNumber: number | null;
@@ -109,9 +109,9 @@ export type Row = {
 //   - "active":  a single not-yet-completed habit
 //   - "done":    a RUN of consecutive completed habits, collapsed into one chip
 //   - "routine": a RUN of consecutive habits sharing a routine, shown as one
-//     collapsible block — so a routine stays put inside its cycle (e.g. between
+//     collapsible block — so a routine stays put inside its chain (e.g. between
 //     "shower" and "lotion") instead of being lifted out of the order.
-// A routine counts as ONE step in its cycle, so step numbers stay sensible
+// A routine counts as ONE step in its chain, so step numbers stay sensible
 // (shower 1 · morning routine 2 · lotion 3), and completed routine members stay
 // in their block rather than collapsing into the "done" chip.
 export type Segment =

@@ -39,7 +39,7 @@ import { CSS } from "@dnd-kit/utilities";
 import type {
   HabitStatus,
   ReadStatus,
-  Plan,
+  Chain,
   Habit,
   DayNote,
   Segment,
@@ -90,10 +90,10 @@ function formatTime(time: string | null) {
   return `${hour12}:${minute} ${period}`;
 }
 
-// A short label for a whole cycle: its first habit, plus "+N" when it holds more
+// A short label for a whole chain: its first habit, plus "+N" when it holds more
 // (so a multi-habit block reads as more than just its first item). Falls back to
 // the time if a block somehow has no habits.
-function cycleLabel(habits: Habit[], time: string | null): string {
+function chainLabel(habits: Habit[], time: string | null): string {
   const first = habits[0]?.name;
   if (!first) return formatTime(time);
   return habits.length > 1 ? `${first} +${habits.length - 1}` : first;
@@ -107,7 +107,7 @@ function timeToMinutes(time: string): number {
 }
 
 // 510 -> "08:30". The inverse of timeToMinutes — the absolute time we send to
-// /plans/retime/ when a cycle's time header is dragged.
+// /plans/retime/ when a chain's time header is dragged.
 function minutesToHHMM(total: number): string {
   const hour = Math.floor(total / 60);
   const minute = total % 60;
@@ -118,7 +118,7 @@ function minutesToHHMM(total: number): string {
 // already passed (at 9:10, the "9:00 AM" block is current). Before the day's
 // first block, fall back to it so the page still opens somewhere sensible.
 // Returns the plan id to scroll to, or null if there are no timed blocks.
-function currentBlockId(plans: Plan[]): number | null {
+function currentBlockId(chains: Chain[]): number | null {
   const now = new Date();
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   let currentId: number | null = null;
@@ -126,16 +126,16 @@ function currentBlockId(plans: Plan[]): number | null {
   let earliestId: number | null = null;
   let earliestMinutes = Infinity;
 
-  for (const plan of plans) {
-    if (plan.id == null || !plan.time) continue;
-    const minutes = timeToMinutes(plan.time);
+  for (const chain of chains) {
+    if (chain.id == null || !chain.time) continue;
+    const minutes = timeToMinutes(chain.time);
     if (minutes <= nowMinutes && minutes > currentMinutes) {
       currentMinutes = minutes;
-      currentId = plan.id;
+      currentId = chain.id;
     }
     if (minutes < earliestMinutes) {
       earliestMinutes = minutes;
-      earliestId = plan.id;
+      earliestId = chain.id;
     }
   }
   return currentId ?? earliestId;
@@ -144,7 +144,7 @@ function currentBlockId(plans: Plan[]): number | null {
 // Row + Segment types now live in ./plan/types. buildSegments turns a plan's
 // habits into the ordered segments a time block renders (active rows, collapsed
 // "done" runs, and in-place routine blocks).
-function buildSegments(habits: Habit[], asCycle: boolean): Segment[] {
+function buildSegments(habits: Habit[], asChain: boolean): Segment[] {
   // 1) Collapse into ordered "units": consecutive habits sharing a routine
   //    become one routine unit; every other habit is its own unit.
   type Unit =
@@ -170,11 +170,11 @@ function buildSegments(habits: Habit[], asCycle: boolean): Segment[] {
   }
 
   // 2) Step numbers come from the TIME BLOCK itself: every timed block is one
-  //    cycle, so its units are steps 1..N in order (a routine counts as one
-  //    step). A block with a single unit is a "cycle of one" — shown plain, no
-  //    number. "Anytime" isn't a time, so it's never a cycle (asCycle false) and
+  //    chain, so its units are steps 1..N in order (a routine counts as one
+  //    step). A block with a single unit is a "chain of one" — shown plain, no
+  //    number. "Anytime" isn't a time, so it's never a chain (asChain false) and
   //    its habits stay loose.
-  const numbered = asCycle && units.length >= 2;
+  const numbered = asChain && units.length >= 2;
   const stepNumbers = units.map((_, i) => (numbered ? i + 1 : null));
 
   // 3) Emit segments in order, grouping consecutive completed single habits into
@@ -237,14 +237,14 @@ function buildSegments(habits: Habit[], asCycle: boolean): Segment[] {
 // lower rungs done); without one it sets the whole-habit status. Pure +
 // immutable, so React reliably re-renders.
 function applyStatus(
-  plans: Plan[],
+  chains: Chain[],
   habitId: number,
   status: HabitStatus,
   tier?: number,
-): Plan[] {
-  return plans.map((plan) => ({
-    ...plan,
-    habits: plan.habits.map((habit) => {
+): Chain[] {
+  return chains.map((chain) => ({
+    ...chain,
+    habits: chain.habits.map((habit) => {
       if (habit.id !== habitId) return habit;
       if (tier == null) {
         return { ...habit, status, done_today: status === "COMPLETED" };
@@ -267,21 +267,21 @@ function applyStatus(
 // Return a NEW plans array with one plan's habits set to `orderedHabits`,
 // renumbered 1..N. Pure + immutable, like applyStatus above.
 function applyPlanOrder(
-  plans: Plan[],
-  planId: number,
+  chains: Chain[],
+  chainId: number,
   orderedHabits: Habit[],
-): Plan[] {
-  return plans.map((plan) =>
-    plan.id === planId
+): Chain[] {
+  return chains.map((chain) =>
+    chain.id === chainId
       ? {
-          ...plan,
+          ...chain,
           habits: orderedHabits.map((habit, i) => ({ ...habit, order: i + 1 })),
         }
-      : plan,
+      : chain,
   );
 }
 
-// Which single habit moved in a within-cycle reorder (fix #3). A single drag
+// Which single habit moved in a within-chain reorder (fix #3). A single drag
 // reorder relocates exactly one row; that row is the one whose removal from both
 // the before- and after-lists leaves the remaining sequences identical. Returns
 // its habit id, or null when the order didn't actually change (dropped in place).
@@ -775,7 +775,7 @@ function PlanStatusSheet({
   );
 }
 
-// Shared layout. Cycle steps get a numbered badge + connector line in a left
+// Shared layout. Chain steps get a numbered badge + connector line in a left
 // rail (a label only — dragging happens via the grip inside the card).
 // Standalone habits have no rail, so their card spans the full width.
 function RowLayout({
@@ -825,7 +825,7 @@ function RowLayout({
   );
 }
 
-// A draggable habit row. The drag handle is a grip INSIDE the card; cycle steps
+// A draggable habit row. The drag handle is a grip INSIDE the card; chain steps
 // also show their number in the left rail (label only).
 function SortableRow({
   habit,
@@ -1061,8 +1061,8 @@ function RoutineBlock({
   habits: Habit[];
   // The day's chosen tier, threaded to member cards for their shown rung/ladder.
   dayTier: number;
-  // Cycle step number + connector, when the routine sits inside a cycle. null
-  // step = standalone (no cycle), and the block spans the full width.
+  // Chain step number + connector, when the routine sits inside a chain. null
+  // step = standalone (no chain), and the block spans the full width.
   stepNumber: number | null;
   connectBelow: boolean;
   onStatus: (habitId: number, status: HabitStatus, tier?: number) => void;
@@ -1078,9 +1078,9 @@ function RoutineBlock({
 
   return (
     <div className="flex gap-3">
-      {/* Left rail: cycle step badge + connector, so the routine reads as one
-          step in the cycle (e.g. between shower and lotion). Null step = the
-          routine isn't in a cycle, and the block spans the full width. */}
+      {/* Left rail: chain step badge + connector, so the routine reads as one
+          step in the chain (e.g. between shower and lotion). Null step = the
+          routine isn't in a chain, and the block spans the full width. */}
       {stepNumber != null && (
         <div className="flex flex-col items-center">
           <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-calm-300 bg-calm-50 text-[10px] font-medium text-calm-500">
@@ -1177,9 +1177,9 @@ function RoutineBlock({
 // drag-to-reorder list for scheduled plans; a plain list for "Anytime"), and
 // completed habits collapse into the tray below so they stop taking up space.
 // Routine-tagged habits render as a collapsible block IN PLACE (so a routine
-// stays put inside its cycle), not lifted out of the order.
+// stays put inside its chain), not lifted out of the order.
 function PlanBoard({
-  plan,
+  chain,
   dayTier,
   inlineTierByHabit,
   mainOnly,
@@ -1189,7 +1189,7 @@ function PlanBoard({
   onEditRoutine,
   interactive,
 }: {
-  plan: Plan;
+  chain: Chain;
   // The day's chosen tier (Roots=1 / Growth=2). Tiered habits with no rung at or
   // below it are hidden for the day; threaded to each card for its shown rung.
   dayTier: number;
@@ -1209,12 +1209,12 @@ function PlanBoard({
   // false for the "Anytime" group (no rows to reorder).
   interactive: boolean;
 }) {
-  const planId = plan.id;
+  const chainId = chain.id;
   // Register this block as a drop target so a row dragged out of another block
   // can land here — including on the empty space below the rows. The page-level
   // DndContext (in the main component) runs the actual move on drop.
   const { setNodeRef: setDropRef } = useDroppable({
-    id: `plan-${planId ?? "anytime"}`,
+    id: `plan-${chainId ?? "anytime"}`,
   });
   // Keep only the rows that belong INLINE for the day: untiered rows, the one
   // Case-A slot at the habit's highest tier <= today, and a Case-B row that has a
@@ -1223,7 +1223,7 @@ function PlanBoard({
   // They're dropped from DISPLAY only — every list below (segments, active set,
   // drag rebuild) is built from this set, so reorder only touches what's shown;
   // the hidden ones are re-inserted in place when persisting (see handleDragEnd).
-  const habits = plan.habits.filter(
+  const habits = chain.habits.filter(
     (habit) =>
       slotPlacement(habit, inlineTierByHabit, dayTier) === "inline" &&
       (!mainOnly || !habit.is_support),
@@ -1231,18 +1231,18 @@ function PlanBoard({
 
   // Not reorderable when it's the "Anytime" group (no schedule rows) or any day
   // that isn't today (see `interactive` above).
-  // Anytime (planId null) is draggable too, so you can drag a freshly-added
+  // Anytime (chainId null) is draggable too, so you can drag a freshly-added
   // habit out of it onto a time block. It just isn't a reorder/move target —
   // dropping onto it is a no-op for now (removing a habit's time comes later).
   const canReorder = interactive;
 
   // Ordered segments: single active habits, in-place "done" groups, and routine
   // blocks — each rendered WHERE it sits in the order, so a routine stays inside
-  // its cycle. Drag reorders only the loose active habits; done + routine units
+  // its chain. Drag reorders only the loose active habits; done + routine units
   // keep their exact spot.
-  // A real time block (planId set) is one cycle → its habits render connected.
-  // "Anytime" (planId null) isn't a time, so it stays loose.
-  const segments = buildSegments(habits, planId != null);
+  // A real time block (chainId set) is one chain → its habits render connected.
+  // "Anytime" (chainId null) isn't a time, so it stays loose.
+  const segments = buildSegments(habits, chainId != null);
   const activeHabits = habits.filter(
     (habit) => !isDone(habit) && habit.routine == null,
   );
@@ -1286,7 +1286,7 @@ function PlanBoard({
             routineItem(seg)
           ) : (
             <li key={seg.row.habit.id}>
-              {/* Non-draggable, but still shows cycle step numbers/connectors. */}
+              {/* Non-draggable, but still shows chain step numbers/connectors. */}
               <RowLayout
                 habit={seg.row.habit}
                 dayTier={dayTier}
@@ -1346,7 +1346,7 @@ function PlanBoard({
 // The "Apply to future days" switch, sitting just under the date header. OFF is
 // the quiet default (recording today); ON flips it into an unmistakable filled
 // state with an explicit caption, so the mode she's in is never ambiguous — both
-// placement edits (where a habit sits) AND a cycle's retime (when it runs) then
+// placement edits (where a habit sits) AND a chain's retime (when it runs) then
 // write the recurring routine from today forward instead of just today's layer.
 function ApplyForwardToggle({
   on,
@@ -1397,16 +1397,16 @@ function ApplyForwardToggle({
   );
 }
 
-// The ⏱ "running late" control on a time block. Pushing this cycle later moves
+// The ⏱ "running late" control on a time block. Pushing this chain later moves
 // it AND everything after it that day (the backend cascades + clamps); it's a
 // per-day override, so the recurring routine is untouched. Deliberately separate
 // from drag-reorder, which moves just one habit without changing times.
 function ShiftControl({
-  planId,
+  chainId,
   onShift,
 }: {
-  planId: number;
-  onShift: (planId: number, minutes: number) => void;
+  chainId: number;
+  onShift: (chainId: number, minutes: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState(15);
@@ -1432,7 +1432,7 @@ function ShiftControl({
 
   function apply(minutes: number) {
     if (!minutes) return;
-    onShift(planId, minutes);
+    onShift(chainId, minutes);
     setOpen(false);
   }
 
@@ -1441,7 +1441,7 @@ function ShiftControl({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-label="Running late — shift this cycle and everything after it"
+        aria-label="Running late — shift this chain and everything after it"
         aria-expanded={open}
         className="flex h-6 w-6 items-center justify-center rounded-full text-calm-500 transition-colors hover:bg-calm-100 hover:text-calm-700"
       >
@@ -1452,7 +1452,7 @@ function ShiftControl({
         <div className="absolute right-0 top-7 z-50 w-60 rounded-xl border border-calm-200 bg-white p-3 text-left shadow-lg">
           <p className="text-xs font-semibold text-calm-700">Running late?</p>
           <p className="mb-2 text-[11px] leading-snug text-stone-400">
-            Moves this cycle and everything after it — today only.
+            Moves this chain and everything after it — today only.
           </p>
 
           <div className="flex gap-1.5">
@@ -1501,12 +1501,12 @@ function ShiftControl({
   );
 }
 
-// --- Retime a single cycle (ephemeral time ruler) ---------------------------
-// The single-block companion to the "running late" shift. Grab a cycle by its
+// --- Retime a single chain (ephemeral time ruler) ---------------------------
+// The single-block companion to the "running late" shift. Grab a chain by its
 // header strip and a slim time ruler fades in *just for the drag*: the dragged
 // block rides the ruler so its position = its time (the calendar feel), then the
 // ruler vanishes on drop — at rest it's still a plain habit list, never a grid.
-// Sets one ABSOLUTE time for that one cycle (no cascade), today only — a per-day
+// Sets one ABSOLUTE time for that one chain (no cascade), today only — a per-day
 // override; tomorrow is normal again. Undo lives on a toast after each drop.
 
 // Ruler scale: ~1.1px per minute (≈66px/hour), so 15-min steps are ~16px — easy
@@ -1524,10 +1524,10 @@ function snapRetime(minutes: number): number {
   return Math.max(0, Math.min(DAY_END_MIN, snapped));
 }
 
-// Keep two cycles off the exact same minute — /plan/ renders same-time blocks as
+// Keep two chains off the exact same minute — /plan/ renders same-time blocks as
 // two stacked rows, which she didn't want. If `minutes` is already taken by
-// another cycle, step outward (just-after first, then just-before) to the nearest
-// free minute so the dropped cycle sorts beside its neighbor but stays its own
+// another chain, step outward (just-after first, then just-before) to the nearest
+// free minute so the dropped chain sorts beside its neighbor but stays its own
 // block. Frontend owns this; the backend just stores whatever time we send.
 function avoidRetimeCollision(minutes: number, takenMinutes: number[]): number {
   const taken = new Set(takenMinutes);
@@ -1568,7 +1568,7 @@ function RetimeHandleIcon() {
 // block's original time, and the dragged block as a chip. Anchored so the
 // block's start time sits at the press point (anchorY), at the same px/min as
 // the pointer mapping — so the chip tracks your finger as it travels past the
-// other cycles. Portaled to <body> and pointer-events:none — the block's
+// other chains. Portaled to <body> and pointer-events:none — the block's
 // captured pointer handlers drive it; this is purely the visual.
 function RetimeRuler({
   anchorY,
@@ -1584,7 +1584,7 @@ function RetimeRuler({
   otherBlocks: { min: number; name: string }[];
 }) {
   // Screen Y for a minute, anchored so startMin sits at the press point — the
-  // chip then tracks your finger while the other cycles stay put as context.
+  // chip then tracks your finger while the other chains stay put as context.
   const yForMin = (min: number) =>
     anchorY + (min - startMin) * RETIME_PX_PER_MIN;
   const viewportH = window.innerHeight;
@@ -1669,14 +1669,14 @@ function RetimeRuler({
   );
 }
 
-// The cycle's name, inline-editable. Shows `label` (the saved name, or the
-// cycleLabel fallback when unnamed) as a tappable title; tapping opens a small
+// The chain's name, inline-editable. Shows `label` (the saved name, or the
+// chainLabel fallback when unnamed) as a tappable title; tapping opens a small
 // text input that saves on Enter/blur and cancels on Escape. Carries
 // data-no-retime so a tap edits the name instead of starting the header's
 // retime drag. Only rendered for timed blocks. `name` is the raw saved value
 // ("" when unnamed) — what we seed the input with — while `label` is what we
 // show when not editing.
-function CycleNameControl({
+function ChainNameControl({
   name,
   label,
   onSave,
@@ -1722,9 +1722,9 @@ function CycleNameControl({
           }
         }}
         onBlur={commit}
-        placeholder="Name this cycle"
+        placeholder="Name this chain"
         maxLength={100}
-        aria-label="Cycle name"
+        aria-label="Chain name"
         className="min-w-0 flex-1 rounded-lg border border-calm-200 bg-white px-2 py-0.5 text-xs font-medium text-calm-900 focus:border-calm-500 focus:outline-none"
       />
     );
@@ -1735,8 +1735,8 @@ function CycleNameControl({
       type="button"
       data-no-retime
       onClick={open}
-      title="Name this cycle"
-      aria-label={name ? `Rename cycle "${name}"` : "Name this cycle"}
+      title="Name this chain"
+      aria-label={name ? `Rename chain "${name}"` : "Name this chain"}
       className="group inline-flex min-w-0 items-center gap-1 text-xs font-medium text-calm-600 transition-colors hover:text-calm-800"
     >
       <span className="truncate">{label}</span>
@@ -1747,14 +1747,14 @@ function CycleNameControl({
   );
 }
 
-// The retime gesture for a WHOLE timed cycle. Grab the block by its header strip;
+// The retime gesture for a WHOLE timed chain. Grab the block by its header strip;
 // past a small threshold the ephemeral RetimeRuler takes over and the block's
 // position on it = its time, until you release. Grabbing the header (not the
 // habit rows) leaves the within-block reorder + swipe-to-skip gestures untouched.
 // `otherBlocks` give the ruler its context markers and break a same-minute tie on
 // drop. Hand-rolled pointer events (like SwipeableCard), not dnd-kit.
 function RetimeBlock({
-  planId,
+  chainId,
   time,
   blockLabel,
   otherBlocks,
@@ -1762,11 +1762,11 @@ function RetimeBlock({
   header,
   children,
 }: {
-  planId: number;
+  chainId: number;
   time: string;
   blockLabel: string;
   otherBlocks: { min: number; name: string }[];
-  onRetime: (planId: number, time: string) => void;
+  onRetime: (chainId: number, time: string) => void;
   // The time-label row — becomes the grab handle. Anything inside it that must
   // stay tappable (e.g. the ⏰ shift button) carries data-no-retime.
   header: ReactNode;
@@ -1778,7 +1778,7 @@ function RetimeBlock({
   const [dragging, setDragging] = useState(false);
   // The press point on screen, so the ruler can anchor the start time to it.
   const [anchorY, setAnchorY] = useState(0);
-  // The minute the cycle would land on right now (drives the chip + the save).
+  // The minute the chain would land on right now (drives the chip + the save).
   const [previewMin, setPreviewMin] = useState<number | null>(null);
 
   // The block's current time in minutes. Derived from the `time` prop (stable
@@ -1819,7 +1819,7 @@ function RetimeBlock({
     // handles that "drag home" case, so we just send the absolute time.)
     if (!moved || target == null || target === startMin) return;
     const taken = otherBlocks.map((b) => b.min);
-    onRetime(planId, minutesToHHMM(avoidRetimeCollision(target, taken)));
+    onRetime(chainId, minutesToHHMM(avoidRetimeCollision(target, taken)));
   }
 
   // A cancelled gesture (e.g. the OS steals the pointer) must NOT commit a move.
@@ -1833,10 +1833,10 @@ function RetimeBlock({
     <div className="relative">
       {/* The header strip is the grab handle — a big target. */}
       <div
-        aria-label={`Set time for this cycle — now ${formatTime(
+        aria-label={`Set time for this chain — now ${formatTime(
           time,
         )}. Drag up or down on the ruler to set a new time.`}
-        title="Drag up or down to set this cycle's time (today only)"
+        title="Drag up or down to set this chain's time (today only)"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -2312,20 +2312,20 @@ function NoteSheet({
 function RoutineSheet({
   routine,
   habits,
-  cycles,
-  currentCycleId,
+  chains,
+  currentChainId,
   onCreate,
   onSave,
   onDelete,
-  onMoveCycle,
+  onMoveChain,
   onClose,
 }: {
   routine: { id: number; name: string } | null; // null = create mode
   habits: { scheduleId: number; name: string; routineId: number | null }[];
-  // The timed cycles this routine could live in, and which one it's in now
-  // (null if it isn't in a timed cycle). Drives the "Move to cycle" picker.
-  cycles: { id: number; label: string }[];
-  currentCycleId: number | null;
+  // The timed chains this routine could live in, and which one it's in now
+  // (null if it isn't in a timed chain). Drives the "Move to chain" picker.
+  chains: { id: number; label: string }[];
+  currentChainId: number | null;
   onCreate: (name: string, scheduleIds: number[]) => Promise<boolean>;
   onSave: (
     routineId: number,
@@ -2334,12 +2334,12 @@ function RoutineSheet({
     removeIds: number[],
   ) => Promise<boolean>;
   onDelete: (routineId: number) => void;
-  // Move the whole routine to another cycle (every day from today), applied as
+  // Move the whole routine to another chain (every day from today), applied as
   // part of Save. `memberScheduleIds` is the routine's membership after this
   // save, so the move targets the final members. Resolves true on success.
-  onMoveCycle: (
+  onMoveChain: (
     routineId: number,
-    planId: number,
+    chainId: number,
     memberScheduleIds?: number[],
   ) => Promise<boolean>;
   onClose: () => void;
@@ -2361,8 +2361,8 @@ function RoutineSheet({
   );
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  // The cycle staged in the picker; the actual move runs on Save (see save()).
-  const [cycleId, setCycleId] = useState<number | null>(currentCycleId);
+  // The chain staged in the picker; the actual move runs on Save (see save()).
+  const [chainId, setChainId] = useState<number | null>(currentChainId);
   const nameRef = useRef<HTMLInputElement>(null);
 
   // Habits you can put in this routine: its own members plus any loose
@@ -2419,11 +2419,11 @@ function RoutineSheet({
       const addIds = [...selected].filter((id) => !current.has(id));
       const removeIds = currentMemberIds.filter((id) => !selected.has(id));
       ok = await onSave(routine.id, trimmed, addIds, removeIds);
-      // Then, if the cycle was changed, move the routine. We pass the SAVED
+      // Then, if the chain was changed, move the routine. We pass the SAVED
       // membership (selected) so an add/remove done in this same Save is honored
       // — the move acts on the final members, not the stale pre-edit set.
-      if (ok && cycleId != null && cycleId !== currentCycleId) {
-        ok = await onMoveCycle(routine.id, cycleId, [...selected]);
+      if (ok && chainId != null && chainId !== currentChainId) {
+        ok = await onMoveChain(routine.id, chainId, [...selected]);
       }
     } else {
       ok = await onCreate(trimmed, [...selected]);
@@ -2511,29 +2511,29 @@ function RoutineSheet({
           </p>
         )}
 
-        {/* Move the whole routine to another time block. Picking a cycle here
+        {/* Move the whole routine to another time block. Picking a chain here
             only stages the choice — it's applied when you tap Save (every day
             from today), with an Undo on the toast. Only shown in edit mode when
             there's somewhere else to move it. */}
-        {routine && cycles.length > 1 && (
+        {routine && chains.length > 1 && (
           <div className="mt-5">
             <label className="block text-xs font-medium text-calm-600">
-              Cycle
+              Chain
             </label>
             <p className="mt-0.5 text-[11px] text-calm-400">
               Move the whole routine to another time block — applied on Save,
               every day from today.
             </p>
             <select
-              value={cycleId ?? ""}
+              value={chainId ?? ""}
               disabled={saving}
-              onChange={(e) => setCycleId(Number(e.target.value))}
+              onChange={(e) => setChainId(Number(e.target.value))}
               className="mt-1 w-full rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none disabled:opacity-50"
             >
-              {cycles.map((c) => (
+              {chains.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.label}
-                  {c.id === currentCycleId ? " (current)" : ""}
+                  {c.id === currentChainId ? " (current)" : ""}
                 </option>
               ))}
             </select>
@@ -2588,8 +2588,8 @@ function RoutineSheet({
   );
 }
 
-function PlansPage() {
-  const [plans, setPlans] = useState<Plan[]>([]);
+function PlanPage() {
+  const [chains, setChains] = useState<Chain[]>([]);
   // The viewed day's notes from the new Note model (GET /days/notes/). Source of
   // truth for notes; grouped onto each habit via notesByHabit below.
   const [dayNotes, setDayNotes] = useState<DayNote[]>([]);
@@ -2640,7 +2640,7 @@ function PlansPage() {
   // record-today mode), so a forward edit is always a deliberate, visible choice.
   // Only meaningful while viewing today: forward edits anchor to today, so the
   // toggle hides on any other day. When on, a placement gesture writes a dated
-  // Schedule generation and a cycle retime writes a dated PlanTime row — the
+  // Schedule generation and a chain retime writes a dated PlanTime row — the
   // recurring routine from today forward — instead of just today's per-day layer.
   const [applyToFuture, setApplyToFuture] = useState(false);
   // Forward mode only applies on today, defended at three layers: the toggle is
@@ -2663,7 +2663,7 @@ function PlansPage() {
   // forward edit is about to stick, we stash a one-line summary + the scope
   // detail (a sentence explaining exactly what does and doesn't change) + the
   // action here and show a confirm dialog. `detail` differs by edit kind —
-  // placement ("where the habit sits") vs time ("when this cycle runs") — so the
+  // placement ("where the habit sits") vs time ("when this chain runs") — so the
   // message is always honest about scope. null = nothing pending.
   const [pendingForward, setPendingForward] = useState<{
     summary: string;
@@ -2674,17 +2674,17 @@ function PlansPage() {
   // The two scope sentences the clarity gate appends after the one-line summary,
   // so each edit kind reads honestly about what it touches (and leaves alone).
   const PLACEMENT_DETAIL =
-    "This changes where the habit sits — not when your cycles run. Past days stay exactly as they were.";
+    "This changes where the habit sits — not when your chains run. Past days stay exactly as they were.";
   const TIME_DETAIL =
-    "This changes when this cycle runs — not where any habit sits, and no other cycle moves. Past days stay exactly as they were.";
+    "This changes when this chain runs — not where any habit sits, and no other chain moves. Past days stay exactly as they were.";
 
   // The habit order the viewed day loaded with — the target "Reset order"
   // returns to ("back to before" = how the day looked when you opened it).
-  const [baselineOrder, setBaselineOrder] = useState<Plan[] | null>(null);
+  const [baselineOrder, setBaselineOrder] = useState<Chain[] | null>(null);
 
   // The time block happening right now — used to badge it "Now" and to scroll
   // the page there on first load.
-  const nowBlockId = useMemo(() => currentBlockId(plans), [plans]);
+  const nowBlockId = useMemo(() => currentBlockId(chains), [chains]);
 
   // habit id -> that habit's notes for the day. A shared note lands under each
   // habit it's attached to. Built from the new Note model (dayNotes).
@@ -2704,20 +2704,20 @@ function PlansPage() {
   // picker. A habit lives in one time block, so this is already deduped.
   const allHabits = useMemo(
     () =>
-      plans.flatMap((plan) =>
-        plan.habits.map((h) => ({ id: h.id, name: h.name })),
+      chains.flatMap((chain) =>
+        chain.habits.map((h) => ({ id: h.id, name: h.name })),
       ),
-    [plans],
+    [chains],
   );
 
   // Section keys (plan id, or "anytime") that are collapsed to just their time
   // header. Session-only: plain state, so it resets on reload. Default expanded.
-  const [collapsedCycles, setCollapsedCycles] = useState<Set<string>>(
+  const [collapsedChains, setCollapsedChains] = useState<Set<string>>(
     new Set(),
   );
   // Toggle one section collapsed/expanded. Build a NEW Set so React re-renders.
   function toggleCollapsed(key: string) {
-    setCollapsedCycles((prev) => {
+    setCollapsedChains((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -2731,10 +2731,10 @@ function PlansPage() {
   const didAutoScroll = useRef(false);
   // Latest plans, mirrored into a ref so a delayed callback (a toast's Undo,
   // fired seconds after the action) reads current state, not a stale closure.
-  const plansRef = useRef(plans);
+  const chainsRef = useRef(chains);
   useEffect(() => {
-    plansRef.current = plans;
-  }, [plans]);
+    chainsRef.current = chains;
+  }, [chains]);
 
   const toast = useToast();
 
@@ -2753,8 +2753,8 @@ function PlansPage() {
   // to tag, so they can't join a routine and are left out.
   const scheduledHabits = useMemo(
     () =>
-      plans
-        .flatMap((plan) => plan.habits)
+      chains
+        .flatMap((chain) => chain.habits)
         .flatMap((h) =>
           h.schedule_id != null
             ? [
@@ -2766,7 +2766,7 @@ function PlansPage() {
               ]
             : [],
         ),
-    [plans],
+    [chains],
   );
 
   // Set a habit's status for today (complete / skip / reset). We update the UI
@@ -2777,8 +2777,8 @@ function PlansPage() {
     status: HabitStatus,
     tier?: number,
   ) {
-    const snapshot = plans;
-    setPlans((prev) => applyStatus(prev, habitId, status, tier));
+    const snapshot = chains;
+    setChains((prev) => applyStatus(prev, habitId, status, tier));
 
     try {
       // Send the `tier` for EVERY status (not just completion) so skip / missed /
@@ -2807,7 +2807,7 @@ function PlansPage() {
       // from the server. Complete/skip/missed are exact optimistically — no reload.
       if (status === "PENDING" && tier != null) setReloadToken((t) => t + 1);
     } catch {
-      setPlans(snapshot);
+      setChains(snapshot);
     }
   }
 
@@ -2914,24 +2914,24 @@ function PlansPage() {
     }
   }
 
-  // Move a whole routine (all its member habits) into another cycle, PERMANENTLY
+  // Move a whole routine (all its member habits) into another chain, PERMANENTLY
   // from today — the menu twin of dragging a habit across blocks. Drag can't pick
-  // up a routine (it stays put inside its cycle by design), so this is how a
+  // up a routine (it stays put inside its chain by design), so this is how a
   // routine relocates. We KEEP the routine tag (the members stay grouped) and
   // reuse the forward writer, so the move lands every day from today AND is
   // mirrored into a frozen today (arrange_forward's reflect-today) instead of
   // silently skipping the day you're looking at. Members append to the bottom of
-  // the target cycle with consecutive orders, so the block lands in one piece.
+  // the target chain with consecutive orders, so the block lands in one piece.
   //
   // `memberScheduleIds` (from the sheet's Save) pins the members to the routine's
   // SAVED membership, so an add/remove made in the same Save is honored. When it's
   // omitted (the Undo path), we fall back to the current routine tag.
-  async function moveRoutineToCycle(
+  async function moveRoutineToChain(
     routineId: number,
     targetPlanId: number,
     memberScheduleIds?: number[],
   ): Promise<boolean> {
-    const current = plansRef.current;
+    const current = chainsRef.current;
     const allHabits = current.flatMap((p) => p.habits);
     const members = memberScheduleIds
       ? memberScheduleIds
@@ -2947,11 +2947,11 @@ function PlansPage() {
     if (!targetPlan || targetPlan.id == null) return false;
     if (sourcePlan?.id === targetPlanId) return true; // already there — no-op
 
-    // The target cycle AFTER the move: its current habits + the routine members
+    // The target chain AFTER the move: its current habits + the routine members
     // appended (still tagged). forwardItemForMove numbers each member by its
     // index here, so they take consecutive orders at the bottom and read as one
     // block. We send ONLY the moved members; the per-slot forward read drops
-    // their old-cycle generation automatically, so they leave the source cycle.
+    // their old-chain generation automatically, so they leave the source chain.
     const targetAfter = [...targetPlan.habits, ...members];
     const items = members.map((m) =>
       forwardItemForMove(m, targetPlanId, targetAfter, routineId),
@@ -2960,7 +2960,7 @@ function PlansPage() {
     const routineName =
       members.find((m) => m.routine_name)?.routine_name ?? "routine";
     const destLabel =
-      targetPlan.name || cycleLabel(targetPlan.habits, targetPlan.time);
+      targetPlan.name || chainLabel(targetPlan.habits, targetPlan.time);
 
     try {
       const res = await fetch(
@@ -2980,7 +2980,7 @@ function PlansPage() {
           ? {
               action: {
                 label: "Undo",
-                onClick: () => void moveRoutineToCycle(routineId, backTo),
+                onClick: () => void moveRoutineToChain(routineId, backTo),
               },
             }
           : undefined,
@@ -3115,22 +3115,22 @@ function PlansPage() {
   // ONE item — the moved habit's new slot — read off the OPTIMISTIC post-move
   // state, to /schedules/arrange-forward/, anchored to today (from_date defaults
   // to today; we send it explicitly for clarity). `arrange_forward` upserts only
-  // that habit's dated generation, so the OTHER habits in the cycle keep whatever
+  // that habit's dated generation, so the OTHER habits in the chain keep whatever
   // forward placement they already had — we never rewrite them. On success we
   // re-fetch /plan/ so the day reflects the new generation (today is mirrored
   // even when frozen). On failure we roll the optimistic state back. Placement
   // only — never touches time/status.
   async function persistForward(
-    optimisticPlans: Plan[],
+    optimisticPlans: Chain[],
     habitId: number,
     targetPlanId: number | null,
-    snapshot: Plan[],
+    snapshot: Chain[],
   ): Promise<boolean> {
     const item = forwardItemForPlan(optimisticPlans, habitId, targetPlanId);
     if (!item) {
       // The moved habit isn't where we expected in the optimistic state — bail
       // without writing anything rather than send a malformed payload.
-      setPlans(snapshot);
+      setChains(snapshot);
       return false;
     }
     try {
@@ -3148,7 +3148,7 @@ function PlansPage() {
       setReloadToken((token) => token + 1);
       return true;
     } catch {
-      setPlans(snapshot);
+      setChains(snapshot);
       toast("Couldn't apply that change", { variant: "error" });
       return false;
     }
@@ -3162,7 +3162,7 @@ function PlansPage() {
   // forward generation is written; siblings are left alone.
   function confirmForward(
     summary: string,
-    optimistic: () => Plan[],
+    optimistic: () => Chain[],
     habitId: number,
     targetPlanId: number | null,
   ) {
@@ -3170,9 +3170,9 @@ function PlansPage() {
       summary,
       detail: PLACEMENT_DETAIL, // placement funnel: never mentions time
       run: () => {
-        const snapshot = plansRef.current;
+        const snapshot = chainsRef.current;
         const next = optimistic();
-        setPlans(next);
+        setChains(next);
         void persistForward(next, habitId, targetPlanId, snapshot);
       },
     });
@@ -3181,10 +3181,10 @@ function PlansPage() {
   // Persist a plan's habit order for the VIEWED DAY only (no toast). Optimistic,
   // with a snapshot we restore if the save fails. Shared by a drag and its Undo.
   // Writes the per-day layer via /days/arrange/ — never the recurring template.
-  async function postReorder(planId: number, orderedHabits: Habit[]) {
+  async function postReorder(chainId: number, orderedHabits: Habit[]) {
     if (orderedHabits.length === 0) return;
-    const snapshot = plansRef.current;
-    setPlans((prev) => applyPlanOrder(prev, planId, orderedHabits));
+    const snapshot = chainsRef.current;
+    setChains((prev) => applyPlanOrder(prev, chainId, orderedHabits));
 
     // /days/arrange/ keys on row_id (the day's stable per-row key) and wants the
     // whole list with fresh 1..N orders. A not-yet-saved row (placed this
@@ -3193,7 +3193,7 @@ function PlansPage() {
     const items = orderedHabits.map((habit, i) =>
       habit.row_id != null
         ? { id: habit.row_id, order: i + 1 }
-        : { habit: habit.id, plan: planId, order: i + 1 },
+        : { habit: habit.id, chain: chainId, order: i + 1 },
     );
 
     try {
@@ -3208,7 +3208,7 @@ function PlansPage() {
       setReloadToken((token) => token + 1);
     } catch {
       // Don't silently snap back — surface it so a rejected save is visible.
-      setPlans(snapshot);
+      setChains(snapshot);
       toast("Couldn't reorder — try again", { variant: "error" });
     }
   }
@@ -3217,34 +3217,34 @@ function PlansPage() {
   // then offer a one-tap Undo (the app's standard toast pattern, same as retime)
   // that puts the habit back where it was.
   //
-  // Forward mode (toggle on) instead routes the within-cycle reorder through the
+  // Forward mode (toggle on) instead routes the within-chain reorder through the
   // clarity gate and the recurring forward-writer — no optimistic move happens
   // until she confirms.
-  async function reorderPlan(planId: number, orderedHabits: Habit[]) {
+  async function reorderPlan(chainId: number, orderedHabits: Habit[]) {
     if (orderedHabits.length === 0) return;
     if (applyToFuture && isViewingToday) {
-      const cyclePlan = plans.find((p) => p.id === planId);
-      // fix #3: a within-cycle reorder still moves exactly ONE habit. Find it by
+      const chainPlan = chains.find((p) => p.id === chainId);
+      // fix #3: a within-chain reorder still moves exactly ONE habit. Find it by
       // diffing the new order against the old (the one row whose removal makes
       // the two lists equal) and write only that habit's forward generation —
       // the siblings keep their existing forward placement.
-      const movedId = movedHabitId(cyclePlan?.habits ?? [], orderedHabits);
+      const movedId = movedHabitId(chainPlan?.habits ?? [], orderedHabits);
       if (movedId == null) return; // no net move (e.g. dropped in place)
       confirmForward(
-        `Reorder ${cycleLabel(cyclePlan?.habits ?? orderedHabits, cyclePlan?.time ?? null)} — every day from today`,
-        () => applyPlanOrder(plansRef.current, planId, orderedHabits),
+        `Reorder ${chainLabel(chainPlan?.habits ?? orderedHabits, chainPlan?.time ?? null)} — every day from today`,
+        () => applyPlanOrder(chainsRef.current, chainId, orderedHabits),
         movedId,
-        planId,
+        chainId,
       );
       return;
     }
-    const previousHabits = plans.find((p) => p.id === planId)?.habits ?? [];
-    await postReorder(planId, orderedHabits);
+    const previousHabits = chains.find((p) => p.id === chainId)?.habits ?? [];
+    await postReorder(chainId, orderedHabits);
     if (previousHabits.length === 0) return;
     toast("Habit moved", {
       action: {
         label: "Undo",
-        onClick: () => postReorder(planId, previousHabits),
+        onClick: () => postReorder(chainId, previousHabits),
       },
     });
   }
@@ -3263,8 +3263,8 @@ function PlansPage() {
   const [addingTime, setAddingTime] = useState(false);
   const [newTime, setNewTime] = useState("");
   // Keep a block if it has habits OR it's a freshly-added (still-empty) one.
-  const keepBlock = (plan: Plan) =>
-    plan.habits.length > 0 || (plan.id != null && newPlanIds.has(plan.id));
+  const keepBlock = (chain: Chain) =>
+    chain.habits.length > 0 || (chain.id != null && newPlanIds.has(chain.id));
 
   // One shared drag context spans every block (lifted out of PlanBoard) so a row
   // can be dragged from one time block into another.
@@ -3309,24 +3309,24 @@ function PlansPage() {
     }
   }
 
-  // Move one row (`rid` = its row_id) out of `fromPlan` into `toPlan` for the
+  // Move one row (`rid` = its row_id) out of `fromChain` into `toChain` for the
   // viewed day only, dropping its routine (a same-block tag) and
   // landing it before `overRid` (or at the end when dropped on empty block
   // space). Persists BOTH blocks in one /days/arrange/ batch, optimistic with
   // rollback, and offers an Undo that puts it back.
   async function moveAcrossBlocks(
-    fromPlan: Plan,
-    toPlan: Plan,
+    fromChain: Chain,
+    toChain: Chain,
     rid: number,
     overRid: number | null,
   ) {
-    if (fromPlan.id == null || toPlan.id == null) return;
-    const moved = fromPlan.habits.find((h) => h.row_id === rid);
+    if (fromChain.id == null || toChain.id == null) return;
+    const moved = fromChain.habits.find((h) => h.row_id === rid);
     if (!moved) return;
 
-    const snapshot = plansRef.current;
-    const origFrom = fromPlan.habits;
-    const origTo = toPlan.habits;
+    const snapshot = chainsRef.current;
+    const origFrom = fromChain.habits;
+    const origTo = toChain.habits;
 
     const newFrom = origFrom.filter((h) => h.row_id !== rid);
     const movedNew: Habit = { ...moved, routine: null };
@@ -3335,19 +3335,19 @@ function PlansPage() {
     const idx = at >= 0 ? at : origTo.length;
     const newTo = [...origTo.slice(0, idx), movedNew, ...origTo.slice(idx)];
 
-    // Forward mode: route the cross-cycle move through the clarity gate + the
+    // Forward mode: route the cross-chain move through the clarity gate + the
     // recurring forward-writer. fix #3: only the MOVED habit (`rid` -> habit
-    // `moved.id`) gets a forward generation, landing in the target cycle. The
-    // source cycle's siblings and the target cycle's siblings keep their existing
+    // `moved.id`) gets a forward generation, landing in the target chain. The
+    // source chain's siblings and the target chain's siblings keep their existing
     // forward placement — we don't renumber either. No optimistic move until she
     // confirms.
     if (applyToFuture && isViewingToday) {
-      const fromId = fromPlan.id;
-      const toId = toPlan.id;
+      const fromId = fromChain.id;
+      const toId = toChain.id;
       confirmForward(
-        `Move "${moved.name}" into ${cycleLabel(toPlan.habits, toPlan.time)} — every day from today`,
+        `Move "${moved.name}" into ${chainLabel(toChain.habits, toChain.time)} — every day from today`,
         () =>
-          plansRef.current.map((p) =>
+          chainsRef.current.map((p) =>
             p.id === fromId
               ? {
                   ...p,
@@ -3366,11 +3366,11 @@ function PlansPage() {
       return;
     }
 
-    setPlans((prev) =>
+    setChains((prev) =>
       prev.map((p) =>
-        p.id === fromPlan.id
+        p.id === fromChain.id
           ? { ...p, habits: newFrom.map((h, i) => ({ ...h, order: i + 1 })) }
-          : p.id === toPlan.id
+          : p.id === toChain.id
             ? { ...p, habits: newTo.map((h, i) => ({ ...h, order: i + 1 })) }
             : p,
       ),
@@ -3380,13 +3380,13 @@ function PlansPage() {
       ...newFrom.map((h, i) => ({ id: h.row_id ?? null, order: i + 1 })),
       ...newTo.map((h, i) =>
         h.row_id === rid
-          ? { id: rid, order: i + 1, plan: toPlan.id, routine: null }
+          ? { id: rid, order: i + 1, chain: toChain.id, routine: null }
           : { id: h.row_id ?? null, order: i + 1 },
       ),
     ];
     const ok = await persistItems(items);
     if (!ok) {
-      setPlans(snapshot);
+      setChains(snapshot);
       toast("Couldn't move that habit", { variant: "error" });
       return;
     }
@@ -3398,7 +3398,7 @@ function PlansPage() {
       action: {
         label: "Undo",
         onClick: () => {
-          setPlans(snapshot);
+          setChains(snapshot);
           // Put the row back in its old block, time, and routine tag.
           persistItems([
             ...origFrom.map((h, i) =>
@@ -3406,7 +3406,7 @@ function PlansPage() {
                 ? {
                     id: rid,
                     order: i + 1,
-                    plan: fromPlan.id,
+                    chain: fromChain.id,
                     routine: h.routine ?? null,
                   }
                 : { id: h.row_id ?? null, order: i + 1 },
@@ -3419,30 +3419,30 @@ function PlansPage() {
   }
 
   // Place an Anytime habit onto a real block FOR THE VIEWED DAY, AT THE DROP
-  // POSITION. We send the WHOLE target cycle to /days/arrange/ with fresh 1..N
+  // POSITION. We send the WHOLE target chain to /days/arrange/ with fresh 1..N
   // orders — the placed habit as a {habit, plan, order} placement, the siblings
   // as {id, order} moves — so it lands exactly where it was dropped (before
   // `beforeRowId`, or appended when that's null) and never collides with a
   // sibling's order. Optimistic, then re-fetch /plan/ to pick up the new row_id.
   async function placeHabit(
     habitId: number,
-    planId: number,
+    chainId: number,
     beforeRowId: number | null = null,
   ) {
-    const snapshot = plansRef.current;
+    const snapshot = chainsRef.current;
     // The optimistic move: pull the habit out of Anytime and insert it into the
-    // target cycle at the drop position. Shared by both scopes (per-day below,
+    // target chain at the drop position. Shared by both scopes (per-day below,
     // forward via the gate).
-    const moveOut = (plans: Plan[]): Plan[] => {
-      const habit = plans
+    const moveOut = (chains: Chain[]): Chain[] => {
+      const habit = chains
         .find((p) => p.id == null)
         ?.habits.find((h) => h.id === habitId);
-      if (!habit) return plans;
+      if (!habit) return chains;
       const placed: Habit = { ...habit, routine: null };
-      return plans.map((p) => {
+      return chains.map((p) => {
         if (p.id == null)
           return { ...p, habits: p.habits.filter((h) => h.id !== habitId) };
-        if (p.id !== planId) return p;
+        if (p.id !== chainId) return p;
         const at =
           beforeRowId != null
             ? p.habits.findIndex((h) => h.row_id === beforeRowId)
@@ -3456,42 +3456,43 @@ function PlansPage() {
     };
 
     // Forward mode: confirm, then write ONLY the placed habit's forward
-    // generation (fix #3) — at its drop-position order; the cycle's existing
+    // generation (fix #3) — at its drop-position order; the chain's existing
     // members keep their forward placement, we don't renumber them.
     if (applyToFuture && isViewingToday) {
       const habit = snapshot
         .find((p) => p.id == null)
         ?.habits.find((h) => h.id === habitId);
-      const targetPlan = snapshot.find((p) => p.id === planId);
+      const targetPlan = snapshot.find((p) => p.id === chainId);
       if (!habit || !targetPlan) return;
       confirmForward(
-        `Move "${habit.name}" into ${cycleLabel(targetPlan.habits, targetPlan.time)} — every day from today`,
-        () => moveOut(plansRef.current),
+        `Move "${habit.name}" into ${chainLabel(targetPlan.habits, targetPlan.time)} — every day from today`,
+        () => moveOut(chainsRef.current),
         habitId,
-        planId,
+        chainId,
       );
       return;
     }
 
-    // Per-day: optimistic insert, then persist the whole target cycle's order so
+    // Per-day: optimistic insert, then persist the whole target chain's order so
     // the drop position sticks (the placed habit as a placement, the siblings as
     // ordered moves).
     const next = moveOut(snapshot);
-    setPlans(next);
-    const block = next.find((p) => p.id === planId);
+    setChains(next);
+    const block = next.find((p) => p.id === chainId);
     const items = (block?.habits ?? []).map(
       (h, i): Record<string, number | null> => {
-        if (h.row_id == null) return { habit: h.id, plan: planId, order: i + 1 };
+        if (h.row_id == null)
+          return { habit: h.id, chain: chainId, order: i + 1 };
         // An existing row in this block; force the placed habit's plan so it
         // actually moves in even if it already had a row elsewhere (Anytime).
         return h.id === habitId
-          ? { id: h.row_id, order: i + 1, plan: planId, routine: null }
+          ? { id: h.row_id, order: i + 1, chain: chainId, routine: null }
           : { id: h.row_id, order: i + 1 };
       },
     );
     const ok = await persistItems(items);
     if (!ok) {
-      setPlans(snapshot);
+      setChains(snapshot);
       toast("Couldn't place that habit", { variant: "error" });
       return;
     }
@@ -3506,17 +3507,20 @@ function PlansPage() {
   async function addTime(timeStr: string) {
     if (!timeStr) return;
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/plans/create/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ time: timeStr }),
-      });
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/chains/create/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ time: timeStr }),
+        },
+      );
       if (!res.ok) throw new Error("Request failed");
       const data = await res.json(); // { id, time, created }
       setNewPlanIds((prev) => new Set(prev).add(data.id));
-      setPlans((prev) => {
+      setChains((prev) => {
         if (prev.some((p) => p.id === data.id)) return prev; // reused an existing block
-        const block: Plan = {
+        const block: Chain = {
           id: data.id,
           time: data.time,
           name: "",
@@ -3564,7 +3568,7 @@ function PlansPage() {
     } else {
       overRid = Number(over.id);
       targetPlanId =
-        plans.find(
+        chains.find(
           (p) => p.id != null && p.habits.some((h) => h.row_id === overRid),
         )?.id ?? null;
     }
@@ -3580,7 +3584,7 @@ function PlansPage() {
     // isn't built yet, so ignore that drop for now.
     if (targetPlanId == null || activeRid == null) return;
 
-    const sourcePlan = plans.find(
+    const sourcePlan = chains.find(
       (p) => p.id != null && p.habits.some((h) => h.row_id === activeRid),
     );
     if (!sourcePlan || sourcePlan.id == null) return;
@@ -3604,7 +3608,7 @@ function PlansPage() {
       );
       reorderPlan(sourcePlan.id, newFull);
     } else {
-      const targetPlan = plans.find((p) => p.id === targetPlanId);
+      const targetPlan = chains.find((p) => p.id === targetPlanId);
       if (!targetPlan) return;
       moveAcrossBlocks(sourcePlan, targetPlan, activeRid, overRid);
     }
@@ -3613,17 +3617,17 @@ function PlansPage() {
   // Reorder every schedulable plan to match a template's order, mapping the
   // CURRENT habit objects (so statuses/notes set since aren't clobbered) onto
   // the template's id order. Persists only the plans that actually changed.
-  async function applyOrderTemplate(template: Plan[]) {
-    for (const plan of plansRef.current) {
-      if (plan.id == null) continue; // "Anytime" has no schedule rows to order
-      const tpl = template.find((p) => p.id === plan.id);
+  async function applyOrderTemplate(template: Chain[]) {
+    for (const chain of chainsRef.current) {
+      if (chain.id == null) continue; // "Anytime" has no schedule rows to order
+      const tpl = template.find((p) => p.id === chain.id);
       if (!tpl) continue;
       const order = tpl.habits.map((h) => h.id);
-      const reordered = [...plan.habits].sort(
+      const reordered = [...chain.habits].sort(
         (a, b) => order.indexOf(a.id) - order.indexOf(b.id),
       );
-      const changed = reordered.some((h, i) => h.id !== plan.habits[i].id);
-      if (changed) await postReorder(plan.id, reordered);
+      const changed = reordered.some((h, i) => h.id !== chain.habits[i].id);
+      if (changed) await postReorder(chain.id, reordered);
     }
   }
 
@@ -3632,7 +3636,7 @@ function PlansPage() {
   async function resetOrder() {
     const baseline = baselineOrder;
     if (!baseline) return;
-    const beforeReset = plansRef.current;
+    const beforeReset = chainsRef.current;
     await applyOrderTemplate(baseline);
     toast("Order reset", {
       action: {
@@ -3648,18 +3652,18 @@ function PlansPage() {
   const orderChanged = useMemo(() => {
     const baseline = baselineOrder;
     if (!baseline) return false;
-    return plans.some((plan) => {
-      if (plan.id == null) return false;
-      const tpl = baseline.find((p) => p.id === plan.id);
+    return chains.some((chain) => {
+      if (chain.id == null) return false;
+      const tpl = baseline.find((p) => p.id === chain.id);
       if (!tpl) return false;
-      const now = plan.habits.map((h) => h.id);
+      const now = chain.habits.map((h) => h.id);
       const was = tpl.habits.map((h) => h.id);
       return now.length !== was.length || now.some((id, i) => id !== was[i]);
     });
-  }, [plans, baselineOrder]);
+  }, [chains, baselineOrder]);
 
   useEffect(() => {
-    async function fetchPlans() {
+    async function fetchPlan() {
       setIsLoading(true);
       setError("");
 
@@ -3678,7 +3682,7 @@ function PlansPage() {
           fetch(notesUrl, { method: "GET", headers: {} }),
         ]);
 
-        const data: Plan[] = await res.json();
+        const data: Chain[] = await res.json();
         if (!res.ok) {
           setError((data as unknown as { error?: string }).error ?? "");
           return;
@@ -3688,7 +3692,7 @@ function PlansPage() {
         // the Anytime group itself (see habits/views.plan), so the screen matches a
         // fresh GET every time — no client-side re-attach needed, and a refresh is
         // truthful on its own.
-        setPlans(data);
+        setChains(data);
         // The order this day loaded with — what "Reset order" returns to.
         setBaselineOrder(data);
 
@@ -3703,25 +3707,25 @@ function PlansPage() {
         setIsLoading(false);
       }
     }
-    fetchPlans();
+    fetchPlan();
     // Re-runs when the viewed day changes, or reloadToken is bumped (e.g. after
     // a "running late" shift) to pull the day's new effective times.
   }, [viewedDate, reloadToken]);
 
-  // "Running late": push a cycle (and everything after it that day) to a later
+  // "Running late": push a chain (and everything after it that day) to a later
   // time — negative minutes pulls it earlier. The backend stores a per-day
   // override, never touching the recurring routine. We re-fetch afterward
   // because /plan/ returns the day's new effective times, already re-sorted.
-  async function shiftFromPlan(planId: number, minutes: number) {
+  async function shiftFromPlan(chainId: number, minutes: number) {
     const today = isSameDay(viewedDate, new Date());
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/plans/shift/`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/chains/shift/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           today
-            ? { from_plan: planId, minutes }
-            : { from_plan: planId, minutes, date: toYMD(viewedDate) },
+            ? { from_chain: chainId, minutes }
+            : { from_chain: chainId, minutes, date: toYMD(viewedDate) },
         ),
       });
       if (!res.ok) {
@@ -3738,50 +3742,53 @@ function PlansPage() {
     }
   }
 
-  // POST one cycle's new absolute time (a per-day override, like the shift, no
+  // POST one chain's new absolute time (a per-day override, like the shift, no
   // cascade) and re-fetch the day — /plan/ returns the new effective times,
   // already re-sorted, so we don't hand-apply. Returns true on success; shared by
   // a drag and by its Undo.
-  async function postRetime(planId: number, time: string): Promise<boolean> {
+  async function postRetime(chainId: number, time: string): Promise<boolean> {
     const today = isSameDay(viewedDate, new Date());
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/plans/retime/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          today
-            ? { plan: planId, time }
-            : { plan: planId, time, date: toYMD(viewedDate) },
-        ),
-      });
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/chains/retime/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            today
+              ? { chain: chainId, time }
+              : { chain: chainId, time, date: toYMD(viewedDate) },
+          ),
+        },
+      );
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? "Couldn't move that cycle");
+        throw new Error(data?.error ?? "Couldn't move that chain");
       }
       setReloadToken((token) => token + 1); // re-fetch the day's new times
       return true;
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Couldn't move that cycle", {
+      toast(err instanceof Error ? err.message : "Couldn't move that chain", {
         variant: "error",
       });
       return false;
     }
   }
 
-  // POST one cycle's new absolute time PERMANENTLY from today forward (a dated
+  // POST one chain's new absolute time PERMANENTLY from today forward (a dated
   // PlanTime row) and re-fetch — /plan/ returns the new effective times (today is
   // mirrored even when frozen), already re-sorted. The forward-time twin of
-  // postRetime; writes ONLY this cycle's time, never any placement.
-  async function postRetimeForward(planId: number, time: string) {
+  // postRetime; writes ONLY this chain's time, never any placement.
+  async function postRetimeForward(chainId: number, time: string) {
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/plans/retime-forward/`,
+        `${import.meta.env.VITE_API_URL}/chains/retime-forward/`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           // from_date defaults to today server-side; send it explicitly for clarity.
           body: JSON.stringify({
-            plan: planId,
+            chain: chainId,
             time,
             from_date: toYMD(new Date()),
           }),
@@ -3789,11 +3796,11 @@ function PlansPage() {
       );
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? "Couldn't move that cycle");
+        throw new Error(data?.error ?? "Couldn't move that chain");
       }
       setReloadToken((token) => token + 1); // re-fetch the day's new times
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Couldn't move that cycle", {
+      toast(err instanceof Error ? err.message : "Couldn't move that chain", {
         variant: "error",
       });
     }
@@ -3807,44 +3814,44 @@ function PlansPage() {
   // Forward mode (toggle on, on today): instead of a per-day override, route the
   // retime through the clarity gate and the recurring forward-writer so the new
   // time sticks every day from today. Time-only — never touches placement, and
-  // (unlike shift) only THIS cycle moves. No optimistic move until she confirms.
-  async function retimePlan(planId: number, time: string) {
+  // (unlike shift) only THIS chain moves. No optimistic move until she confirms.
+  async function retimePlan(chainId: number, time: string) {
     if (applyToFuture && isViewingToday) {
-      const cyclePlan = plans.find((p) => p.id === planId);
+      const chainPlan = chains.find((p) => p.id === chainId);
       const label =
-        cyclePlan?.name ||
-        cycleLabel(cyclePlan?.habits ?? [], cyclePlan?.time ?? null);
+        chainPlan?.name ||
+        chainLabel(chainPlan?.habits ?? [], chainPlan?.time ?? null);
       setPendingForward({
         summary: `Move ${label} to ${formatTime(time)} — every day from today`,
         detail: TIME_DETAIL,
-        run: () => void postRetimeForward(planId, time),
+        run: () => void postRetimeForward(chainId, time),
       });
       return;
     }
-    const previousTime = plans.find((p) => p.id === planId)?.time ?? null;
-    const ok = await postRetime(planId, time);
+    const previousTime = chains.find((p) => p.id === chainId)?.time ?? null;
+    const ok = await postRetime(chainId, time);
     if (!ok || previousTime == null) return;
     toast(`Moved to ${formatTime(time)}`, {
       action: {
         label: "Undo",
-        onClick: () => postRetime(planId, previousTime),
+        onClick: () => postRetime(chainId, previousTime),
       },
     });
   }
 
-  // Name (or rename/clear) a timed cycle. Optimistic: drop the trimmed name into
+  // Name (or rename/clear) a timed chain. Optimistic: drop the trimmed name into
   // the block right away, then reconcile from the 200's saved name (the backend
   // trims/echoes it). On failure, restore the snapshot and toast. Only timed
   // blocks reach here — the "Anytime" group has no endpoint.
-  async function renamePlan(planId: number, name: string) {
+  async function renamePlan(chainId: number, name: string) {
     const trimmed = name.trim();
-    const snapshot = plansRef.current;
-    setPlans((prev) =>
-      prev.map((p) => (p.id === planId ? { ...p, name: trimmed } : p)),
+    const snapshot = chainsRef.current;
+    setChains((prev) =>
+      prev.map((p) => (p.id === chainId ? { ...p, name: trimmed } : p)),
     );
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/plans/${planId}/name/`,
+        `${import.meta.env.VITE_API_URL}/chains/${chainId}/name/`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -3853,14 +3860,14 @@ function PlansPage() {
       );
       if (!res.ok) throw new Error("Request failed");
       const data = await res.json(); // { id, name }
-      setPlans((prev) =>
+      setChains((prev) =>
         prev.map((p) =>
-          p.id === planId ? { ...p, name: data.name ?? "" } : p,
+          p.id === chainId ? { ...p, name: data.name ?? "" } : p,
         ),
       );
     } catch {
-      setPlans(snapshot);
-      toast("Couldn't rename that cycle", { variant: "error" });
+      setChains(snapshot);
+      toast("Couldn't rename that chain", { variant: "error" });
     }
   }
 
@@ -3910,7 +3917,7 @@ function PlansPage() {
   // at the time block happening now (default), or at the top — so "now" users land
   // on their current habits, and "top" users start at the beginning of the day.
   useEffect(() => {
-    if (didAutoScroll.current || isLoading || plans.length === 0) return;
+    if (didAutoScroll.current || isLoading || chains.length === 0) return;
     // "top" preference: nothing to scroll — the page already loads at the top.
     if (landingPref === "top") {
       didAutoScroll.current = true;
@@ -3923,7 +3930,7 @@ function PlansPage() {
       el.scrollIntoView({ block: "start" });
       didAutoScroll.current = true;
     }
-  }, [plans, isLoading, nowBlockId, isViewingToday, landingPref]);
+  }, [chains, isLoading, nowBlockId, isViewingToday, landingPref]);
 
   // Re-center on the current time block (the "Now" button).
   function scrollToNow() {
@@ -3940,16 +3947,16 @@ function PlansPage() {
   // Drop empty blocks, and attach each habit's day-notes (from the new Note
   // model) so the row components can read habit.dayNotes the way they read
   // habit.notes today — no extra prop threading through the tree.
-  const visiblePlans = useMemo(
+  const visibleChains = useMemo(
     () =>
-      plans.filter(keepBlock).map((plan) => ({
-        ...plan,
-        habits: plan.habits.map((habit) => ({
+      chains.filter(keepBlock).map((chain) => ({
+        ...chain,
+        habits: chain.habits.map((habit) => ({
           ...habit,
           dayNotes: notesByHabit.get(habit.id) ?? [],
         })),
       })),
-    [plans, notesByHabit, newPlanIds],
+    [chains, notesByHabit, newPlanIds],
   );
 
   // habit id -> the highest Case-A tier-slot level (h.tier, the non-null ones)
@@ -3959,8 +3966,8 @@ function PlansPage() {
   // rows aren't in here (they carry no per-slot tier); slotPlacement handles them.
   const inlineTierByHabit = useMemo(() => {
     const byHabit = new Map<number, number[]>();
-    for (const plan of visiblePlans)
-      for (const h of plan.habits)
+    for (const chain of visibleChains)
+      for (const h of chain.habits)
         if (h.tier != null) {
           const a = byHabit.get(h.id) ?? [];
           a.push(h.tier);
@@ -3972,45 +3979,45 @@ function PlansPage() {
       inline.set(hid, ok.length ? Math.max(...ok) : null);
     }
     return inline;
-  }, [visiblePlans, dayTier]);
+  }, [visibleChains, dayTier]);
 
   // The same plans, but keeping only the rows that render INLINE for the day:
   // untiered rows, each habit's one Case-A slot at its highest tier <= today, and
-  // a Case-B row with a rung <= today. Stretch/hidden slots are dropped; any cycle
+  // a Case-B row with a rung <= today. Stretch/hidden slots are dropped; any chain
   // thereby emptied is removed. This is what we COUNT and decide emptiness from, so
   // headers, the skip-day logic, and the empty state all match what the cards
-  // render. PlanBoard still gets the FULL `visiblePlans` list (it filters for
+  // render. PlanBoard still gets the FULL `visibleChains` list (it filters for
   // display itself) so a reorder never drops a hidden habit from state — only what
   // shows is affected, never what's stored.
-  const tierVisiblePlans = useMemo(
+  const tierVisibleChains = useMemo(
     () =>
-      visiblePlans
-        .map((plan) => ({
-          ...plan,
-          habits: plan.habits.filter(
+      visibleChains
+        .map((chain) => ({
+          ...chain,
+          habits: chain.habits.filter(
             (habit) =>
               slotPlacement(habit, inlineTierByHabit, dayTier) === "inline",
           ),
         }))
         .filter(keepBlock),
-    [visiblePlans, inlineTierByHabit, dayTier, newPlanIds],
+    [visibleChains, inlineTierByHabit, dayTier, newPlanIds],
   );
 
   // What actually renders: the tier-visible plans, further narrowed to main
   // habits when "Main only" is on (empty groups dropped). A pure view filter
   // layered on top of the tier filter — the skip-day/empty logic below still uses
-  // the full `tierVisiblePlans`, so the toggle never changes what's stored.
-  const shownPlans = useMemo(
+  // the full `tierVisibleChains`, so the toggle never changes what's stored.
+  const shownChains = useMemo(
     () =>
       !mainOnly
-        ? tierVisiblePlans
-        : tierVisiblePlans
-            .map((plan) => ({
-              ...plan,
-              habits: plan.habits.filter((habit) => !habit.is_support),
+        ? tierVisibleChains
+        : tierVisibleChains
+            .map((chain) => ({
+              ...chain,
+              habits: chain.habits.filter((habit) => !habit.is_support),
             }))
             .filter(keepBlock),
-    [tierVisiblePlans, mainOnly, newPlanIds],
+    [tierVisibleChains, mainOnly, newPlanIds],
   );
 
   // The "Stretch" section: harder versions she can opt into. Two sources, in plan
@@ -4021,8 +4028,8 @@ function PlansPage() {
   // "Main only" like the inline groups.
   const stretchSlots = useMemo(() => {
     const out: { habit: Habit; level: number }[] = [];
-    for (const plan of visiblePlans) {
-      for (const habit of plan.habits) {
+    for (const chain of visibleChains) {
+      for (const habit of chain.habits) {
         if (mainOnly && habit.is_support) continue;
         if (habit.tier != null) {
           // Case A: this slot stretches when it's a harder tier than today.
@@ -4041,19 +4048,19 @@ function PlansPage() {
       }
     }
     return out;
-  }, [visiblePlans, inlineTierByHabit, dayTier, mainOnly]);
+  }, [visibleChains, inlineTierByHabit, dayTier, mainOnly]);
 
   // Has the whole day been skipped? (every habit resolved to skipped or done,
   // with at least one skip). If so, the day-level control flips from "Skip day"
   // to a persistent "Reset day" undo — so you can un-skip even after the toast
   // has faded, not just in the few seconds it's on screen.
-  const anySkipped = tierVisiblePlans.some((plan) =>
-    plan.habits.some((habit) => isSkipped(habit)),
+  const anySkipped = tierVisibleChains.some((chain) =>
+    chain.habits.some((habit) => isSkipped(habit)),
   );
   const dayFullySkipped =
     anySkipped &&
-    tierVisiblePlans.every((plan) =>
-      plan.habits.every((habit) => isSkipped(habit) || isDone(habit)),
+    tierVisibleChains.every((chain) =>
+      chain.habits.every((habit) => isSkipped(habit) || isDone(habit)),
     );
 
   // Has this day been rearranged into a per-day ("frozen") arrangement? On a
@@ -4061,27 +4068,27 @@ function PlansPage() {
   // row_id (the copy) but no schedule_id (the template row). "Anytime" habits
   // have BOTH null, so they don't count. If any visible scheduled habit looks
   // like that, the day has something to reset even when nothing was skipped.
-  const dayHasArrangement = tierVisiblePlans.some((plan) =>
-    plan.habits.some(
+  const dayHasArrangement = tierVisibleChains.some((chain) =>
+    chain.habits.some(
       (habit) => habit.schedule_id == null && habit.row_id != null,
     ),
   );
 
   let body: ReactNode;
-  if (isLoading && plans.length === 0) {
+  if (isLoading && chains.length === 0) {
     // First load only — when switching days we keep the current list visible
     // (dimmed) instead of flashing a spinner.
     body = <LoadingSpinner label="habits" />;
   } else if (error) {
     body = <ErrorBanner error={error} />;
-  } else if (plans.length === 0) {
+  } else if (chains.length === 0) {
     body = (
       <EmptyState
         title="No habits yet"
         subtitle="Create your first habit to push your limits"
       />
     );
-  } else if (tierVisiblePlans.length === 0 && stretchSlots.length === 0) {
+  } else if (tierVisibleChains.length === 0 && stretchSlots.length === 0) {
     // plans isn't empty here, so it's a day with nothing scheduled.
     body = (
       <EmptyState
@@ -4092,7 +4099,7 @@ function PlansPage() {
   } else {
     const draggingHabit =
       dragId != null
-        ? (shownPlans
+        ? (shownChains
             .flatMap((p) => p.habits)
             .find((h) =>
               dragId.startsWith("new-")
@@ -4112,35 +4119,35 @@ function PlansPage() {
           <div
             className={`space-y-6 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
           >
-            {shownPlans.map((plan) => {
-              const key = plan.id ?? "anytime";
+            {shownChains.map((chain) => {
+              const key = chain.id ?? "anytime";
               const isNow =
-                isViewingToday && plan.id != null && plan.id === nowBlockId;
-              // Session-only collapse: hide this cycle's habit list and show just
+                isViewingToday && chain.id != null && chain.id === nowBlockId;
+              // Session-only collapse: hide this chain's habit list and show just
               // its time + progress in the header. Default expanded.
-              const collapsed = collapsedCycles.has(String(key));
+              const collapsed = collapsedChains.has(String(key));
               // Progress for the collapsed header — a member counts as handled when
               // it's done OR skipped (same rule RoutineBlock uses). Counts the
               // shown habits, so the header matches the cards (a Roots day excludes
               // hidden Growth; "Main only" excludes the helpers).
-              const total = plan.habits.length;
-              const handled = plan.habits.filter(
+              const total = chain.habits.length;
+              const handled = chain.habits.filter(
                 (h) => isDone(h) || isSkipped(h),
               ).length;
-              // PlanBoard renders from the FULL plan (all this cycle's habits, hidden
+              // PlanBoard renders from the FULL plan (all this chain's habits, hidden
               // ones included) and does its own tier filtering for display — so a
               // reorder rebuilds the whole list and never drops a hidden habit from
               // state. Fall back to the tier-filtered `plan` if no full match (can't
               // happen, but keeps the type non-null).
-              const fullPlan =
-                visiblePlans.find((p) => p.id === plan.id) ?? plan;
+              const fullChain =
+                visibleChains.find((p) => p.id === chain.id) ?? chain;
               // The habit list is identical whether or not the block is retime-able;
               // build it once and drop it into the right wrapper below. Drag the grip
               // to reorder, swipe a card left to skip, tap the circle to complete,
               // tap the note icon to jot a day note; completed ones collapse in place.
               const planBoard = (
                 <PlanBoard
-                  plan={fullPlan}
+                  chain={fullChain}
                   dayTier={dayTier}
                   inlineTierByHabit={inlineTierByHabit}
                   mainOnly={mainOnly}
@@ -4156,135 +4163,135 @@ function PlansPage() {
                 />
               );
               return (
-                <section
-                  key={key}
-                  ref={(el) => {
-                    sectionRefs.current[String(key)] = el;
-                  }}
-                  // Leave a little breathing room above the block when we scroll to it.
-                  className="scroll-mt-6"
-                >
-                  {plan.id != null && plan.time ? (
-                    // Timed cycle: the whole block is the unit you retime — grab the
-                    // header strip and it lifts to a new time. OFF = today only; with
-                    // "Apply to future days" ON it sticks every day from today.
-                    <RetimeBlock
-                      planId={plan.id}
-                      time={plan.time}
-                      blockLabel={
-                        plan.name || cycleLabel(plan.habits, plan.time)
-                      }
-                      otherBlocks={visiblePlans.flatMap((p) =>
-                        p.id !== plan.id && p.time
-                          ? [
-                              {
-                                min: timeToMinutes(p.time),
-                                name: p.name || cycleLabel(p.habits, p.time),
-                              },
-                            ]
-                          : [],
-                      )}
-                      onRetime={retimePlan}
-                      header={
-                        <div className="flex items-center gap-3 mb-2">
-                          {/* Collapse/expand this cycle. Carries data-no-retime so
+                  <section
+                    key={key}
+                    ref={(el) => {
+                      sectionRefs.current[String(key)] = el;
+                    }}
+                    // Leave a little breathing room above the block when we scroll to it.
+                    className="scroll-mt-6"
+                  >
+                    {chain.id != null && chain.time ? (
+                      // Timed chain: the whole block is the unit you retime — grab the
+                      // header strip and it lifts to a new time. OFF = today only; with
+                      // "Apply to future days" ON it sticks every day from today.
+                      <RetimeBlock
+                        chainId={chain.id}
+                        time={chain.time}
+                        blockLabel={
+                          chain.name || chainLabel(chain.habits, chain.time)
+                        }
+                        otherBlocks={visibleChains.flatMap((p) =>
+                          p.id !== chain.id && p.time
+                            ? [
+                                {
+                                  min: timeToMinutes(p.time),
+                                  name: p.name || chainLabel(p.habits, p.time),
+                                },
+                              ]
+                            : [],
+                        )}
+                        onRetime={retimePlan}
+                        header={
+                          <div className="flex items-center gap-3 mb-2">
+                            {/* Collapse/expand this chain. Carries data-no-retime so
                           tapping it toggles instead of starting a time-drag. */}
+                            <button
+                              type="button"
+                              data-no-retime
+                              onClick={() => toggleCollapsed(String(key))}
+                              aria-expanded={!collapsed}
+                              aria-label={
+                                collapsed
+                                  ? `Expand ${formatTime(chain.time)}`
+                                  : `Collapse ${formatTime(chain.time)}`
+                              }
+                              className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
+                            >
+                              <ChevronIcon open={!collapsed} />
+                            </button>
+                            {/* Time label + a drag hint; the whole strip is grabbable. */}
+                            <span
+                              className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
+                                isNow ? "text-calm-700" : "text-calm-600"
+                              }`}
+                            >
+                              {formatTime(chain.time)}
+                              {collapsed ? (
+                                <span className="normal-case tracking-normal text-calm-400">
+                                  · {handled}/{total} done
+                                </span>
+                              ) : (
+                                <span className="text-calm-300">
+                                  <RetimeHandleIcon />
+                                </span>
+                              )}
+                            </span>
+                            {/* The chain's name (or the chainLabel fallback when
+                          unnamed) — tap to name/rename. data-no-retime inside,
+                          so editing doesn't start the header's time-drag. */}
+                            {!collapsed && (
+                              <ChainNameControl
+                                name={chain.name ?? ""}
+                                label={
+                                  chain.name
+                                    ? chain.name
+                                    : chainLabel(chain.habits, chain.time)
+                                }
+                                onSave={(n) => renamePlan(chain.id!, n)}
+                              />
+                            )}
+                            {isNow && (
+                              <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                                Now
+                              </span>
+                            )}
+                            <div className="flex-1 h-px bg-calm-200" />
+                            {/* "Running late" shift stays tappable — opt it out of the
+                          block's retime drag. */}
+                            <div data-no-retime>
+                              <ShiftControl
+                                chainId={chain.id}
+                                onShift={shiftFromPlan}
+                              />
+                            </div>
+                          </div>
+                        }
+                      >
+                        {collapsed ? null : planBoard}
+                      </RetimeBlock>
+                    ) : (
+                      // "Anytime" group: no time, so nothing to retime.
+                      <>
+                        <div className="flex items-center gap-3 mb-2">
+                          {/* Collapse/expand toggle (no retime here, so no opt-out). */}
                           <button
                             type="button"
-                            data-no-retime
                             onClick={() => toggleCollapsed(String(key))}
                             aria-expanded={!collapsed}
                             aria-label={
                               collapsed
-                                ? `Expand ${formatTime(plan.time)}`
-                                : `Collapse ${formatTime(plan.time)}`
+                                ? `Expand ${formatTime(chain.time)}`
+                                : `Collapse ${formatTime(chain.time)}`
                             }
                             className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
                           >
                             <ChevronIcon open={!collapsed} />
                           </button>
-                          {/* Time label + a drag hint; the whole strip is grabbable. */}
-                          <span
-                            className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
-                              isNow ? "text-calm-700" : "text-calm-600"
-                            }`}
-                          >
-                            {formatTime(plan.time)}
-                            {collapsed ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-calm-600">
+                            {formatTime(chain.time)}
+                            {collapsed && (
                               <span className="normal-case tracking-normal text-calm-400">
                                 · {handled}/{total} done
                               </span>
-                            ) : (
-                              <span className="text-calm-300">
-                                <RetimeHandleIcon />
-                              </span>
                             )}
                           </span>
-                          {/* The cycle's name (or the cycleLabel fallback when
-                          unnamed) — tap to name/rename. data-no-retime inside,
-                          so editing doesn't start the header's time-drag. */}
-                          {!collapsed && (
-                            <CycleNameControl
-                              name={plan.name ?? ""}
-                              label={
-                                plan.name
-                                  ? plan.name
-                                  : cycleLabel(plan.habits, plan.time)
-                              }
-                              onSave={(n) => renamePlan(plan.id!, n)}
-                            />
-                          )}
-                          {isNow && (
-                            <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
-                              Now
-                            </span>
-                          )}
                           <div className="flex-1 h-px bg-calm-200" />
-                          {/* "Running late" shift stays tappable — opt it out of the
-                          block's retime drag. */}
-                          <div data-no-retime>
-                            <ShiftControl
-                              planId={plan.id}
-                              onShift={shiftFromPlan}
-                            />
-                          </div>
                         </div>
-                      }
-                    >
-                      {collapsed ? null : planBoard}
-                    </RetimeBlock>
-                  ) : (
-                    // "Anytime" group: no time, so nothing to retime.
-                    <>
-                      <div className="flex items-center gap-3 mb-2">
-                        {/* Collapse/expand toggle (no retime here, so no opt-out). */}
-                        <button
-                          type="button"
-                          onClick={() => toggleCollapsed(String(key))}
-                          aria-expanded={!collapsed}
-                          aria-label={
-                            collapsed
-                              ? `Expand ${formatTime(plan.time)}`
-                              : `Collapse ${formatTime(plan.time)}`
-                          }
-                          className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
-                        >
-                          <ChevronIcon open={!collapsed} />
-                        </button>
-                        <span className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-calm-600">
-                          {formatTime(plan.time)}
-                          {collapsed && (
-                            <span className="normal-case tracking-normal text-calm-400">
-                              · {handled}/{total} done
-                            </span>
-                          )}
-                        </span>
-                        <div className="flex-1 h-px bg-calm-200" />
-                      </div>
-                      {!collapsed && planBoard}
-                    </>
-                  )}
-                </section>
+                        {!collapsed && planBoard}
+                      </>
+                    )}
+                  </section>
               );
             })}
 
@@ -4333,7 +4340,7 @@ function PlansPage() {
           </DragOverlay>
         </DndContext>
 
-        {/* ＋ Add time: make a new (empty) cycle at a time you pick, then drag a
+        {/* ＋ Add time: make a new (empty) chain at a time you pick, then drag a
           habit into it. Reuses the block if one already exists at that time. */}
         <div className="mt-6">
           {addingTime ? (
@@ -4414,7 +4421,7 @@ function PlansPage() {
         {/* Day-level controls: the tier picker, the main-only filter, and
             the rare actions (new routine / skip day / reset), grouped into one
             compact bar. See ./plan/PlanToolbar. */}
-        {visiblePlans.length > 0 && (
+        {visibleChains.length > 0 && (
           <PlanToolbar
             dayTier={dayTier}
             onTierChange={setDayTier}
@@ -4483,15 +4490,15 @@ function PlansPage() {
               : null
           }
           habits={scheduledHabits}
-          cycles={plans
+          chains={chains
             .filter((p) => p.id != null)
             .map((p) => ({
               id: p.id!,
-              label: p.name || cycleLabel(p.habits, p.time),
+              label: p.name || chainLabel(p.habits, p.time),
             }))}
-          currentCycleId={
+          currentChainId={
             routineSheet.mode === "edit"
-              ? (plans.find(
+              ? (chains.find(
                   (p) =>
                     p.id != null &&
                     p.habits.some((h) => h.routine === routineSheet.id),
@@ -4501,7 +4508,7 @@ function PlansPage() {
           onCreate={createRoutine}
           onSave={saveRoutine}
           onDelete={deleteRoutine}
-          onMoveCycle={moveRoutineToCycle}
+          onMoveChain={moveRoutineToChain}
           onClose={() => setRoutineSheet(null)}
         />
       )}
@@ -4520,7 +4527,7 @@ function PlansPage() {
       {/* The clarity gate for a forward edit (Jennifer's #1 rule): show exactly
           what's changing and the scope before it sticks. The `detail` sentence is
           honest per edit kind — placement ("where the habit sits") vs time ("when
-          this cycle runs") — so neither overstates what it touches. */}
+          this chain runs") — so neither overstates what it touches. */}
       <ConfirmDialog
         open={pendingForward != null}
         title="Apply to future days?"
@@ -4540,4 +4547,4 @@ function PlansPage() {
   );
 }
 
-export default PlansPage;
+export default PlanPage;

@@ -12,7 +12,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Aspiration, Routine, Habit, Plan, PlanDay, PlanTime, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
+from .models import Area, Aspiration, Routine, Habit, Chain, ChainDay, ChainTime, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -20,7 +20,7 @@ from .models import Area, Aspiration, Routine, Habit, Plan, PlanDay, PlanTime, S
 # three real HabitLog.Status values.
 MISSED_STATUS = "MISSED"
 
-# Photograph-on-open catch-up window. Every /plan/ load freezes the last N past
+# Photograph-on-open catch-up window. Every /chains/ load freezes the last N past
 # days that were lived but never opened, so a later plan edit can't rewrite them
 # (see freeze_day). This is the no-infra alternative to a nightly Railway sweep:
 # the user opens the app ~daily, so this catches yesterday-and-back.
@@ -69,7 +69,7 @@ def _shift_time(base, minutes):
 
 def _habit_tiers(habit):
     """This habit's tiers low->high, each with its current value (the newest
-    TierValue). Returns [] for an untiered habit. Shape matches the /plan/ and
+    TierValue). Returns [] for an untiered habit. Shape matches the /chains/ and
     habit-detail contract: [{level, name, value}, ...]."""
     tiers = []
     for ht in (HabitTier.objects.filter(habit=habit)
@@ -148,7 +148,7 @@ def _version_status(specific, fallback, level, is_past):
 
 def _effective_schedules(target_date):
     """The recurring `Schedule` rows in effect for `target_date`, one per logical
-    slot — the generation-aware projection both `/plan/`'s live path and
+    slot — the generation-aware projection both `/chains/`'s live path and
     `freeze_day` read from, so they can never disagree.
 
     The template is versioned by date (`Schedule.valid_from`). A "from D forward"
@@ -184,77 +184,77 @@ def _effective_schedules(target_date):
     return list(by_slot.values())
 
 
-def _plan_times_for_date(target_date):
-    """The recurring time in effect for `target_date` per cycle, from `PlanTime` —
+def _chain_times_for_date(target_date):
+    """The recurring time in effect for `target_date` per cycle, from `ChainTime` —
     the forward-time twin of `_effective_schedules`'s placement projection.
 
-    `PlanTime` is the "this and every following day" time change (vs `PlanDay`'s
+    `ChainTime` is the "this and every following day" time change (vs `ChainDay`'s
     one-day shift). A cycle can have several rows over time; for a given date we
     keep the one with the GREATEST `valid_from <= target_date` (id breaks a
     same-day tie, last write wins), so a forward retime sticks from its date on
-    and an older one keeps covering earlier dates. Returns `{plan_id: start_time}`
-    — only cycles that have a PlanTime row in effect by this date appear.
+    and an older one keeps covering earlier dates. Returns `{chain_id: start_time}`
+    — only cycles that have a ChainTime row in effect by this date appear.
 
-    With ZERO `PlanTime` rows this is an empty dict, so every time read falls back
-    exactly as before (Plan.start_time) — behavior is byte-identical to pre-Phase-3.
+    With ZERO `ChainTime` rows this is an empty dict, so every time read falls back
+    exactly as before (Chain.start_time) — behavior is byte-identical to pre-Phase-3.
     """
     rows = (
-        PlanTime.objects.filter(valid_from__lte=target_date)
+        ChainTime.objects.filter(valid_from__lte=target_date)
         # Greatest valid_from (then id) last, so the dict write below keeps the
-        # latest generation per plan.
+        # latest generation per chain.
         .order_by("valid_from", "id")
-        .values_list("plan_id", "start_time")
+        .values_list("chain_id", "start_time")
     )
-    by_plan = {}
-    for plan_id, start_time in rows:
-        by_plan[plan_id] = start_time
-    return by_plan
+    by_chain = {}
+    for chain_id, start_time in rows:
+        by_chain[chain_id] = start_time
+    return by_chain
 
 
-def _effective_plan_times(target_date):
+def _effective_chain_times(target_date):
     """Each cycle's effective start time for `target_date`, with the full Phase-3
     precedence applied PER CYCLE:
 
-        frozen day's PlanDay (this date)  >  latest PlanTime (valid_from <= date)
-                                          >  Plan.start_time (the recurring time)
+        frozen day's ChainDay (this date)  >  latest ChainTime (valid_from <= date)
+                                           >  Chain.start_time (the recurring time)
 
-    `PlanDay` (the per-day layer — a "running late" shift, or the time locked in
+    `ChainDay` (the per-day layer — a "running late" shift, or the time locked in
     when a day freezes) wins for that specific date; otherwise the recurring
-    forward-time (`PlanTime`) wins; otherwise the plan's own `start_time`. Returns
-    `{plan_id: start_time}` for EVERY plan (timeless plans map to None).
+    forward-time (`ChainTime`) wins; otherwise the chain's own `start_time`. Returns
+    `{chain_id: start_time}` for EVERY chain (timeless chains map to None).
 
-    This is the single source the time reads share (`plan`, `freeze_day`,
-    `shift_plans`) so they can never disagree. With zero PlanDay and zero PlanTime
+    This is the single source the time reads share (`chains`, `freeze_day`,
+    `shift_chains`) so they can never disagree. With zero ChainDay and zero ChainTime
     rows it returns `{p.id: p.start_time}` — identical to today's behavior.
     """
     day_overrides = dict(
-        PlanDay.objects.filter(date=target_date).values_list("plan_id", "start_time")
+        ChainDay.objects.filter(date=target_date).values_list("chain_id", "start_time")
     )
-    forward_times = _plan_times_for_date(target_date)
+    forward_times = _chain_times_for_date(target_date)
     out = {}
-    for p in Plan.objects.all():
+    for p in Chain.objects.all():
         if p.id in day_overrides:
             out[p.id] = day_overrides[p.id]            # per-day layer wins for this date
         elif p.id in forward_times:
             out[p.id] = forward_times[p.id]            # recurring forward-time
         else:
-            out[p.id] = p.start_time                   # the plan's own recurring time
+            out[p.id] = p.start_time                   # the chain's own recurring time
     return out
 
 
 @transaction.atomic
 def freeze_day(target_date):
     """Snapshot a day's current template arrangement into `ScheduleDay` (and lock
-    each block's time into `PlanDay`) — the "photo" that makes a day immutable.
+    each block's time into `ChainDay`) — the "photo" that makes a day immutable.
 
     Idempotent: a day is "frozen" exactly when it has `ScheduleDay` rows, so if
     any already exist we leave everything alone. Otherwise we copy the day's
-    effective `Schedule` arrangement — the same rows `/plan/` would project for
+    effective `Schedule` arrangement — the same rows `/chains/` would project for
     that date (only habits that existed by then, every tier-slot) — into
     `ScheduleDay`, snapshotting `habit_name` so a later habit-delete can't blank
-    out the history. We also write a `PlanDay` per block at that block's effective
+    out the history. We also write a `ChainDay` per block at that block's effective
     time for the day (its existing override if present, else the recurring time),
-    so the frozen time travels in `time_by_plan` exactly like the arrangement does.
+    so the frozen time travels in `time_by_chain` exactly like the arrangement does.
 
     Returns a ``{schedule_id: scheduleday_id}`` map for the rows just created
     (empty if the day was already frozen), so a caller mid-freeze — like
@@ -262,27 +262,27 @@ def freeze_day(target_date):
     handed into the ScheduleDay ids it must now edit.
     """
     if ScheduleDay.objects.filter(date=target_date).exists():
-        return {}   # already frozen — no-op, exactly like PlanDay's "no row" rule
+        return {}   # already frozen — no-op, exactly like ChainDay's "no row" rule
 
-    # The same set `/plan/` projects for this date: only habits that already
+    # The same set `/chains/` projects for this date: only habits that already
     # existed by then, and the generation in effect for the date (latest
     # valid_from <= target_date per slot) — see _effective_schedules.
     schedules = _effective_schedules(target_date)
 
-    # Lock each block's time for the day. A plan's effective time is its existing
+    # Lock each block's time for the day. A chain's effective time is its existing
     # per-day override if one was set (a "running late" shift), else the recurring
-    # forward-time in effect that day (PlanTime), else its plain recurring time —
-    # the same Phase-3 precedence /plan/ reads (_effective_plan_times). Freezing
-    # the resolved time means a later PlanTime edit can't rewrite this day's photo.
-    # Timeless plans (no effective time) have nothing to freeze and are skipped.
-    effective_times = _effective_plan_times(target_date)
-    plan_ids = {s.plan_id for s in schedules if s.plan_id is not None}
-    for pid in plan_ids:
+    # forward-time in effect that day (ChainTime), else its plain recurring time —
+    # the same Phase-3 precedence /chains/ reads (_effective_chain_times). Freezing
+    # the resolved time means a later ChainTime edit can't rewrite this day's photo.
+    # Timeless chains (no effective time) have nothing to freeze and are skipped.
+    effective_times = _effective_chain_times(target_date)
+    chain_ids = {s.chain_id for s in schedules if s.chain_id is not None}
+    for pid in chain_ids:
         effective = effective_times.get(pid)
         if effective is None:
             continue
-        PlanDay.objects.get_or_create(
-            plan_id=pid, date=target_date, defaults={"start_time": effective}
+        ChainDay.objects.get_or_create(
+            chain_id=pid, date=target_date, defaults={"start_time": effective}
         )
 
     # Copy every Schedule slot (including each tier-slot of a multi-tier habit)
@@ -293,7 +293,7 @@ def freeze_day(target_date):
             date=target_date,
             habit=s.habit,
             habit_name=s.habit.name,
-            plan_id=s.plan_id,
+            chain_id=s.chain_id,
             routine_id=s.routine_id,
             tier_id=s.tier_id,
             order=s.order,
@@ -304,7 +304,7 @@ def freeze_day(target_date):
 
 def plan(request):
     # Which day to show. Defaults to today; the day-browser passes
-    # ?date=YYYY-MM-DD to view any other day. The plan/schedule layout is the
+    # ?date=YYYY-MM-DD to view any other day. The chain/schedule layout is the
     # same every day — only each habit's status (its HabitLog for that day)
     # changes, so we just swap which date we look the statuses up for.
     target_date, date_error = _resolve_date(request.GET.get("date"))
@@ -316,9 +316,9 @@ def plan(request):
     today = timezone.localdate()
     is_past_day = target_date < today
 
-    # Photograph-on-open catch-up: every plan load also freezes the last
+    # Photograph-on-open catch-up: every chains load also freezes the last
     # FREEZE_CATCHUP_DAYS days *before today* that aren't frozen yet, so a day the
-    # user lived but never opened still gets its permanent photo before a later plan
+    # user lived but never opened still gets its permanent photo before a later chain
     # edit can rewrite it (the no-cron alternative to a nightly sweep). One query for
     # the already-frozen dates in the window, then idempotent freeze_day on the gaps.
     # Never today or a future day — those aren't history yet.
@@ -333,7 +333,7 @@ def plan(request):
             freeze_day(d)
 
     # Lazy "photo on first view of a past day": looking back at history freezes it
-    # as it was, so editing the recurring plan later can't rewrite it. Only PAST
+    # as it was, so editing the recurring chain later can't rewrite it. Only PAST
     # days, only once (freeze_day is idempotent) — today is still being lived and a
     # future day is a deliberate pre-edit, so neither is auto-frozen on view.
     if is_past_day and not ScheduleDay.objects.filter(date=target_date).exists():
@@ -341,11 +341,11 @@ def plan(request):
 
     # A day is "frozen" — read all-or-nothing from its ScheduleDay photo — ONLY when
     # it is in the PAST and has that photo. Past history must stay immutable: a later
-    # plan edit can't rewrite a day already lived. TODAY and FUTURE days are NEVER
+    # chain edit can't rewrite a day already lived. TODAY and FUTURE days are NEVER
     # frozen for reads: they always follow the recurring template + any "going
     # forward" change, with any per-habit "just today" tweak LAYERED ON TOP per slot
-    # (see the not-frozen path below) — exactly how time already layers PlanDay over
-    # PlanTime over Plan.start_time. (A whole-day ScheduleDay snapshot may still exist
+    # (see the not-frozen path below) — exactly how time already layers ChainDay over
+    # ChainTime over Chain.start_time. (A whole-day ScheduleDay snapshot may still exist
     # for today/future from an older freeze, but it is now treated as per-slot
     # overrides, not an all-or-nothing read.)
     is_frozen = is_past_day and ScheduleDay.objects.filter(date=target_date).exists()
@@ -356,16 +356,16 @@ def plan(request):
     day_logs = _day_logs(target_date)
 
     # Each cycle's effective time for THIS day, with the full Phase-3 precedence:
-    # this date's PlanDay (a "running late" shift, or the time a frozen day locked
-    # in) > the recurring forward-time in effect (PlanTime) > the plan's recurring
-    # start_time. With zero PlanDay and zero PlanTime rows this is just the plain
-    # recurring times — unchanged from before Phase 3. (_effective_plan_times maps
-    # EVERY plan, so the .get fallback below is only a defensive guard.)
-    time_by_plan = _effective_plan_times(target_date)
+    # this date's ChainDay (a "running late" shift, or the time a frozen day locked
+    # in) > the recurring forward-time in effect (ChainTime) > the chain's recurring
+    # start_time. With zero ChainDay and zero ChainTime rows this is just the plain
+    # recurring times — unchanged from before Phase 3. (_effective_chain_times maps
+    # EVERY chain, so the .get fallback below is only a defensive guard.)
+    time_by_chain = _effective_chain_times(target_date)
 
     # The habit's tier list, each entry {level,name,value,status,done} for THIS
     # day, memoized so a habit with several tier-slots only builds it once. EVERY
-    # /plan/ row carries it: the frontend reads per-version state (Root done /
+    # /chains/ row carries it: the frontend reads per-version state (Root done /
     # Growth missed) straight from here, independent of which slot the row is.
     tiers_by_habit = {}
 
@@ -438,8 +438,8 @@ def plan(request):
     #   - Not frozen (today/future, no rows): project the live template `Schedule`,
     #     exactly as before, keyed on the Schedule id.
     # Statuses come from HabitLog/_version_status and the day's times from
-    # time_by_plan (PlanDay) in BOTH paths — freeze just locks those PlanDay rows.
-    by_plan = defaultdict(list)   # plan_id -> [habit_payload, ...]; None = "Anytime"
+    # time_by_chain (ChainDay) in BOTH paths — freeze just locks those ChainDay rows.
+    by_chain = defaultdict(list)   # chain_id -> [habit_payload, ...]; None = "Anytime"
 
     if is_frozen:
         # Read the saved arrangement. order_by mirrors the template path: saved
@@ -449,7 +449,7 @@ def plan(request):
                    .order_by(F("order").asc(nulls_last=True), "id")):
             if sd.habit is None:
                 continue   # habit deleted since the freeze; FK went null (history snapshot only)
-            by_plan[sd.plan_id].append(
+            by_chain[sd.chain_id].append(
                 habit_payload(
                     sd.habit,
                     row_id=sd.id,            # the row dnd + /days/arrange/ target
@@ -464,7 +464,7 @@ def plan(request):
         # "going forward" change (_effective_schedules), then OVERLAY each habit's
         # per-day "just today" tweak (its ScheduleDay row for this exact date) ON
         # TOP, per logical slot. This is the placement twin of how time layers
-        # PlanDay > PlanTime > Plan.start_time: a slot with a ScheduleDay override
+        # ChainDay > ChainTime > Chain.start_time: a slot with a ScheduleDay override
         # for this date uses that override's cycle/order; EVERY other slot keeps
         # following the template/forward arrangement. A one-habit "just today" move
         # therefore never locks the rest of the day.
@@ -475,8 +475,8 @@ def plan(request):
         #   - template slot WITH an override -> the ScheduleDay row (row_id = its id)
         #   - override slot NOT in the template (e.g. an Anytime habit dropped in
         #     "just today", which has no Schedule row) -> the ScheduleDay row
-        # A ScheduleDay override may also move a slot to Anytime (plan=None); that's
-        # carried through naturally as plan_id=None below.
+        # A ScheduleDay override may also move a slot to Anytime (chain=None); that's
+        # carried through naturally as chain_id=None below.
         #
         # Only habits that already existed on the viewed day are shown: a habit you
         # add today shouldn't appear when you scroll back. (For today/future this is
@@ -500,7 +500,7 @@ def plan(request):
                 continue   # the per-day override below replaces this template slot
             merged.append({
                 "habit": schedule.habit,
-                "plan_id": schedule.plan_id,
+                "chain_id": schedule.chain_id,
                 "routine_id": schedule.routine_id,
                 "routine_name": schedule.routine.name if schedule.routine_id else None,
                 "order": schedule.order,
@@ -511,7 +511,7 @@ def plan(request):
         for sd in overrides.values():
             merged.append({
                 "habit": sd.habit,
-                "plan_id": sd.plan_id,
+                "chain_id": sd.chain_id,
                 "routine_id": sd.routine_id,
                 "routine_name": sd.routine.name if sd.routine_id else None,
                 "order": sd.order,
@@ -524,7 +524,7 @@ def plan(request):
         # mirrors the frozen/template orderings.
         merged.sort(key=lambda m: (m["order"] is None, m["order"] or 0, m["row_id"]))
         for m in merged:
-            by_plan[m["plan_id"]].append(
+            by_chain[m["chain_id"]].append(
                 habit_payload(
                     m["habit"],
                     schedule_id=m["schedule_id"],
@@ -536,32 +536,32 @@ def plan(request):
                 )
             )
 
-    # One group per time block. The not-frozen path emits EVERY Plan (so an empty
+    # One group per time block. The not-frozen path emits EVERY Chain (so an empty
     # block still renders, as before); the frozen path emits only blocks that had
     # habits that day (an empty block left no ScheduleDay rows to remember).
     if is_frozen:
-        plan_rows = Plan.objects.filter(
-            id__in=[pid for pid in by_plan if pid is not None]
+        chain_rows = Chain.objects.filter(
+            id__in=[pid for pid in by_chain if pid is not None]
         )
     else:
-        plan_rows = Plan.objects.all()
-    plan_groups = [
+        chain_rows = Chain.objects.all()
+    chain_groups = [
         {
             "id": p.id,
-            "time": time_by_plan.get(p.id, p.start_time),  # the day's time
+            "time": time_by_chain.get(p.id, p.start_time),  # the day's time
             "name": p.name,                                # the block's cycle name ("" if unnamed)
-            "habits": by_plan.get(p.id, []),
+            "habits": by_chain.get(p.id, []),
         }
-        for p in plan_rows
+        for p in chain_rows
     ]
 
     # Sort by the day's effective time so a pushed-back cycle slides down the
-    # list (the frontend trusts this order). Timeless plans go last; id breaks
+    # list (the frontend trusts this order). Timeless chains go last; id breaks
     # ties for a stable order.
-    plan_groups.sort(key=lambda g: (g["time"] is None, g["time"] or dt_time.min, g["id"]))
+    chain_groups.sort(key=lambda g: (g["time"] is None, g["time"] or dt_time.min, g["id"]))
 
     # The "Anytime" group: habits with no placement this day. Frozen = any
-    # ScheduleDay row sitting in no plan (placed at Anytime that day) PLUS habits
+    # ScheduleDay row sitting in no chain (placed at Anytime that day) PLUS habits
     # that were never placed at all (no ScheduleDay/Schedule row); not frozen =
     # habits with no EFFECTIVE Schedule row at all for this date. We key off the
     # generation actually in effect (not `schedule__isnull`), so a habit whose only
@@ -576,7 +576,7 @@ def plan(request):
         # ScheduleDay row for the day (any cycle, incl. Anytime) and have no
         # effective Schedule placement either. `placed_ids` is every habit already
         # accounted for, so this never double-lists one already shown (in a cycle or
-        # in the plan=None Anytime list).
+        # in the chain=None Anytime list).
         placed_ids = {
             sd.habit_id
             for sd in ScheduleDay.objects.filter(date=target_date)
@@ -586,14 +586,14 @@ def plan(request):
         unscheduled = Habit.objects.filter(
             date_added__date__lte=target_date
         ).exclude(id__in=placed_ids)
-        anytime_habits = by_plan.get(None, []) + [
+        anytime_habits = by_chain.get(None, []) + [
             habit_payload(h) for h in unscheduled
         ]
     else:
         # Two sources, both legitimately "Anytime" on a not-frozen day:
-        #   - merged rows whose effective placement has plan=None (a habit placed at
+        #   - merged rows whose effective placement has chain=None (a habit placed at
         #     Anytime via a forward-write OR moved there "just today" by an override)
-        #     — already in by_plan[None]
+        #     — already in by_chain[None]
         #   - habits with NO effective placement at all for this date (no template
         #     Schedule row AND no per-day override row)
         # `placed_ids` is every habit that appears in `merged` (template or override),
@@ -603,10 +603,10 @@ def plan(request):
         unscheduled = Habit.objects.filter(
             date_added__date__lte=target_date
         ).exclude(id__in=placed_ids)
-        anytime_habits = by_plan.get(None, []) + [
+        anytime_habits = by_chain.get(None, []) + [
             habit_payload(h) for h in unscheduled
         ]
-    data = plan_groups + [{
+    data = chain_groups + [{
         "id": None,
         "time": None,
         "name": "",   # "Anytime" isn't a cycle, so it's never named
@@ -711,7 +711,7 @@ def add_habit_tier(request, habit_id):
     exists; if a non-empty value is given, appends a TierValue dated today (the
     new current value; the old one stays as history). No value = a plain tier tag
     (e.g. a Growth-only habit like makeup). Returns {"tiers": [...]} — same shape
-    as /plan/.
+    as /chains/.
     """
     habit = get_object_or_404(Habit, id=habit_id)
 
@@ -778,7 +778,7 @@ def skip_day(request):
     if date_error:
         return date_error
 
-    # Only habits that existed on that day (same rule /plan/ uses). .order_by()
+    # Only habits that existed on that day (same rule /chains/ uses). .order_by()
     # clears the model's default (Schedule-joining) ordering, so a habit with
     # several tier-slots isn't returned once per slot — which would make the
     # blanket skip try to write duplicate untiered rows.
@@ -819,7 +819,7 @@ def clear_day(request):
       - that day's saved arrangement (its ScheduleDay rows), so the day stops
         being frozen and projects the recurring template again ("back to
         default"), and
-      - that day's time shifts (its PlanDay overrides), and
+      - that day's time shifts (its ChainDay overrides), and
       - skips / pendings (HabitLogs that aren't COMPLETED).
     Completions are kept (your wins stay) — they're keyed per habit/date/tier and
     are independent of ScheduleDay, so they survive the un-freeze. Any notes are
@@ -846,11 +846,11 @@ def clear_day(request):
 
     with transaction.atomic():
         # Un-freeze the day: dropping its ScheduleDay rows returns it to the
-        # "no row = use the template" default, just like clearing PlanDay returns
-        # its times to the recurring plan. Completions survive (they're HabitLogs,
+        # "no row = use the template" default, just like clearing ChainDay returns
+        # its times to the recurring chain. Completions survive (they're HabitLogs,
         # not ScheduleDay rows).
         arrangement_cleared = ScheduleDay.objects.filter(date=target_date).delete()[0]
-        shifts_cleared = PlanDay.objects.filter(date=target_date).delete()[0]
+        shifts_cleared = ChainDay.objects.filter(date=target_date).delete()[0]
         # Keep notes: a note-bearing skip/pending goes back to PENDING but holds
         # its text; everything else with nothing to keep is removed.
         notes_kept = non_completed.exclude(notes="").update(
@@ -885,9 +885,9 @@ def reorder_schedules(request):
     "no group"). Sending the whole list — instead of "move row X up one" — keeps
     this idempotent and avoids shuffling neighbours one index at a time.
 
-    `plan` (optional) moves a row into another time block — its value is the
-    target Plan's id. That's the cross-block drag: the moved row is sent with its
-    new `plan`, usually alongside `routine` null (a same-block tag). Omit `plan`
+    `chain` (optional) moves a row into another time block — its value is the
+    target Chain's id. That's the cross-block drag: the moved row is sent with its
+    new `chain`, usually alongside `routine` null (a same-block tag). Omit `chain`
     and the row stays in its current block.
     """
     try:
@@ -917,16 +917,16 @@ def reorder_schedules(request):
         # is gone — rather than 400'd, so it can't break a mid-update frontend.
         if "routine" in item:
             entry["routine"] = item["routine"]   # None or a routine id
-        if "plan" in item:
+        if "chain" in item:
             # Move this row into another time block (cross-block drag). A real
-            # plan id only — null ("drop to Anytime") is a delete, handled
+            # chain id only — null ("drop to Anytime") is a delete, handled
             # elsewhere, not here.
-            p = item["plan"]
+            p = item["chain"]
             if not isinstance(p, int) or isinstance(p, bool):
                 return JsonResponse(
-                    {"error": "'plan' must be a plan id (integer)."}, status=400
+                    {"error": "'chain' must be a chain id (integer)."}, status=400
                 )
-            entry["plan"] = p
+            entry["chain"] = p
         if "tier" in item:
             t = item["tier"]   # None (clear) or a tier level 1/2/3
             if t is not None and (
@@ -950,12 +950,12 @@ def reorder_schedules(request):
         if unknown:
             return JsonResponse({"error": f"Unknown routine ids: {unknown}."}, status=400)
 
-    plan_ids = {e["plan"] for e in cleaned if "plan" in e}
-    if plan_ids:
-        known = set(Plan.objects.filter(id__in=plan_ids).values_list("id", flat=True))
-        unknown = sorted(plan_ids - known)
+    chain_ids = {e["chain"] for e in cleaned if "chain" in e}
+    if chain_ids:
+        known = set(Chain.objects.filter(id__in=chain_ids).values_list("id", flat=True))
+        unknown = sorted(chain_ids - known)
         if unknown:
-            return JsonResponse({"error": f"Unknown plan ids: {unknown}."}, status=400)
+            return JsonResponse({"error": f"Unknown chain ids: {unknown}."}, status=400)
 
     # Map tier level (1/2/3) -> Tier row id, for any items setting a slot's tier.
     tier_by_level = {t.level: t.id for t in Tier.objects.all()}
@@ -967,9 +967,9 @@ def reorder_schedules(request):
         if "routine" in e:
             schedule.routine_id = e["routine"]
             fields.add("routine")
-        if "plan" in e:
-            schedule.plan_id = e["plan"]
-            fields.add("plan")
+        if "chain" in e:
+            schedule.chain_id = e["chain"]
+            fields.add("chain")
         if "tier" in e:
             schedule.tier_id = (
                 tier_by_level.get(e["tier"]) if e["tier"] is not None else None
@@ -981,7 +981,7 @@ def reorder_schedules(request):
         Schedule.objects.bulk_update(schedules.values(), list(fields))
 
     updated = [
-        {"id": s.id, "order": s.order, "plan": s.plan_id, "routine": s.routine_id}
+        {"id": s.id, "order": s.order, "chain": s.chain_id, "routine": s.routine_id}
         for s in sorted(schedules.values(), key=lambda s: s.order)
     ]
     return JsonResponse({"updated": updated})
@@ -993,7 +993,7 @@ def reorder_schedules(request):
 def create_schedule(request):
     """Place an unscheduled habit onto the timeline.
 
-    Body: {"habit": <id>, "plan": <id>, "order"?: <int>}. Creates the Schedule
+    Body: {"habit": <id>, "chain": <id>, "order"?: <int>}. Creates the Schedule
     row that puts a habit (one with none yet — i.e. it's sitting in the "Anytime"
     group) into a time block. `order` is optional; without it the row lands at
     the bottom of that block (max order + 1). Returns the new schedule id so the
@@ -1005,29 +1005,29 @@ def create_schedule(request):
         return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
 
     habit_id = body.get("habit")
-    plan_id = body.get("plan")
+    chain_id = body.get("chain")
     # bool is a subclass of int, so reject it explicitly.
     if not isinstance(habit_id, int) or isinstance(habit_id, bool):
         return JsonResponse({"error": "'habit' must be a habit id (integer)."}, status=400)
-    if not isinstance(plan_id, int) or isinstance(plan_id, bool):
-        return JsonResponse({"error": "'plan' must be a plan id (integer)."}, status=400)
+    if not isinstance(chain_id, int) or isinstance(chain_id, bool):
+        return JsonResponse({"error": "'chain' must be a chain id (integer)."}, status=400)
 
     if not Habit.objects.filter(id=habit_id).exists():
         return JsonResponse({"error": f"Unknown habit id: {habit_id}."}, status=400)
-    if not Plan.objects.filter(id=plan_id).exists():
-        return JsonResponse({"error": f"Unknown plan id: {plan_id}."}, status=400)
+    if not Chain.objects.filter(id=chain_id).exists():
+        return JsonResponse({"error": f"Unknown chain id: {chain_id}."}, status=400)
 
     order = body.get("order")
     if order is not None and (not isinstance(order, int) or isinstance(order, bool)):
         return JsonResponse({"error": "'order' must be an integer."}, status=400)
     if order is None:
         # Append: one past the block's current highest order (1 if it's empty).
-        highest = Schedule.objects.filter(plan_id=plan_id).aggregate(m=Max("order"))["m"]
+        highest = Schedule.objects.filter(chain_id=chain_id).aggregate(m=Max("order"))["m"]
         order = (highest or 0) + 1
 
-    schedule = Schedule.objects.create(habit_id=habit_id, plan_id=plan_id, order=order)
+    schedule = Schedule.objects.create(habit_id=habit_id, chain_id=chain_id, order=order)
     return JsonResponse(
-        {"schedule_id": schedule.id, "habit": habit_id, "plan": plan_id, "order": order},
+        {"schedule_id": schedule.id, "habit": habit_id, "chain": chain_id, "order": order},
         status=201,
     )
 
@@ -1037,17 +1037,17 @@ def create_schedule(request):
 def arrange_day(request):
     """Reorder / move / place habits for ONE day only — the per-day twin of
     reorder_schedules + create_schedule. Writes `ScheduleDay`, NEVER `Schedule`,
-    so an edit here sticks to that date and can't rewrite the recurring plan.
+    so an edit here sticks to that date and can't rewrite the recurring chain.
 
     Body: {"date": "YYYY-MM-DD", "items": [...]}. Each item is the SAME shape as
-    reorder_schedules, except `id` is the row's `row_id` (from /plan/):
+    reorder_schedules, except `id` is the row's `row_id` (from /chains/):
 
         {"id": 11, "order": 2, "routine": 3}    # reorder/retag an existing row
-        {"id": 12, "order": 3, "plan": 7}       # move it to another block, that day
-        {"habit": 9, "plan": 7, "order"?: 4}    # NEW per-day placement: drop a habit
+        {"id": 12, "order": 3, "chain": 7}      # move it to another block, that day
+        {"habit": 9, "chain": 7, "order"?: 4}   # NEW per-day placement: drop a habit
                                                 #   from "Anytime" into a block, today only
 
-    `routine` / `tier` / `plan` are only changed when their key is present (null
+    `routine` / `tier` / `chain` are only changed when their key is present (null
     clears the tag); `tier` takes a level 1/2/3 or null.
 
     Only PAST days lock. The write path forks on whether the edited day is in the
@@ -1066,12 +1066,12 @@ def arrange_day(request):
         every other habit following the template. Moving one habit "just today" must
         NOT lock the rest of the day. The override (the per-day layer) WINS over a
         forward change for that habit on that date — same precedence as
-        PlanDay > PlanTime.
+        ChainDay > ChainTime.
 
-    A move's `id` is the row's `row_id` from /plan/: on today/future that's the
+    A move's `id` is the row's `row_id` from /chains/: on today/future that's the
     ScheduleDay id if the slot already has an override for the date, else the
     template Schedule id. We disambiguate by checking ScheduleDay-for-this-date
-    first (the exact reverse of what /plan/ emitted), then fall back to resolving a
+    first (the exact reverse of what /chains/ emitted), then fall back to resolving a
     Schedule id to its slot and upserting the override.
     """
     try:
@@ -1104,7 +1104,7 @@ def arrange_day(request):
         if is_place:
             entry = {}
             hid = item.get("habit")
-            pid = item.get("plan")
+            pid = item.get("chain")
             # bool is a subclass of int, so reject it explicitly.
             if not isinstance(hid, int) or isinstance(hid, bool):
                 return JsonResponse(
@@ -1112,10 +1112,10 @@ def arrange_day(request):
                 )
             if not isinstance(pid, int) or isinstance(pid, bool):
                 return JsonResponse(
-                    {"error": "A placement needs an integer 'plan' id."}, status=400
+                    {"error": "A placement needs an integer 'chain' id."}, status=400
                 )
             entry["habit"] = hid
-            entry["plan"] = pid
+            entry["chain"] = pid
             order = item.get("order")
             if order is not None and (not isinstance(order, int) or isinstance(order, bool)):
                 return JsonResponse({"error": "'order' must be an integer."}, status=400)
@@ -1128,20 +1128,20 @@ def arrange_day(request):
                     {"error": "Each item needs an integer 'id' and 'order'."}, status=400
                 )
             entry = {"id": rid, "order": order}
-            # A stray "chain" key (older client) is ignored, not 400'd — the
-            # Chain model is gone, so it just no longer means anything.
+            # Any key we don't read below (e.g. the pre-rename "plan") is ignored,
+            # not 400'd, so an older client's stray field can't break the reorder.
             if "routine" in item:
                 entry["routine"] = item["routine"]   # None or a routine id
-            if "plan" in item:
+            if "chain" in item:
                 # Move this row into another time block (cross-block drag), that
-                # day only. A real plan id only — null ("drop to Anytime") clears
-                # the placement, so we allow it here (no row off-plan = Anytime).
-                p = item["plan"]
+                # day only. A real chain id only — null ("drop to Anytime") clears
+                # the placement, so we allow it here (no row off-chain = Anytime).
+                p = item["chain"]
                 if p is not None and (not isinstance(p, int) or isinstance(p, bool)):
                     return JsonResponse(
-                        {"error": "'plan' must be a plan id (integer) or null."}, status=400
+                        {"error": "'chain' must be a chain id (integer) or null."}, status=400
                     )
-                entry["plan"] = p
+                entry["chain"] = p
             if "tier" in item:
                 t = item["tier"]   # None (clear) or a tier level 1/2/3
                 if t is not None and (
@@ -1163,13 +1163,13 @@ def arrange_day(request):
         if unknown:
             return JsonResponse({"error": f"Unknown routine ids: {unknown}."}, status=400)
 
-    plan_ids = {e["plan"] for e in moves if "plan" in e and e["plan"] is not None}
-    plan_ids |= {e["plan"] for e in places}
-    if plan_ids:
-        known = set(Plan.objects.filter(id__in=plan_ids).values_list("id", flat=True))
-        unknown = sorted(plan_ids - known)
+    chain_ids = {e["chain"] for e in moves if "chain" in e and e["chain"] is not None}
+    chain_ids |= {e["chain"] for e in places}
+    if chain_ids:
+        known = set(Chain.objects.filter(id__in=chain_ids).values_list("id", flat=True))
+        unknown = sorted(chain_ids - known)
         if unknown:
-            return JsonResponse({"error": f"Unknown plan ids: {unknown}."}, status=400)
+            return JsonResponse({"error": f"Unknown chain ids: {unknown}."}, status=400)
 
     habit_ids = {e["habit"] for e in places}
     if habit_ids:
@@ -1224,9 +1224,9 @@ def arrange_day(request):
                     if "routine" in e:
                         row.routine_id = e["routine"]
                         fields.add("routine")
-                    if "plan" in e:
-                        row.plan_id = e["plan"]
-                        fields.add("plan")
+                    if "chain" in e:
+                        row.chain_id = e["chain"]
+                        fields.add("chain")
                     if "tier" in e:
                         row.tier_id = (
                             tier_by_level.get(e["tier"]) if e["tier"] is not None else None
@@ -1241,7 +1241,7 @@ def arrange_day(request):
                 # so every untouched habit keeps following the template. The move's
                 # id is either an existing override (ScheduleDay-for-this-date) or a
                 # template Schedule id — disambiguate by checking the former first,
-                # exactly reversing what /plan/ emitted.
+                # exactly reversing what /chains/ emitted.
                 existing_overrides = ScheduleDay.objects.in_bulk(
                     [e["id"] for e in moves], field_name="id"
                 )
@@ -1272,7 +1272,7 @@ def arrange_day(request):
                             tier_id=sched.tier_id,
                             defaults={
                                 "habit_name": sched.habit.name,
-                                "plan_id": sched.plan_id,
+                                "chain_id": sched.chain_id,
                                 "routine_id": sched.routine_id,
                                 "order": sched.order,
                             },
@@ -1281,8 +1281,8 @@ def arrange_day(request):
                     row.order = e["order"]
                     if "routine" in e:
                         row.routine_id = e["routine"]
-                    if "plan" in e:
-                        row.plan_id = e["plan"]
+                    if "chain" in e:
+                        row.chain_id = e["chain"]
                     if "tier" in e:
                         row.tier_id = (
                             tier_by_level.get(e["tier"]) if e["tier"] is not None else None
@@ -1304,33 +1304,33 @@ def arrange_day(request):
             # this date PLUS any ScheduleDay overrides — not just the override rows.
             # On a past (frozen) day the day reads all-or-nothing from ScheduleDay,
             # so only those rows count (template_max stays empty).
-            template_max_by_plan = {}
+            template_max_by_chain = {}
             if not is_past_day:
                 for s in _effective_schedules(target_date):
                     # The slot's effective placement is its override if one exists.
                     # We only need a ceiling, so the template order is a safe lower
                     # bound even when an override moved the slot elsewhere.
-                    if s.plan_id is not None and s.order is not None:
-                        cur = template_max_by_plan.get(s.plan_id)
+                    if s.chain_id is not None and s.order is not None:
+                        cur = template_max_by_chain.get(s.chain_id)
                         if cur is None or s.order > cur:
-                            template_max_by_plan[s.plan_id] = s.order
+                            template_max_by_chain[s.chain_id] = s.order
             for e in places:
                 order = e["order"]
                 if order is None:
                     # Append: one past this block's current highest order that day,
                     # across overrides and (today/future) the template.
                     highest_sd = ScheduleDay.objects.filter(
-                        date=target_date, plan_id=e["plan"]
+                        date=target_date, chain_id=e["chain"]
                     ).aggregate(m=Max("order"))["m"]
                     highest = max(
-                        highest_sd or 0, template_max_by_plan.get(e["plan"], 0)
+                        highest_sd or 0, template_max_by_chain.get(e["chain"], 0)
                     )
                     order = highest + 1
                 sd = ScheduleDay.objects.create(
                     date=target_date,
                     habit_id=e["habit"],
                     habit_name=habit_names[e["habit"]],
-                    plan_id=e["plan"],
+                    chain_id=e["chain"],
                     order=order,
                 )
                 created.append(sd)
@@ -1344,7 +1344,7 @@ def arrange_day(request):
     # override rows); `created` is the new per-day placements.
     all_rows = touched + created
     updated = [
-        {"id": sd.id, "order": sd.order, "plan": sd.plan_id, "routine": sd.routine_id}
+        {"id": sd.id, "order": sd.order, "chain": sd.chain_id, "routine": sd.routine_id}
         for sd in sorted(all_rows, key=lambda sd: (sd.order is None, sd.order or 0, sd.id))
     ]
     return JsonResponse({"date": target_date, "updated": updated})
@@ -1364,21 +1364,21 @@ def arrange_forward(request):
         {
           "from_date": "YYYY-MM-DD",   # optional, defaults to today; inclusive (D2)
           "items": [
-            {"habit": 9, "plan": 7, "tier": 2|null, "order": 1},
-            {"habit": 3, "plan": null, "order": 2},   # plan null = Anytime
+            {"habit": 9, "chain": 7, "tier": 2|null, "order": 1},
+            {"habit": 3, "chain": null, "order": 2},   # chain null = Anytime
             ...
           ]
         }
 
     For each item we UPSERT a `Schedule` row at `valid_from = from_date` for the
-    logical slot (habit, tier), setting its plan + order (+ routine if sent). Send
+    logical slot (habit, tier), setting its chain + order (+ routine if sent). Send
     the WHOLE affected cycle(s) as fresh 1..N orders — whole-list & idempotent, the
     pattern reorder used. We NEVER touch earlier-generation rows: they keep covering
     dates < from_date. Re-running the same edit UPDATEs the from_date generation
     (matched on (habit, tier, valid_from)) instead of duplicating it.
 
     Moving a habit to a new cycle needs nothing more than writing its new
-    (plan, order) at from_date: the per-slot read (_effective_schedules) drops the
+    (chain, order) at from_date: the per-slot read (_effective_schedules) drops the
     habit's older-generation row for dates >= from_date, so it leaves the old cycle
     automatically and is never shown twice.
 
@@ -1425,19 +1425,19 @@ def arrange_forward(request):
                 status=400,
             )
         entry = {"habit": hid, "order": order}
-        # `plan` is REQUIRED for a placement (which cycle), but null is allowed and
+        # `chain` is REQUIRED for a placement (which cycle), but null is allowed and
         # means "Anytime" (no block) — the forward twin of arrange_day's
-        # null-plan-clears behavior.
-        if "plan" not in item:
+        # null-chain-clears behavior.
+        if "chain" not in item:
             return JsonResponse(
-                {"error": "Each item needs a 'plan' (id or null)."}, status=400
+                {"error": "Each item needs a 'chain' (id or null)."}, status=400
             )
-        p = item["plan"]
+        p = item["chain"]
         if p is not None and (not isinstance(p, int) or isinstance(p, bool)):
             return JsonResponse(
-                {"error": "'plan' must be a plan id (integer) or null."}, status=400
+                {"error": "'chain' must be a chain id (integer) or null."}, status=400
             )
-        entry["plan"] = p
+        entry["chain"] = p
         if "tier" in item:
             t = item["tier"]   # None (untiered slot) or a tier level 1/2/3
             if t is not None and (
@@ -1474,12 +1474,12 @@ def arrange_forward(request):
     if unknown:
         return JsonResponse({"error": f"Unknown habit ids: {unknown}."}, status=400)
 
-    plan_ids = {e["plan"] for e in cleaned if e["plan"] is not None}
-    if plan_ids:
-        known_p = set(Plan.objects.filter(id__in=plan_ids).values_list("id", flat=True))
-        unknown_p = sorted(plan_ids - known_p)
+    chain_ids = {e["chain"] for e in cleaned if e["chain"] is not None}
+    if chain_ids:
+        known_p = set(Chain.objects.filter(id__in=chain_ids).values_list("id", flat=True))
+        unknown_p = sorted(chain_ids - known_p)
         if unknown_p:
-            return JsonResponse({"error": f"Unknown plan ids: {unknown_p}."}, status=400)
+            return JsonResponse({"error": f"Unknown chain ids: {unknown_p}."}, status=400)
 
     routine_ids = {e["routine"] for e in cleaned if e.get("routine") is not None}
     if routine_ids:
@@ -1506,7 +1506,7 @@ def arrange_forward(request):
                 tier_id = (
                     tier_by_level.get(e["tier"]) if e["tier"] is not None else None
                 )
-                defaults = {"plan_id": e["plan"], "order": e["order"]}
+                defaults = {"chain_id": e["chain"], "order": e["order"]}
                 if "routine" in e:
                     defaults["routine_id"] = e["routine"]
                 # UPSERT the from_date generation of this slot (habit, tier):
@@ -1532,7 +1532,7 @@ def arrange_forward(request):
                     # constraint, so this branch can't itself dup; the catch
                     # below still covers it defensively.)
                     sd_defaults = {
-                        "plan_id": e["plan"],
+                        "chain_id": e["chain"],
                         "order": e["order"],
                         "habit_name": Habit.objects.values_list("name", flat=True).get(
                             id=e["habit"]
@@ -1565,7 +1565,7 @@ def arrange_forward(request):
         {
             "id": s.id,
             "habit": s.habit_id,
-            "plan": s.plan_id,
+            "chain": s.chain_id,
             "tier": s.tier.level if s.tier_id else None,
             "order": s.order,
             "valid_from": s.valid_from.isoformat(),
@@ -1577,10 +1577,10 @@ def arrange_forward(request):
 
 @csrf_exempt
 @require_POST
-def create_plan(request):
+def create_chain(request):
     """Create a new (empty) time block, or reuse the one at that time.
 
-    Body: {"time": "HH:MM"}. Same time = same cycle, so if a Plan already has
+    Body: {"time": "HH:MM"}. Same time = same cycle, so if a Chain already has
     that start_time we return it instead of making a second block at the same
     minute. The page then renders the (possibly empty) block so a habit can be
     dragged into it. `created` tells the caller which happened.
@@ -1605,25 +1605,25 @@ def create_plan(request):
     new_time = new_time.replace(second=0, microsecond=0)
 
     # Reuse an existing block at this minute rather than duplicating it.
-    plan = Plan.objects.filter(start_time=new_time).first()
-    created = plan is None
+    chain = Chain.objects.filter(start_time=new_time).first()
+    created = chain is None
     if created:
-        plan = Plan.objects.create(start_time=new_time)
+        chain = Chain.objects.create(start_time=new_time)
     return JsonResponse(
-        {"id": plan.id, "time": new_time, "created": created},
+        {"id": chain.id, "time": new_time, "created": created},
         status=201 if created else 200,
     )
 
 
 @csrf_exempt
 @require_POST
-def name_plan(request, plan_id):
+def name_chain(request, chain_id):
     """Set or rename a time block (the "cycle"). Recurring, every day.
 
     Body: {"name": "<str>"}. The name is trimmed; an empty string (after trim)
     clears it, so the block goes back to looking unnamed. Naming is cosmetic — the
-    block is still keyed/grouped by its time — so this only writes Plan.name.
-    Returns {"id": plan_id, "name": <saved name>}.
+    block is still keyed/grouped by its time — so this only writes Chain.name.
+    Returns {"id": chain_id, "name": <saved name>}.
     """
     try:
         body = json.loads(request.body or b"{}")
@@ -1640,26 +1640,26 @@ def name_plan(request, plan_id):
         )
 
     try:
-        plan = Plan.objects.get(id=plan_id)
-    except Plan.DoesNotExist:
-        return JsonResponse({"error": f"Unknown plan id: {plan_id}."}, status=400)
+        chain = Chain.objects.get(id=chain_id)
+    except Chain.DoesNotExist:
+        return JsonResponse({"error": f"Unknown chain id: {chain_id}."}, status=400)
 
-    plan.name = name
-    plan.save(update_fields=["name"])
-    return JsonResponse({"id": plan.id, "name": plan.name})
+    chain.name = name
+    chain.save(update_fields=["name"])
+    return JsonResponse({"id": chain.id, "name": chain.name})
 
 
 @csrf_exempt
 @require_POST
-def shift_plans(request):
+def shift_chains(request):
     """Push a cycle and everything later that day to a new time — for today only.
 
-    Body: {"from_plan": <plan id>, "minutes": <int>, "date"?: "YYYY-MM-DD"}.
+    Body: {"from_chain": <chain id>, "minutes": <int>, "date"?: "YYYY-MM-DD"}.
 
     Use case: you woke up late, so the morning cycle and everything after it
-    needs to slide back. Every plan whose time *that day* is at or after the
-    anchor plan's time moves by `minutes` (negative pulls earlier). This writes
-    per-day overrides (PlanDay) and never touches the recurring Plan times, so
+    needs to slide back. Every chain whose time *that day* is at or after the
+    anchor chain's time moves by `minutes` (negative pulls earlier). This writes
+    per-day overrides (ChainDay) and never touches the recurring Chain times, so
     tomorrow is back to normal. Shifting again stacks on the current day's time.
     """
     try:
@@ -1667,10 +1667,10 @@ def shift_plans(request):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
 
-    from_plan_id = body.get("from_plan")
+    from_chain_id = body.get("from_chain")
     # bool is a subclass of int, so reject it explicitly.
-    if not isinstance(from_plan_id, int) or isinstance(from_plan_id, bool):
-        return JsonResponse({"error": "'from_plan' must be a plan id (integer)."}, status=400)
+    if not isinstance(from_chain_id, int) or isinstance(from_chain_id, bool):
+        return JsonResponse({"error": "'from_chain' must be a chain id (integer)."}, status=400)
 
     minutes = body.get("minutes")
     if not isinstance(minutes, int) or isinstance(minutes, bool):
@@ -1682,15 +1682,15 @@ def shift_plans(request):
     if date_error:
         return date_error
 
-    # Each plan's effective time this day, with the full Phase-3 precedence
-    # (PlanDay override > PlanTime forward-time > recurring start_time) so a shift
-    # anchors on what the cycle actually reads as today. Timeless plans (no
+    # Each chain's effective time this day, with the full Phase-3 precedence
+    # (ChainDay override > ChainTime forward-time > recurring start_time) so a shift
+    # anchors on what the cycle actually reads as today. Timeless chains (no
     # effective time) can't anchor or move.
-    effective = _effective_plan_times(target_date)
+    effective = _effective_chain_times(target_date)
 
-    if from_plan_id not in effective:
-        return JsonResponse({"error": f"Unknown plan id: {from_plan_id}."}, status=400)
-    threshold = effective[from_plan_id]
+    if from_chain_id not in effective:
+        return JsonResponse({"error": f"Unknown chain id: {from_chain_id}."}, status=400)
+    threshold = effective[from_chain_id]
     if threshold is None:
         return JsonResponse(
             {"error": "That cycle has no time set, so there's nothing to shift from."},
@@ -1704,15 +1704,15 @@ def shift_plans(request):
 
     with transaction.atomic():
         for pid, base in affected.items():
-            PlanDay.objects.update_or_create(
-                plan_id=pid,
+            ChainDay.objects.update_or_create(
+                chain_id=pid,
                 date=target_date,
                 defaults={"start_time": _shift_time(base, minutes)},
             )
 
     # Return the day's new times, sorted, so the UI can reconcile.
     updated = sorted(
-        ({"plan": pid, "time": _shift_time(base, minutes)} for pid, base in affected.items()),
+        ({"chain": pid, "time": _shift_time(base, minutes)} for pid, base in affected.items()),
         key=lambda r: r["time"],
     )
     return JsonResponse({"date": target_date, "updated": updated})
@@ -1720,15 +1720,15 @@ def shift_plans(request):
 
 @csrf_exempt
 @require_POST
-def retime_plan(request):
+def retime_chain(request):
     """Move ONE cycle to a new time — for today only, no cascade.
 
-    Body: {"plan": <plan id>, "time": "HH:MM", "date"?: "YYYY-MM-DD"}.
+    Body: {"chain": <chain id>, "time": "HH:MM", "date"?: "YYYY-MM-DD"}.
 
-    The drag-the-time-header companion to shift_plans: you drop a single cycle at
+    The drag-the-time-header companion to shift_chains: you drop a single cycle at
     an absolute time and *only* that cycle moves — everything else stays put
     (whereas shift slides the anchor and everything after it). Like shift, it
-    writes a per-day override (PlanDay) and never touches the recurring Plan time,
+    writes a per-day override (ChainDay) and never touches the recurring Chain time,
     so tomorrow is back to normal. Dropping a cycle on its normal recurring time
     clears the override instead of storing a redundant "no-op" one.
     """
@@ -1737,10 +1737,10 @@ def retime_plan(request):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
 
-    plan_id = body.get("plan")
+    chain_id = body.get("chain")
     # bool is a subclass of int, so reject it explicitly.
-    if not isinstance(plan_id, int) or isinstance(plan_id, bool):
-        return JsonResponse({"error": "'plan' must be a plan id (integer)."}, status=400)
+    if not isinstance(chain_id, int) or isinstance(chain_id, bool):
+        return JsonResponse({"error": "'chain' must be a chain id (integer)."}, status=400)
 
     raw_time = body.get("time")
     if not isinstance(raw_time, str):
@@ -1763,56 +1763,56 @@ def retime_plan(request):
         return date_error
 
     try:
-        plan = Plan.objects.get(id=plan_id)
-    except Plan.DoesNotExist:
-        return JsonResponse({"error": f"Unknown plan id: {plan_id}."}, status=400)
+        chain = Chain.objects.get(id=chain_id)
+    except Chain.DoesNotExist:
+        return JsonResponse({"error": f"Unknown chain id: {chain_id}."}, status=400)
 
     with transaction.atomic():
-        if new_time == plan.start_time:
+        if new_time == chain.start_time:
             # Back on its normal time — drop any override so "no row = normal" holds.
-            PlanDay.objects.filter(plan=plan, date=target_date).delete()
+            ChainDay.objects.filter(chain=chain, date=target_date).delete()
         else:
             # Absolute set (not a delta): a second drop replaces the first.
-            PlanDay.objects.update_or_create(
-                plan=plan, date=target_date, defaults={"start_time": new_time}
+            ChainDay.objects.update_or_create(
+                chain=chain, date=target_date, defaults={"start_time": new_time}
             )
 
-    return JsonResponse({"date": target_date, "plan": plan_id, "time": new_time})
+    return JsonResponse({"date": target_date, "chain": chain_id, "time": new_time})
 
 
 @csrf_exempt
 @require_POST
 def retime_forward(request):
     """Move ONE cycle to a new time PERMANENTLY from a date forward — the
-    "every day from today" twin of retime_plan's per-day override, and the
+    "every day from today" twin of retime_chain's per-day override, and the
     forward-time half of apply-to-future (Phase 3).
 
-    Body: {"plan": <plan id>, "time": "HH:MM", "from_date"?: "YYYY-MM-DD"}.
+    Body: {"chain": <chain id>, "time": "HH:MM", "from_date"?: "YYYY-MM-DD"}.
 
-    Upserts ONE `PlanTime` row (plan, valid_from=from_date, start_time) so this
+    Upserts ONE `ChainTime` row (chain, valid_from=from_date, start_time) so this
     cycle's new time sticks from `from_date` (default today) forward — read via
-    _effective_plan_times. It writes ONLY this cycle's time: no other cycle moves
+    _effective_chain_times. It writes ONLY this cycle's time: no other cycle moves
     (independence from shift's cascade), and it never touches any Schedule /
     ScheduleDay placement (independence from the placement half). Re-running the
     same forward retime UPDATEs the from_date row rather than duplicating it.
 
-    Frozen TODAY: a frozen day reads each block's locked-in PlanDay time, so a
-    pure PlanTime write would be invisible to today, making "every day from today"
+    Frozen TODAY: a frozen day reads each block's locked-in ChainDay time, so a
+    pure ChainTime write would be invisible to today, making "every day from today"
     visibly skip today. So when from_date == today and today is frozen we ALSO
-    mirror the new time into today's PlanDay for THIS cycle — exactly as
+    mirror the new time into today's ChainDay for THIS cycle — exactly as
     arrange_forward mirrors placement into today's ScheduleDay. We do this ONLY
     for today; a frozen FUTURE day is a deliberate pre-edit and stays untouched
-    (D3), and a non-frozen day reads PlanTime directly so it needs no mirror.
+    (D3), and a non-frozen day reads ChainTime directly so it needs no mirror.
     """
     try:
         body = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
         return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
 
-    plan_id = body.get("plan")
+    chain_id = body.get("chain")
     # bool is a subclass of int, so reject it explicitly.
-    if not isinstance(plan_id, int) or isinstance(plan_id, bool):
-        return JsonResponse({"error": "'plan' must be a plan id (integer)."}, status=400)
+    if not isinstance(chain_id, int) or isinstance(chain_id, bool):
+        return JsonResponse({"error": "'chain' must be a chain id (integer)."}, status=400)
 
     raw_time = body.get("time")
     if not isinstance(raw_time, str):
@@ -1840,9 +1840,9 @@ def retime_forward(request):
             return date_error
 
     try:
-        plan = Plan.objects.get(id=plan_id)
-    except Plan.DoesNotExist:
-        return JsonResponse({"error": f"Unknown plan id: {plan_id}."}, status=400)
+        chain = Chain.objects.get(id=chain_id)
+    except Chain.DoesNotExist:
+        return JsonResponse({"error": f"Unknown chain id: {chain_id}."}, status=400)
 
     today = timezone.localdate()
     # Only mirror into a frozen day when that day is TODAY. A frozen FUTURE day is
@@ -1853,20 +1853,20 @@ def retime_forward(request):
     )
 
     with transaction.atomic():
-        # UPSERT this cycle's from_date PlanTime generation: re-running updates it
-        # rather than duplicating. Only THIS plan is touched.
-        PlanTime.objects.update_or_create(
-            plan=plan, valid_from=from_date, defaults={"start_time": new_time}
+        # UPSERT this cycle's from_date ChainTime generation: re-running updates it
+        # rather than duplicating. Only THIS chain is touched.
+        ChainTime.objects.update_or_create(
+            chain=chain, valid_from=from_date, defaults={"start_time": new_time}
         )
         if reflect_today:
             # Keep today (frozen) in sync so "every day from today" visibly
-            # includes today. Upsert ONLY this cycle's PlanDay for today.
-            PlanDay.objects.update_or_create(
-                plan=plan, date=today, defaults={"start_time": new_time}
+            # includes today. Upsert ONLY this cycle's ChainDay for today.
+            ChainDay.objects.update_or_create(
+                chain=chain, date=today, defaults={"start_time": new_time}
             )
 
     return JsonResponse(
-        {"from_date": from_date.isoformat(), "plan": plan_id, "time": new_time}
+        {"from_date": from_date.isoformat(), "chain": chain_id, "time": new_time}
     )
 
 
@@ -1879,7 +1879,7 @@ def _habit_detail(habit):
         "area": habit.area_id,
         "date_added": habit.date_added,
         "is_support": habit.is_support,
-        "tiers": _habit_tiers(habit),   # same shape as in /plan/
+        "tiers": _habit_tiers(habit),   # same shape as in /chains/
     }
 
 
@@ -1903,8 +1903,8 @@ def habit(request, habit_id):
 def create_habit(request):
     """Create a habit. Body: {"name", "notes"?, "area"?, "is_support"?}.
 
-    A new habit starts unscheduled (no plan/time), so it appears in the
-    "unscheduled" group of /plan/ until it's placed on the timeline.
+    A new habit starts unscheduled (no chain/time), so it appears in the
+    "unscheduled" group of /chains/ until it's placed on the timeline.
     """
     try:
         body = json.loads(request.body or b"{}")
@@ -2009,7 +2009,7 @@ def _valid_id(value):
 def day_notes(request):
     """Every note for a day (defaults today). One call for the Plan page; the
     client groups them by the habit ids in each note's `habits` list. Honors
-    ?date=YYYY-MM-DD like /plan/ does."""
+    ?date=YYYY-MM-DD like /chains/ does."""
     target_date, date_error = _resolve_date(request.GET.get("date"))
     if date_error:
         return date_error
@@ -2221,7 +2221,7 @@ def create_journal(request):
 
 def day_journal(request):
     """Every journal entry for a day (defaults today), oldest first (the model's
-    own ordering). Honors ?date=YYYY-MM-DD like /plan/ and /days/notes/ do."""
+    own ordering). Honors ?date=YYYY-MM-DD like /chains/ and /days/notes/ do."""
     target_date, date_error = _resolve_date(request.GET.get("date"))
     if date_error:
         return date_error
@@ -2494,7 +2494,7 @@ def habits_list(request):
     Habits overview page.
 
     Returns a flat array, one object per habit, ordered by area name then habit
-    name. Unlike /plan/ (which emits a row per Schedule slot), this lists each
+    name. Unlike /chains/ (which emits a row per Schedule slot), this lists each
     habit ONCE: we order_by("area__name", "name") instead of relying on the
     model's default ordering, which JOINs Schedule and would duplicate a habit
     that sits in several time-slots.

@@ -9,8 +9,8 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .models import (
-    Area, BASE_VALID_FROM, Habit, HabitLog, HabitTier, Note, Plan, PlanDay,
-    PlanTime, Routine, Schedule, ScheduleDay, Tier, TierValue,
+    Area, BASE_VALID_FROM, Habit, HabitLog, HabitTier, Note, Chain, ChainDay,
+    ChainTime, Routine, Schedule, ScheduleDay, Tier, TierValue,
 )
 from .views import FREEZE_CATCHUP_DAYS, freeze_day
 
@@ -31,8 +31,8 @@ class BrowseDaysTests(TestCase):
         Habit.objects.filter(id=self.habit.id).update(
             date_added=timezone.now() - timedelta(days=30)
         )
-        self.plan = Plan.objects.create()
-        Schedule.objects.create(habit=self.habit, plan=self.plan, order=1)
+        self.chain = Chain.objects.create()
+        Schedule.objects.create(habit=self.habit, chain=self.chain, order=1)
 
     def _statuses(self, response):
         """Map of habit id -> status across every group in a /plan/ payload."""
@@ -43,12 +43,12 @@ class BrowseDaysTests(TestCase):
             for h in group["habits"]
         }
 
-    def test_plan_defaults_to_today(self):
+    def test_chains_defaults_to_today(self):
         response = self.client.get(reverse("habits:plan"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self._statuses(response)[self.habit.id], "PENDING")
 
-    def test_plan_reads_the_requested_day(self):
+    def test_chains_reads_the_requested_day(self):
         # Completed yesterday, untouched today.
         HabitLog.objects.create(
             habit=self.habit, date=self.yesterday, status=HabitLog.Status.COMPLETED
@@ -62,16 +62,16 @@ class BrowseDaysTests(TestCase):
         self.assertEqual(self._statuses(yesterday)[self.habit.id], "COMPLETED")
         self.assertEqual(self._statuses(today)[self.habit.id], "PENDING")
 
-    def test_plan_rejects_a_bad_date(self):
+    def test_chains_rejects_a_bad_date(self):
         for bad in ("not-a-date", "2026-13-40"):
             response = self.client.get(reverse("habits:plan"), {"date": bad})
             self.assertEqual(response.status_code, 400, bad)
 
-    def test_plan_hides_habits_created_after_the_viewed_day(self):
+    def test_chains_hides_habits_created_after_the_viewed_day(self):
         # self.habit is 30 days old (see setUp). Add a second habit that only
         # exists as of today.
         new_habit = Habit.objects.create(name="Meditate")
-        Schedule.objects.create(habit=new_habit, plan=self.plan, order=2)
+        Schedule.objects.create(habit=new_habit, chain=self.chain, order=2)
 
         three_days_ago = (self.today - timedelta(days=3)).isoformat()
         past = self._statuses(self.client.get(reverse("habits:plan"), {"date": three_days_ago}))
@@ -138,7 +138,7 @@ class BrowseDaysTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
 
-class ShiftPlansTests(TestCase):
+class ShiftChainsTests(TestCase):
     """Waking up late pushes a cycle and everything after it to a new time —
     for that day only, never touching the recurring routine."""
 
@@ -146,24 +146,24 @@ class ShiftPlansTests(TestCase):
         self.today = timezone.localdate()
         self.tomorrow = self.today + timedelta(days=1)
         # Three time slots; we'll anchor shifts on the 9:00 one.
-        self.early = Plan.objects.create(start_time=time(8, 0))
-        self.mid = Plan.objects.create(start_time=time(9, 0))
-        self.late = Plan.objects.create(start_time=time(10, 0))
-        self.url = reverse("habits:shift_plans")
+        self.early = Chain.objects.create(start_time=time(8, 0))
+        self.mid = Chain.objects.create(start_time=time(9, 0))
+        self.late = Chain.objects.create(start_time=time(10, 0))
+        self.url = reverse("habits:shift_chains")
 
     def _shift(self, **body):
         return self.client.post(self.url, data=body, content_type="application/json")
 
-    def _plan_times(self, response):
+    def _chain_times(self, response):
         """Map of plan id -> time string from a /plan/ payload (skips unscheduled)."""
         groups = json.loads(response.content)
         return {g["id"]: g["time"] for g in groups if g["id"] is not None}
 
     def _today_times(self):
-        return self._plan_times(self.client.get(reverse("habits:plan")))
+        return self._chain_times(self.client.get(reverse("habits:plan")))
 
     def test_shifts_anchor_and_everything_after(self):
-        response = self._shift(from_plan=self.mid.id, minutes=45)
+        response = self._shift(from_chain=self.mid.id, minutes=45)
         self.assertEqual(response.status_code, 200)
 
         times = self._today_times()
@@ -172,147 +172,147 @@ class ShiftPlansTests(TestCase):
         self.assertEqual(times[self.late.id], "10:45:00")   # after anchor: cascaded
 
     def test_shift_is_today_only(self):
-        self._shift(from_plan=self.mid.id, minutes=45)
-        tomorrow = self._plan_times(
+        self._shift(from_chain=self.mid.id, minutes=45)
+        tomorrow = self._chain_times(
             self.client.get(reverse("habits:plan"), {"date": self.tomorrow.isoformat()})
         )
         self.assertEqual(tomorrow[self.mid.id], "09:00:00")  # recurring time intact
 
     def test_negative_minutes_pull_earlier(self):
-        self._shift(from_plan=self.mid.id, minutes=-30)
+        self._shift(from_chain=self.mid.id, minutes=-30)
         self.assertEqual(self._today_times()[self.mid.id], "08:30:00")
 
     def test_repeated_shifts_stack(self):
-        self._shift(from_plan=self.mid.id, minutes=30)
-        self._shift(from_plan=self.mid.id, minutes=15)
+        self._shift(from_chain=self.mid.id, minutes=30)
+        self._shift(from_chain=self.mid.id, minutes=15)
         self.assertEqual(self._today_times()[self.mid.id], "09:45:00")  # 9:00 +30 +15
         # ...and still just one override row for that plan/day.
         self.assertEqual(
-            PlanDay.objects.filter(plan=self.mid, date=self.today).count(), 1
+            ChainDay.objects.filter(chain=self.mid, date=self.today).count(), 1
         )
 
     def test_rejects_bad_input(self):
-        self.assertEqual(self._shift(from_plan=999999, minutes=10).status_code, 400)
-        self.assertEqual(self._shift(from_plan=self.mid.id, minutes="lots").status_code, 400)
-        self.assertEqual(self._shift(minutes=10).status_code, 400)  # missing from_plan
+        self.assertEqual(self._shift(from_chain=999999, minutes=10).status_code, 400)
+        self.assertEqual(self._shift(from_chain=self.mid.id, minutes="lots").status_code, 400)
+        self.assertEqual(self._shift(minutes=10).status_code, 400)  # missing from_chain
 
 
-class RetimePlanTests(TestCase):
+class RetimeChainTests(TestCase):
     """Drag one cycle's time header to an absolute time — today only, no cascade
     (the single-block companion to the 'running late' shift)."""
 
     def setUp(self):
         self.today = timezone.localdate()
         self.tomorrow = self.today + timedelta(days=1)
-        self.early = Plan.objects.create(start_time=time(8, 0))
-        self.mid = Plan.objects.create(start_time=time(9, 0))
-        self.late = Plan.objects.create(start_time=time(10, 0))
-        self.url = reverse("habits:retime_plan")
+        self.early = Chain.objects.create(start_time=time(8, 0))
+        self.mid = Chain.objects.create(start_time=time(9, 0))
+        self.late = Chain.objects.create(start_time=time(10, 0))
+        self.url = reverse("habits:retime_chain")
 
     def _retime(self, **body):
         return self.client.post(self.url, data=body, content_type="application/json")
 
-    def _plan_times(self, response):
+    def _chain_times(self, response):
         """Map of plan id -> time string from a /plan/ payload (skips unscheduled)."""
         groups = json.loads(response.content)
         return {g["id"]: g["time"] for g in groups if g["id"] is not None}
 
     def _today_times(self):
-        return self._plan_times(self.client.get(reverse("habits:plan")))
+        return self._chain_times(self.client.get(reverse("habits:plan")))
 
     def test_moves_only_the_one_cycle(self):
-        response = self._retime(plan=self.mid.id, time="08:30")
+        response = self._retime(chain=self.mid.id, time="08:30")
         self.assertEqual(response.status_code, 200)
 
         times = self._today_times()
         self.assertEqual(times[self.early.id], "08:00:00")  # untouched
         self.assertEqual(times[self.mid.id], "08:30:00")    # moved to the absolute time
         self.assertEqual(times[self.late.id], "10:00:00")   # NOT cascaded (unlike shift)
-        self.assertEqual(PlanDay.objects.filter(date=self.today).count(), 1)
+        self.assertEqual(ChainDay.objects.filter(date=self.today).count(), 1)
 
     def test_is_today_only(self):
-        self._retime(plan=self.mid.id, time="08:30")
-        tomorrow = self._plan_times(
+        self._retime(chain=self.mid.id, time="08:30")
+        tomorrow = self._chain_times(
             self.client.get(reverse("habits:plan"), {"date": self.tomorrow.isoformat()})
         )
         self.assertEqual(tomorrow[self.mid.id], "09:00:00")  # recurring time intact
 
     def test_repeated_retime_replaces_not_stacks(self):
-        self._retime(plan=self.mid.id, time="08:30")
-        self._retime(plan=self.mid.id, time="11:15")
+        self._retime(chain=self.mid.id, time="08:30")
+        self._retime(chain=self.mid.id, time="11:15")
         # Absolute, so the second drop replaces the first (a shift would stack).
         self.assertEqual(self._today_times()[self.mid.id], "11:15:00")
         self.assertEqual(
-            PlanDay.objects.filter(plan=self.mid, date=self.today).count(), 1
+            ChainDay.objects.filter(chain=self.mid, date=self.today).count(), 1
         )
 
     def test_back_to_recurring_clears_the_override(self):
-        self._retime(plan=self.mid.id, time="08:30")   # create an override
-        self._retime(plan=self.mid.id, time="09:00")   # exactly its recurring time
+        self._retime(chain=self.mid.id, time="08:30")   # create an override
+        self._retime(chain=self.mid.id, time="09:00")   # exactly its recurring time
         self.assertFalse(
-            PlanDay.objects.filter(plan=self.mid, date=self.today).exists()
+            ChainDay.objects.filter(chain=self.mid, date=self.today).exists()
         )
         self.assertEqual(self._today_times()[self.mid.id], "09:00:00")
 
     def test_rejects_bad_input(self):
-        self.assertEqual(self._retime(plan=999999, time="08:30").status_code, 400)  # unknown plan
-        self.assertEqual(self._retime(plan=self.mid.id, time="nope").status_code, 400)  # bad time
-        self.assertEqual(self._retime(plan=self.mid.id, time="25:00").status_code, 400)  # impossible
+        self.assertEqual(self._retime(chain=999999, time="08:30").status_code, 400)  # unknown plan
+        self.assertEqual(self._retime(chain=self.mid.id, time="nope").status_code, 400)  # bad time
+        self.assertEqual(self._retime(chain=self.mid.id, time="25:00").status_code, 400)  # impossible
         self.assertEqual(self._retime(time="08:30").status_code, 400)  # missing plan
-        self.assertEqual(self._retime(plan=self.mid.id).status_code, 400)  # missing time
+        self.assertEqual(self._retime(chain=self.mid.id).status_code, 400)  # missing time
 
 
-class NamePlanTests(TestCase):
+class NameChainTests(TestCase):
     """Name a time block (the "cycle"). Optional + cosmetic: an unnamed block
     reads as "" and looks unchanged; naming it persists and shows in /plan/."""
 
     def setUp(self):
-        self.plan = Plan.objects.create(start_time=time(8, 0))
-        self.url = reverse("habits:name_plan", args=[self.plan.id])
+        self.chain = Chain.objects.create(start_time=time(8, 0))
+        self.url = reverse("habits:name_chain", args=[self.chain.id])
 
-    def _name(self, plan_id=None, **body):
-        url = reverse("habits:name_plan", args=[plan_id or self.plan.id])
+    def _name(self, chain_id=None, **body):
+        url = reverse("habits:name_chain", args=[chain_id or self.chain.id])
         return self.client.post(url, data=body, content_type="application/json")
 
-    def _block_name(self, plan_id):
+    def _block_name(self, chain_id):
         """The name of one block from the /plan/ payload."""
         groups = json.loads(self.client.get(reverse("habits:plan")).content)
-        return next(g["name"] for g in groups if g["id"] == plan_id)
+        return next(g["name"] for g in groups if g["id"] == chain_id)
 
     def test_name_defaults_to_blank(self):
         # A brand-new block has no name, in the DB and in /plan/.
-        self.assertEqual(self.plan.name, "")
-        self.assertEqual(self._block_name(self.plan.id), "")
+        self.assertEqual(self.chain.name, "")
+        self.assertEqual(self._block_name(self.chain.id), "")
 
     def test_setting_a_name_persists_and_shows_in_plan(self):
         response = self._name(name="Morning routine")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content),
-                         {"id": self.plan.id, "name": "Morning routine"})
-        self.plan.refresh_from_db()
-        self.assertEqual(self.plan.name, "Morning routine")
-        self.assertEqual(self._block_name(self.plan.id), "Morning routine")
+                         {"id": self.chain.id, "name": "Morning routine"})
+        self.chain.refresh_from_db()
+        self.assertEqual(self.chain.name, "Morning routine")
+        self.assertEqual(self._block_name(self.chain.id), "Morning routine")
 
     def test_empty_string_clears_the_name(self):
         self._name(name="Morning routine")
         response = self._name(name="")
         self.assertEqual(response.status_code, 200)
-        self.plan.refresh_from_db()
-        self.assertEqual(self.plan.name, "")
-        self.assertEqual(self._block_name(self.plan.id), "")
+        self.chain.refresh_from_db()
+        self.assertEqual(self.chain.name, "")
+        self.assertEqual(self._block_name(self.chain.id), "")
 
     def test_name_is_trimmed(self):
         response = self._name(name="  Wind down  ")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content)["name"], "Wind down")
-        self.plan.refresh_from_db()
-        self.assertEqual(self.plan.name, "Wind down")
+        self.chain.refresh_from_db()
+        self.assertEqual(self.chain.name, "Wind down")
 
     def test_whitespace_only_clears_the_name(self):
         self._name(name="Morning routine")
         self._name(name="   ")   # trims to "" -> clears
-        self.plan.refresh_from_db()
-        self.assertEqual(self.plan.name, "")
+        self.chain.refresh_from_db()
+        self.assertEqual(self.chain.name, "")
 
     def test_rejects_bad_input(self):
         self.assertEqual(self._name(name=123).status_code, 400)         # not a string
@@ -322,10 +322,10 @@ class NamePlanTests(TestCase):
         # Exactly 100 chars is allowed.
         self.assertEqual(self._name(name="x" * 100).status_code, 200)
 
-    def test_unknown_plan_id_errors(self):
-        self.assertEqual(self._name(plan_id=999999, name="Nope").status_code, 400)
+    def test_unknown_chain_id_errors(self):
+        self.assertEqual(self._name(chain_id=999999, name="Nope").status_code, 400)
 
-    def test_plan_shape_unchanged_plus_name(self):
+    def test_chains_shape_unchanged_plus_name(self):
         # Every group still has the original keys, and now a "name" too. An
         # unnamed block (and the trailing "Anytime" group) report "".
         groups = json.loads(self.client.get(reverse("habits:plan")).content)
@@ -333,7 +333,7 @@ class NamePlanTests(TestCase):
             self.assertEqual(
                 set(g.keys()), {"id", "time", "name", "habits"}
             )
-        self.assertEqual(self._block_name(self.plan.id), "")  # unnamed -> ""
+        self.assertEqual(self._block_name(self.chain.id), "")  # unnamed -> ""
         anytime = next(g for g in groups if g["id"] is None)
         self.assertEqual(anytime["name"], "")                 # Anytime is never named
 
@@ -395,11 +395,11 @@ class NotesTests(TestCase):
     def setUp(self):
         self.today = timezone.localdate()
         self.habit = Habit.objects.create(name="Stretch")
-        self.plan = Plan.objects.create()
-        Schedule.objects.create(habit=self.habit, plan=self.plan, order=1)
+        self.chain = Chain.objects.create()
+        Schedule.objects.create(habit=self.habit, chain=self.chain, order=1)
         self.log_url = reverse("habits:log_habit", args=[self.habit.id])
 
-    def _plan_note(self):
+    def _chain_note(self):
         groups = json.loads(self.client.get(reverse("habits:plan")).content)
         for group in groups:
             for habit in group["habits"]:
@@ -410,10 +410,10 @@ class NotesTests(TestCase):
     def _post(self, **body):
         return self.client.post(self.log_url, data=body, content_type="application/json")
 
-    def test_plan_reports_the_note(self):
-        self.assertEqual(self._plan_note(), "")  # no log yet
+    def test_chains_reports_the_note(self):
+        self.assertEqual(self._chain_note(), "")  # no log yet
         HabitLog.objects.create(habit=self.habit, date=self.today, notes="before bed")
-        self.assertEqual(self._plan_note(), "before bed")
+        self.assertEqual(self._chain_note(), "before bed")
 
     def test_note_settable_without_status(self):
         response = self._post(notes="buy milk")
@@ -445,7 +445,7 @@ class ClearDayTests(TestCase):
         self.url = reverse("habits:clear_day")
         self.a = Habit.objects.create(name="A")
         self.b = Habit.objects.create(name="B")
-        self.plan = Plan.objects.create(start_time=time(9, 0))
+        self.chain = Chain.objects.create(start_time=time(9, 0))
 
     def _clear(self, **body):
         return self.client.post(self.url, data=body, content_type="application/json")
@@ -453,13 +453,13 @@ class ClearDayTests(TestCase):
     def test_drops_skips_and_shifts_keeps_completion(self):
         HabitLog.objects.create(habit=self.a, date=self.today, status=HabitLog.Status.COMPLETED)
         HabitLog.objects.create(habit=self.b, date=self.today, status=HabitLog.Status.SKIPPED)
-        PlanDay.objects.create(plan=self.plan, date=self.today, start_time=time(9, 45))
+        ChainDay.objects.create(chain=self.chain, date=self.today, start_time=time(9, 45))
 
         response = self._clear()
         self.assertEqual(response.status_code, 200)
         self.assertTrue(HabitLog.objects.filter(habit=self.a, status="COMPLETED").exists())
         self.assertFalse(HabitLog.objects.filter(habit=self.b).exists())  # skip removed
-        self.assertFalse(PlanDay.objects.filter(date=self.today).exists())  # shift removed
+        self.assertFalse(ChainDay.objects.filter(date=self.today).exists())  # shift removed
 
     def test_keeps_a_note_but_resets_its_status(self):
         HabitLog.objects.create(
@@ -472,8 +472,8 @@ class ClearDayTests(TestCase):
     def test_unfreezes_the_arrangement_keeping_completions(self):
         # A frozen, rearranged day: clearing it drops the ScheduleDay rows so the
         # day reverts to the template, while a completion on that day survives.
-        Schedule.objects.create(habit=self.a, plan=self.plan, order=1)
-        Schedule.objects.create(habit=self.b, plan=self.plan, order=2)
+        Schedule.objects.create(habit=self.a, chain=self.chain, order=1)
+        Schedule.objects.create(habit=self.b, chain=self.chain, order=2)
         HabitLog.objects.create(
             habit=self.a, date=self.today, status=HabitLog.Status.COMPLETED
         )
@@ -655,11 +655,11 @@ class RoutineApiTests(TestCase):
     confirm `/plan/` and reorder expose the routine tag."""
 
     def setUp(self):
-        self.plan = Plan.objects.create()
+        self.chain = Chain.objects.create()
         self.brush = Habit.objects.create(name="Brush teeth")
         self.wash = Habit.objects.create(name="Wash face")
-        self.s_brush = Schedule.objects.create(habit=self.brush, plan=self.plan, order=1)
-        self.s_wash = Schedule.objects.create(habit=self.wash, plan=self.plan, order=2)
+        self.s_brush = Schedule.objects.create(habit=self.brush, chain=self.chain, order=1)
+        self.s_wash = Schedule.objects.create(habit=self.wash, chain=self.chain, order=2)
 
     def _create(self, **body):
         return self.client.post(
@@ -768,7 +768,7 @@ class RoutineApiTests(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
-    def test_plan_exposes_routine_fields(self):
+    def test_chains_exposes_routine_fields(self):
         r = Routine.objects.create(name="Morning routine")
         Schedule.objects.filter(id=self.s_brush.id).update(routine=r)
         groups = json.loads(self.client.get(reverse("habits:plan")).content)
@@ -778,7 +778,7 @@ class RoutineApiTests(TestCase):
         self.assertIsNone(by_id[self.wash.id]["routine"])        # ungrouped habit
         self.assertIsNone(by_id[self.wash.id]["routine_name"])
 
-    def test_plan_no_longer_exposes_chain(self):
+    def test_chains_no_longer_exposes_chain(self):
         # The Chain model is gone (Phase B), so no /plan/ row carries a "chain"
         # key anymore — the frontend must stop reading it.
         groups = json.loads(self.client.get(reverse("habits:plan")).content)
@@ -794,12 +794,12 @@ class RoutineLogTests(TestCase):
     def setUp(self):
         self.today = timezone.localdate()
         self.yesterday = self.today - timedelta(days=1)
-        self.plan = Plan.objects.create()
+        self.chain = Chain.objects.create()
         self.routine = Routine.objects.create(name="Morning")
         self.brush = Habit.objects.create(name="Brush teeth")
         self.wash = Habit.objects.create(name="Wash face")
-        Schedule.objects.create(habit=self.brush, plan=self.plan, order=1, routine=self.routine)
-        Schedule.objects.create(habit=self.wash, plan=self.plan, order=2, routine=self.routine)
+        Schedule.objects.create(habit=self.brush, chain=self.chain, order=1, routine=self.routine)
+        Schedule.objects.create(habit=self.wash, chain=self.chain, order=2, routine=self.routine)
         self.url = reverse("habits:log_routine", args=[self.routine.id])
 
     def _log(self, **body):
@@ -956,10 +956,10 @@ class HabitsListTests(TestCase):
     def test_habit_with_two_schedule_rows_appears_once(self):
         # Two tier-slots for the same habit at two times -> two Schedule rows.
         # The list must still show the habit exactly once (the duplicate guard).
-        plan_a = Plan.objects.create(start_time=time(7, 0))
-        plan_b = Plan.objects.create(start_time=time(11, 0))
-        Schedule.objects.create(habit=self.meditate, plan=plan_a, order=1)
-        Schedule.objects.create(habit=self.meditate, plan=plan_b, order=1)
+        chain_a = Chain.objects.create(start_time=time(7, 0))
+        chain_b = Chain.objects.create(start_time=time(11, 0))
+        Schedule.objects.create(habit=self.meditate, chain=chain_a, order=1)
+        Schedule.objects.create(habit=self.meditate, chain=chain_b, order=1)
 
         data = self._get()
         ids = [h["id"] for h in data]
@@ -1050,12 +1050,12 @@ class ReorderHabitsTests(TestCase):
         self.assertIsNone(self.a.order)   # all-or-nothing: nothing applied
 
 
-class CreatePlanTests(TestCase):
+class CreateChainTests(TestCase):
     """`plans/create/` adds a new time block (or reuses the one at that time)."""
 
     def _create(self, time_str):
         return self.client.post(
-            reverse("habits:create_plan"),
+            reverse("habits:create_chain"),
             data={"time": time_str}, content_type="application/json",
         )
 
@@ -1064,7 +1064,7 @@ class CreatePlanTests(TestCase):
         self.assertEqual(resp.status_code, 201)
         data = json.loads(resp.content)
         self.assertTrue(data["created"])
-        self.assertTrue(Plan.objects.filter(id=data["id"], start_time=time(10, 45)).exists())
+        self.assertTrue(Chain.objects.filter(id=data["id"], start_time=time(10, 45)).exists())
 
     def test_reuses_existing_time(self):
         first = json.loads(self._create("10:45").content)
@@ -1073,7 +1073,7 @@ class CreatePlanTests(TestCase):
         second = json.loads(resp.content)
         self.assertFalse(second["created"])
         self.assertEqual(first["id"], second["id"])  # same block, not a duplicate
-        self.assertEqual(Plan.objects.filter(start_time=time(10, 45)).count(), 1)
+        self.assertEqual(Chain.objects.filter(start_time=time(10, 45)).count(), 1)
 
     def test_rejects_bad_time(self):
         self.assertEqual(self._create("25:00").status_code, 400)
@@ -1099,10 +1099,10 @@ class PerVersionStatusTests(TestCase):
         self._add_tier(1, "30 oz")
         self._add_tier(2, "90 oz")
         # Two slots at two times, each fixed to a tier (wake-up style).
-        self.early = Plan.objects.create(start_time=time(9, 0))
-        self.late = Plan.objects.create(start_time=time(15, 0))
-        Schedule.objects.create(habit=self.water, plan=self.early, tier=self.growth, order=1)
-        Schedule.objects.create(habit=self.water, plan=self.late, tier=self.roots, order=1)
+        self.early = Chain.objects.create(start_time=time(9, 0))
+        self.late = Chain.objects.create(start_time=time(15, 0))
+        Schedule.objects.create(habit=self.water, chain=self.early, tier=self.growth, order=1)
+        Schedule.objects.create(habit=self.water, chain=self.late, tier=self.roots, order=1)
 
     def _tier(self, level):
         t, _ = Tier.objects.get_or_create(level=level)
@@ -1218,15 +1218,15 @@ class FreezeDayTests(TestCase):
 
         # Two habits in one block. Backdated so they count as existing on past days
         # (the /plan/ "didn't exist yet" filter would hide them otherwise).
-        self.plan = Plan.objects.create(start_time=time(9, 0))
+        self.chain = Chain.objects.create(start_time=time(9, 0))
         self.brush = Habit.objects.create(name="Brush teeth")
         self.wash = Habit.objects.create(name="Wash face")
         for h in (self.brush, self.wash):
             Habit.objects.filter(id=h.id).update(
                 date_added=timezone.now() - timedelta(days=30)
             )
-        self.s_brush = Schedule.objects.create(habit=self.brush, plan=self.plan, order=1)
-        self.s_wash = Schedule.objects.create(habit=self.wash, plan=self.plan, order=2)
+        self.s_brush = Schedule.objects.create(habit=self.brush, chain=self.chain, order=1)
+        self.s_wash = Schedule.objects.create(habit=self.wash, chain=self.chain, order=2)
 
     def _arrange(self, **body):
         return self.client.post(
@@ -1239,7 +1239,7 @@ class FreezeDayTests(TestCase):
         groups = json.loads(response.content)
         return {h["row_id"]: h for g in groups for h in g["habits"]}
 
-    def _plan(self, date):
+    def _chain(self, date):
         return self.client.get(reverse("habits:plan"), {"date": date.isoformat()})
 
     # --- freeze helper -------------------------------------------------------
@@ -1257,14 +1257,14 @@ class FreezeDayTests(TestCase):
             ScheduleDay.objects.filter(date=self.yesterday).count(), 2
         )
 
-    def test_freeze_snapshots_name_plan_and_time(self):
+    def test_freeze_snapshots_name_chain_and_time(self):
         freeze_day(self.yesterday)
         sd = ScheduleDay.objects.get(date=self.yesterday, habit=self.brush)
         self.assertEqual(sd.habit_name, "Brush teeth")        # name snapshot
-        self.assertEqual(sd.plan_id, self.plan.id)
+        self.assertEqual(sd.chain_id, self.chain.id)
         self.assertEqual(sd.order, 1)
-        # The block's time is locked into PlanDay so time_by_plan serves it.
-        pd = PlanDay.objects.get(date=self.yesterday, plan=self.plan)
+        # The block's time is locked into ChainDay so time_by_plan serves it.
+        pd = ChainDay.objects.get(date=self.yesterday, chain=self.chain)
         self.assertEqual(pd.start_time, time(9, 0))
 
     def test_freeze_copies_every_tier_slot(self):
@@ -1275,9 +1275,9 @@ class FreezeDayTests(TestCase):
         )
         roots, _ = Tier.objects.get_or_create(level=1)
         growth, _ = Tier.objects.get_or_create(level=2)
-        late = Plan.objects.create(start_time=time(15, 0))
-        Schedule.objects.create(habit=water, plan=self.plan, tier=growth, order=3)
-        Schedule.objects.create(habit=water, plan=late, tier=roots, order=1)
+        late = Chain.objects.create(start_time=time(15, 0))
+        Schedule.objects.create(habit=water, chain=self.chain, tier=growth, order=3)
+        Schedule.objects.create(habit=water, chain=late, tier=roots, order=1)
 
         freeze_day(self.yesterday)
         slots = ScheduleDay.objects.filter(date=self.yesterday, habit=water)
@@ -1287,7 +1287,7 @@ class FreezeDayTests(TestCase):
 
     def test_viewing_a_past_day_freezes_it(self):
         self.assertFalse(ScheduleDay.objects.filter(date=self.yesterday).exists())
-        resp = self._plan(self.yesterday)
+        resp = self._chain(self.yesterday)
         self.assertEqual(resp.status_code, 200)
         # The lazy "photo on first view" wrote the rows.
         self.assertEqual(
@@ -1296,13 +1296,13 @@ class FreezeDayTests(TestCase):
 
     def test_today_and_future_are_not_frozen_on_view(self):
         self.client.get(reverse("habits:plan"))               # today
-        self._plan(self.tomorrow)                              # future
+        self._chain(self.tomorrow)                              # future
         self.assertFalse(ScheduleDay.objects.filter(date=self.today).exists())
         self.assertFalse(ScheduleDay.objects.filter(date=self.tomorrow).exists())
 
     def test_frozen_day_payload_uses_scheduleday_row_id(self):
-        self._plan(self.yesterday)                            # freeze it
-        rows = self._rows(self._plan(self.yesterday))
+        self._chain(self.yesterday)                            # freeze it
+        rows = self._rows(self._chain(self.yesterday))
         sd = ScheduleDay.objects.get(date=self.yesterday, habit=self.brush)
         self.assertIn(sd.id, rows)                            # keyed on ScheduleDay id
         self.assertEqual(rows[sd.id]["id"], self.brush.id)    # habit id unchanged
@@ -1316,16 +1316,16 @@ class FreezeDayTests(TestCase):
 
     def test_editing_template_does_not_change_a_frozen_day(self):
         # THE CORE PROMISE. Freeze yesterday, then rip the habit off the template.
-        self._plan(self.yesterday)
-        before = self._rows(self._plan(self.yesterday))
+        self._chain(self.yesterday)
+        before = self._rows(self._chain(self.yesterday))
         self.assertEqual(len(before), 2)
 
         # Edit the recurring plan: move brush to a new block, drop wash entirely.
-        other = Plan.objects.create(start_time=time(18, 0))
-        Schedule.objects.filter(id=self.s_brush.id).update(plan=other, order=9)
+        other = Chain.objects.create(start_time=time(18, 0))
+        Schedule.objects.filter(id=self.s_brush.id).update(chain=other, order=9)
         self.s_wash.delete()
 
-        after = self._rows(self._plan(self.yesterday))
+        after = self._rows(self._chain(self.yesterday))
         self.assertEqual(len(after), 2)                       # both still there
         self.assertCountEqual(
             [h["id"] for h in after.values()], [self.brush.id, self.wash.id]
@@ -1341,7 +1341,7 @@ class FreezeDayTests(TestCase):
         # freeze) must NOT make today read all-or-nothing from the photo. Today is
         # never "frozen" for reads, so a slot WITHOUT a per-day tweak still follows
         # the template/forward change; only the exact overridden slot keeps its
-        # override (per-slot precedence, like PlanDay over PlanTime). This is why
+        # override (per-slot precedence, like ChainDay over ChainTime). This is why
         # STEP 3 clears a stale whole-day snapshot — but the read must already be
         # per-slot, not all-or-nothing.
         freeze_day(self.today)                       # leftover whole-day snapshot
@@ -1351,26 +1351,26 @@ class FreezeDayTests(TestCase):
         # block) and a forward change is reflected for any slot that lacks one. Drop
         # the brush override so brush follows the template again, then move brush.
         ScheduleDay.objects.filter(date=self.today, habit=self.brush).delete()
-        other = Plan.objects.create(start_time=time(18, 0))
-        Schedule.objects.filter(id=self.s_brush.id).update(plan=other)
+        other = Chain.objects.create(start_time=time(18, 0))
+        Schedule.objects.filter(id=self.s_brush.id).update(chain=other)
 
         groups = json.loads(self.client.get(reverse("habits:plan")).content)
         block_of = {h["id"]: g["id"] for g in groups for h in g["habits"]}
         # Brush has no override now -> follows the forward template change.
         self.assertEqual(block_of[self.brush.id], other.id)
         # Wash still has its snapshot override -> stays in the original block.
-        self.assertEqual(block_of[self.wash.id], self.plan.id)
+        self.assertEqual(block_of[self.wash.id], self.chain.id)
 
     def test_forward_change_shows_on_today_and_future_without_a_freeze(self):
         # No whole-day freeze anywhere. A forward placement change must show on
         # today AND a future day, following the template.
         self.assertFalse(ScheduleDay.objects.filter(date=self.today).exists())
-        other = Plan.objects.create(start_time=time(18, 0))
-        Schedule.objects.filter(id=self.s_brush.id).update(plan=other)
+        other = Chain.objects.create(start_time=time(18, 0))
+        Schedule.objects.filter(id=self.s_brush.id).update(chain=other)
 
         for date in (self.today, self.tomorrow):
             resp = (self.client.get(reverse("habits:plan")) if date == self.today
-                    else self._plan(date))
+                    else self._chain(date))
             groups = json.loads(resp.content)
             block_of_brush = next(
                 g["id"] for g in groups
@@ -1384,17 +1384,17 @@ class FreezeDayTests(TestCase):
     def test_just_today_override_layers_over_template_per_habit(self):
         # A single-habit ScheduleDay override for TODAY layers on top: that habit
         # uses the override's block, every OTHER habit keeps following the template.
-        other = Plan.objects.create(start_time=time(18, 0))
+        other = Chain.objects.create(start_time=time(18, 0))
         ScheduleDay.objects.create(
             date=self.today, habit=self.brush, habit_name="Brush teeth",
-            plan=other, order=1,
+            chain=other, order=1,
         )
         groups = json.loads(self.client.get(reverse("habits:plan")).content)
         block_of = {
             h["id"]: g["id"] for g in groups for h in g["habits"]
         }
         self.assertEqual(block_of[self.brush.id], other.id)   # override wins
-        self.assertEqual(block_of[self.wash.id], self.plan.id)  # sibling unchanged
+        self.assertEqual(block_of[self.wash.id], self.chain.id)  # sibling unchanged
         # The overridden row is keyed on its ScheduleDay id, the sibling on Schedule.
         rows = self._rows(self.client.get(reverse("habits:plan")))
         sd = ScheduleDay.objects.get(date=self.today, habit=self.brush)
@@ -1405,11 +1405,11 @@ class FreezeDayTests(TestCase):
     def test_past_frozen_day_unchanged_by_overlay_change(self):
         # A PAST frozen day stays byte-identical (history preserved) even when a
         # forward template change lands.
-        self._plan(self.yesterday)                   # freeze yesterday
-        before = self._rows(self._plan(self.yesterday))
-        other = Plan.objects.create(start_time=time(18, 0))
-        Schedule.objects.filter(id=self.s_brush.id).update(plan=other)
-        after = self._rows(self._plan(self.yesterday))
+        self._chain(self.yesterday)                   # freeze yesterday
+        before = self._rows(self._chain(self.yesterday))
+        other = Chain.objects.create(start_time=time(18, 0))
+        Schedule.objects.filter(id=self.s_brush.id).update(chain=other)
+        after = self._rows(self._chain(self.yesterday))
         self.assertEqual(
             {rid: (h["id"], h["order"]) for rid, h in before.items()},
             {rid: (h["id"], h["order"]) for rid, h in after.items()},
@@ -1418,7 +1418,7 @@ class FreezeDayTests(TestCase):
     # --- /days/arrange/ ------------------------------------------------------
 
     def test_arrange_reorders_a_frozen_day_without_touching_template(self):
-        self._plan(self.yesterday)                            # freeze
+        self._chain(self.yesterday)                            # freeze
         sd_brush = ScheduleDay.objects.get(date=self.yesterday, habit=self.brush)
         sd_wash = ScheduleDay.objects.get(date=self.yesterday, habit=self.wash)
 
@@ -1449,7 +1449,7 @@ class FreezeDayTests(TestCase):
         )
         sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
         self.assertEqual(sd_brush.order, 5)
-        self.assertEqual(sd_brush.plan_id, self.plan.id)     # seeded from template block
+        self.assertEqual(sd_brush.chain_id, self.chain.id)     # seeded from template block
         self.assertFalse(
             ScheduleDay.objects.filter(date=self.tomorrow, habit=self.wash).exists()
         )
@@ -1457,29 +1457,32 @@ class FreezeDayTests(TestCase):
         self.assertEqual(self.s_brush.order, 1)              # template untouched
 
     def test_arrange_moves_a_row_between_blocks_for_that_day(self):
-        other = Plan.objects.create(start_time=time(18, 0))
+        other = Chain.objects.create(start_time=time(18, 0))
         resp = self._arrange(
             date=self.tomorrow.isoformat(),
-            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id}],
+            items=[{"id": self.s_brush.id, "order": 1, "chain": other.id}],
         )
         self.assertEqual(resp.status_code, 200)
         sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
-        self.assertEqual(sd_brush.plan_id, other.id)
+        self.assertEqual(sd_brush.chain_id, other.id)
         self.s_brush.refresh_from_db()
-        self.assertEqual(self.s_brush.plan_id, self.plan.id)  # template block unchanged
+        self.assertEqual(self.s_brush.chain_id, self.chain.id)  # template block unchanged
 
-    def test_arrange_ignores_a_stray_chain_key(self):
-        # The Chain model is gone (Phase B); a "chain" sent by an older client is
-        # ignored rather than 400'd, and the reorder still applies for the day.
+    def test_arrange_ignores_a_stray_plan_key(self):
+        # "plan" is the pre-rename name of the block FK (now "chain"); a "plan"
+        # sent by an older client is ignored rather than 400'd, and the reorder
+        # still applies for the day.
         resp = self._arrange(
             date=self.tomorrow.isoformat(),
-            items=[{"id": self.s_brush.id, "order": 4, "chain": 999999}],
+            items=[{"id": self.s_brush.id, "order": 4, "plan": 999999}],
         )
         self.assertEqual(resp.status_code, 200)
         updated = json.loads(resp.content)["updated"][0]
-        self.assertNotIn("chain", updated)                    # not echoed back
+        self.assertNotIn("plan", updated)                     # stray key not echoed back
+        self.assertNotEqual(updated.get("chain"), 999999)     # stray value never applied
         sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
         self.assertEqual(sd_brush.order, 4)                   # reorder applied
+        self.assertNotEqual(sd_brush.chain_id, 999999)        # block unchanged by stray key
 
     def test_arrange_places_an_anytime_habit_for_that_day(self):
         # A habit with no Schedule row (sits in "Anytime") dragged into a block,
@@ -1490,11 +1493,11 @@ class FreezeDayTests(TestCase):
         )
         resp = self._arrange(
             date=self.tomorrow.isoformat(),
-            items=[{"habit": solo.id, "plan": self.plan.id}],
+            items=[{"habit": solo.id, "chain": self.chain.id}],
         )
         self.assertEqual(resp.status_code, 200)
         sd = ScheduleDay.objects.get(date=self.tomorrow, habit=solo)
-        self.assertEqual(sd.plan_id, self.plan.id)
+        self.assertEqual(sd.chain_id, self.chain.id)
         self.assertEqual(sd.habit_name, "Journal")           # name snapshot
         self.assertEqual(sd.order, 3)                         # appends after brush(1)+wash(2)
         # No Schedule (template) row was created — placement is per-day only.
@@ -1507,10 +1510,10 @@ class FreezeDayTests(TestCase):
         # only — the day is NOT whole-day frozen, so every other habit keeps
         # following the template.
         rows = self._rows(self.client.get(reverse("habits:plan")))
-        other = Plan.objects.create(start_time=time(18, 0))
+        other = Chain.objects.create(start_time=time(18, 0))
         resp = self._arrange(
             date=self.today.isoformat(),
-            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id}],  # template id
+            items=[{"id": self.s_brush.id, "order": 1, "chain": other.id}],  # template id
         )
         self.assertEqual(resp.status_code, 200)
         # Exactly ONE override row (brush); wash has none -> still template-driven.
@@ -1525,33 +1528,33 @@ class FreezeDayTests(TestCase):
         groups = json.loads(self.client.get(reverse("habits:plan")).content)
         block_of = {h["id"]: g["id"] for g in groups for h in g["habits"]}
         self.assertEqual(block_of[self.brush.id], other.id)
-        self.assertEqual(block_of[self.wash.id], self.plan.id)
+        self.assertEqual(block_of[self.wash.id], self.chain.id)
         # Template untouched.
         self.s_brush.refresh_from_db()
-        self.assertEqual(self.s_brush.plan_id, self.plan.id)
+        self.assertEqual(self.s_brush.chain_id, self.chain.id)
 
     def test_just_today_edit_on_today_does_not_freeze_tomorrow(self):
         # A just-today edit on TODAY must leave TOMORROW following the template
         # (no whole-day snapshot leaks forward).
-        other = Plan.objects.create(start_time=time(18, 0))
+        other = Chain.objects.create(start_time=time(18, 0))
         self._arrange(
             date=self.today.isoformat(),
-            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id}],
+            items=[{"id": self.s_brush.id, "order": 1, "chain": other.id}],
         )
         self.assertFalse(ScheduleDay.objects.filter(date=self.tomorrow).exists())
-        groups = json.loads(self._plan(self.tomorrow).content)
+        groups = json.loads(self._chain(self.tomorrow).content)
         block_of = {h["id"]: g["id"] for g in groups for h in g["habits"]}
-        self.assertEqual(block_of[self.brush.id], self.plan.id)   # tomorrow unchanged
+        self.assertEqual(block_of[self.brush.id], self.chain.id)   # tomorrow unchanged
 
     def test_just_today_tweak_wins_over_a_forward_change_on_today(self):
-        # Precedence (like PlanDay > PlanTime): a per-day "just today" tweak to a
+        # Precedence (like ChainDay > ChainTime): a per-day "just today" tweak to a
         # habit on TODAY wins over a "going forward" change to that SAME habit for
         # today. First the forward change, then the just-today tweak.
-        fwd = Plan.objects.create(start_time=time(12, 0))
-        just = Plan.objects.create(start_time=time(18, 0))
+        fwd = Chain.objects.create(start_time=time(12, 0))
+        just = Chain.objects.create(start_time=time(18, 0))
         # Forward change: brush -> fwd block from today on (template generation).
         Schedule.objects.create(
-            habit=self.brush, plan=fwd, order=1, valid_from=self.today
+            habit=self.brush, chain=fwd, order=1, valid_from=self.today
         )
         # Now a just-today tweak moves brush to the `just` block (its row_id is the
         # forward Schedule id /plan/ now emits for the slot).
@@ -1559,7 +1562,7 @@ class FreezeDayTests(TestCase):
         brush_rid = next(rid for rid, h in rows.items() if h["id"] == self.brush.id)
         resp = self._arrange(
             date=self.today.isoformat(),
-            items=[{"id": brush_rid, "order": 1, "plan": just.id}],
+            items=[{"id": brush_rid, "order": 1, "chain": just.id}],
         )
         self.assertEqual(resp.status_code, 200)
         # TODAY: the just-today tweak wins -> brush sits in `just`, not `fwd`.
@@ -1567,7 +1570,7 @@ class FreezeDayTests(TestCase):
         block_of = {h["id"]: g["id"] for g in groups for h in g["habits"]}
         self.assertEqual(block_of[self.brush.id], just.id)
         # TOMORROW: no just-today override there -> follows the forward change.
-        groups_t = json.loads(self._plan(self.tomorrow).content)
+        groups_t = json.loads(self._chain(self.tomorrow).content)
         block_of_t = {h["id"]: g["id"] for g in groups_t for h in g["habits"]}
         self.assertEqual(block_of_t[self.brush.id], fwd.id)
 
@@ -1591,7 +1594,7 @@ class FreezeDayTests(TestCase):
         # exactly the user's reproduction: dragging one habit freezes the day.
         resp = self._arrange(
             date=self.today.isoformat(),
-            items=[{"id": self.s_brush.id, "order": 1, "plan": self.plan.id}],
+            items=[{"id": self.s_brush.id, "order": 1, "chain": self.chain.id}],
         )
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(ScheduleDay.objects.filter(date=self.today).exists())  # frozen
@@ -1610,9 +1613,9 @@ class FreezeDayTests(TestCase):
     def test_frozen_day_anytime_excludes_habits_added_later(self):
         # The "existed by then" rule still applies on a frozen day: a habit added
         # AFTER the viewed day must not appear in that frozen day's Anytime.
-        self._plan(self.yesterday)                         # freeze yesterday
+        self._chain(self.yesterday)                         # freeze yesterday
         future_habit = Habit.objects.create(name="Brand new")  # date_added = now (today)
-        anytime = self._anytime_ids(self._plan(self.yesterday))
+        anytime = self._anytime_ids(self._chain(self.yesterday))
         self.assertNotIn(future_habit.id, anytime)
 
     def test_arrange_requires_a_date(self):
@@ -1620,7 +1623,7 @@ class FreezeDayTests(TestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_arrange_rejects_unknown_row_id_on_frozen_day(self):
-        self._plan(self.yesterday)                            # freeze
+        self._chain(self.yesterday)                            # freeze
         resp = self._arrange(
             date=self.yesterday.isoformat(),
             items=[{"id": 999999, "order": 1}],
@@ -1636,17 +1639,17 @@ class FreezeDayTests(TestCase):
 
     def test_arrange_persists_across_a_refetch(self):
         # End-to-end: arrange tomorrow, then /plan/ reflects the per-day edit.
-        other = Plan.objects.create(start_time=time(18, 0))
+        other = Chain.objects.create(start_time=time(18, 0))
         self._arrange(
             date=self.tomorrow.isoformat(),
-            items=[{"id": self.s_brush.id, "order": 1, "plan": other.id}],
+            items=[{"id": self.s_brush.id, "order": 1, "chain": other.id}],
         )
-        rows = self._rows(self._plan(self.tomorrow))
+        rows = self._rows(self._chain(self.tomorrow))
         sd_brush = ScheduleDay.objects.get(date=self.tomorrow, habit=self.brush)
         self.assertEqual(rows[sd_brush.id]["row_id"], sd_brush.id)
 
 
-class PlanFreezeCatchupTests(TestCase):
+class ChainFreezeCatchupTests(TestCase):
     """Photograph-on-open: every /plan/ load freezes the last FREEZE_CATCHUP_DAYS
     past days that aren't frozen yet, so a day the user lived but never opened still
     gets its permanent photo (the no-cron alternative to the nightly sweep). Never
@@ -1659,12 +1662,12 @@ class PlanFreezeCatchupTests(TestCase):
 
         # One habit in a block, backdated far enough that it counts as existing on
         # every day in (and older than) the catch-up window.
-        self.plan = Plan.objects.create(start_time=time(9, 0))
+        self.chain = Chain.objects.create(start_time=time(9, 0))
         self.habit = Habit.objects.create(name="Brush teeth")
         Habit.objects.filter(id=self.habit.id).update(
             date_added=timezone.now() - timedelta(days=60)
         )
-        Schedule.objects.create(habit=self.habit, plan=self.plan, order=1)
+        Schedule.objects.create(habit=self.habit, chain=self.chain, order=1)
 
     def _load_today(self):
         return self.client.get(reverse("habits:plan"))
@@ -1726,12 +1729,12 @@ class FreezePastDaysCommandTests(TestCase):
 
         # One habit in a block, backdated so it counts as existing on past days
         # (otherwise the freeze's "didn't exist yet" filter snapshots nothing).
-        self.plan = Plan.objects.create(start_time=time(9, 0))
+        self.chain = Chain.objects.create(start_time=time(9, 0))
         self.habit = Habit.objects.create(name="Brush teeth")
         Habit.objects.filter(id=self.habit.id).update(
             date_added=timezone.now() - timedelta(days=30)
         )
-        Schedule.objects.create(habit=self.habit, plan=self.plan, order=1)
+        Schedule.objects.create(habit=self.habit, chain=self.chain, order=1)
 
     def _run(self, *args):
         out = StringIO()
@@ -1789,7 +1792,7 @@ class RetiredRecurringWritersTests(TestCase):
     def test_create_schedule_route_is_retired(self):
         resp = self.client.post(
             "/schedules/create/",
-            data={"habit": 1, "plan": 1}, content_type="application/json",
+            data={"habit": 1, "chain": 1}, content_type="application/json",
         )
         self.assertEqual(resp.status_code, 404)
 
@@ -1815,8 +1818,8 @@ class ArrangeForwardTests(TestCase):
         self.tomorrow = self.today + timedelta(days=1)
 
         # Two cycles, two habits. Habits backdated so they "existed" on past days.
-        self.morning = Plan.objects.create(start_time=time(7, 0))
-        self.evening = Plan.objects.create(start_time=time(20, 0))
+        self.morning = Chain.objects.create(start_time=time(7, 0))
+        self.evening = Chain.objects.create(start_time=time(20, 0))
         self.stretch = Habit.objects.create(name="Stretch")
         self.read = Habit.objects.create(name="Read")
         self.water = Habit.objects.create(name="Drink water")   # starts in Anytime
@@ -1826,10 +1829,10 @@ class ArrangeForwardTests(TestCase):
             )
         # Base generation (the sentinel): Stretch + Read both in Morning.
         self.s_stretch = Schedule.objects.create(
-            habit=self.stretch, plan=self.morning, order=1
+            habit=self.stretch, chain=self.morning, order=1
         )
         self.s_read = Schedule.objects.create(
-            habit=self.read, plan=self.morning, order=2
+            habit=self.read, chain=self.morning, order=2
         )
 
     def _forward(self, **body):
@@ -1838,11 +1841,11 @@ class ArrangeForwardTests(TestCase):
             data=json.dumps(body), content_type="application/json",
         )
 
-    def _plan(self, date):
+    def _chain(self, date):
         return self.client.get(reverse("habits:plan"), {"date": date.isoformat()})
 
     def _placement(self, response):
-        """{habit_id: plan_id} across a /plan/ response (None plan = Anytime)."""
+        """{habit_id: chain_id} across a /plan/ response (None plan = Anytime)."""
         groups = json.loads(response.content)
         out = {}
         for g in groups:
@@ -1854,39 +1857,39 @@ class ArrangeForwardTests(TestCase):
 
     def test_move_forward_new_cycle_tomorrow_old_yesterday_no_dup(self):
         # Move Stretch into Evening from today forward.
-        resp = self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+        resp = self._forward(items=[{"habit": self.stretch.id, "chain": self.evening.id, "order": 1}])
         self.assertEqual(resp.status_code, 200)
 
         # Tomorrow: Stretch is in Evening (the new generation), and ONLY there.
-        future = self._placement(self._plan(self.tomorrow))
+        future = self._placement(self._chain(self.tomorrow))
         self.assertEqual(future[self.stretch.id], [self.evening.id])
 
         # Yesterday: untouched — Stretch still in Morning (the base generation).
-        past = self._placement(self._plan(self.yesterday))
+        past = self._placement(self._chain(self.yesterday))
         self.assertEqual(past[self.stretch.id], [self.morning.id])
 
         # The base row was never modified or deleted (it still covers the past).
         self.assertTrue(
             Schedule.objects.filter(
-                id=self.s_stretch.id, plan=self.morning, valid_from=BASE_VALID_FROM
+                id=self.s_stretch.id, chain=self.morning, valid_from=BASE_VALID_FROM
             ).exists()
         )
 
     def test_reorder_forward(self):
         # Reorder within Morning from today: Read first, Stretch second.
         resp = self._forward(items=[
-            {"habit": self.read.id, "plan": self.morning.id, "order": 1},
-            {"habit": self.stretch.id, "plan": self.morning.id, "order": 2},
+            {"habit": self.read.id, "chain": self.morning.id, "order": 1},
+            {"habit": self.stretch.id, "chain": self.morning.id, "order": 2},
         ])
         self.assertEqual(resp.status_code, 200)
 
-        groups = json.loads(self._plan(self.tomorrow).content)
+        groups = json.loads(self._chain(self.tomorrow).content)
         morning = next(g for g in groups if g["id"] == self.morning.id)
         names = [h["name"] for h in morning["habits"]]
         self.assertEqual(names, ["Read", "Stretch"])
 
         # Past unchanged: original order (Stretch, Read).
-        groups_past = json.loads(self._plan(self.yesterday).content)
+        groups_past = json.loads(self._chain(self.yesterday).content)
         morning_past = next(g for g in groups_past if g["id"] == self.morning.id)
         self.assertEqual(
             [h["name"] for h in morning_past["habits"]], ["Stretch", "Read"]
@@ -1894,10 +1897,10 @@ class ArrangeForwardTests(TestCase):
 
     def test_place_from_anytime_forward(self):
         # Drink water starts in Anytime (no Schedule row). Place it into Evening.
-        resp = self._forward(items=[{"habit": self.water.id, "plan": self.evening.id, "order": 1}])
+        resp = self._forward(items=[{"habit": self.water.id, "chain": self.evening.id, "order": 1}])
         self.assertEqual(resp.status_code, 200)
 
-        future = self._placement(self._plan(self.tomorrow))
+        future = self._placement(self._chain(self.tomorrow))
         self.assertEqual(future[self.water.id], [self.evening.id])
 
         # Past: the forward placement never reaches back. Yesterday water has no
@@ -1905,25 +1908,25 @@ class ArrangeForwardTests(TestCase):
         # the Evening cycle there — it stays Anytime. (On a frozen past day an
         # Anytime habit leaves no row, matching existing freeze behavior, so we
         # assert it never appears in a cycle, not specifically in Anytime.)
-        past = self._placement(self._plan(self.yesterday))
+        past = self._placement(self._chain(self.yesterday))
         self.assertNotIn(self.evening.id, past.get(self.water.id, []))
 
     # --- frozen days ---------------------------------------------------------
 
     def test_frozen_future_day_is_skipped(self):
         # Pre-edit (freeze) tomorrow with its own arrangement: Stretch stays put.
-        self._plan(self.tomorrow)   # not auto-frozen (future); freeze explicitly:
+        self._chain(self.tomorrow)   # not auto-frozen (future); freeze explicitly:
         freeze_day(self.tomorrow)
         self.assertTrue(ScheduleDay.objects.filter(date=self.tomorrow).exists())
 
         # Forward-write moving Stretch to Evening from today.
-        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+        self._forward(items=[{"habit": self.stretch.id, "chain": self.evening.id, "order": 1}])
 
         # Tomorrow keeps its frozen arrangement (Stretch still in Morning).
-        future = self._placement(self._plan(self.tomorrow))
+        future = self._placement(self._chain(self.tomorrow))
         self.assertEqual(future[self.stretch.id], [self.morning.id])
         # The day-after (not frozen) DOES get the new placement.
-        day_after = self._placement(self._plan(self.tomorrow + timedelta(days=1)))
+        day_after = self._placement(self._chain(self.tomorrow + timedelta(days=1)))
         self.assertEqual(day_after[self.stretch.id], [self.evening.id])
 
     def test_frozen_today_is_reflected(self):
@@ -1931,30 +1934,30 @@ class ArrangeForwardTests(TestCase):
         freeze_day(self.today)
         self.assertTrue(ScheduleDay.objects.filter(date=self.today).exists())
 
-        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+        self._forward(items=[{"habit": self.stretch.id, "chain": self.evening.id, "order": 1}])
 
-        today = self._placement(self._plan(self.today))
+        today = self._placement(self._chain(self.today))
         self.assertEqual(today[self.stretch.id], [self.evening.id])
         # Today reads ScheduleDay, so the mirror is what made it visible.
         sd = ScheduleDay.objects.get(
             date=self.today, habit=self.stretch, tier__isnull=True
         )
-        self.assertEqual(sd.plan_id, self.evening.id)
+        self.assertEqual(sd.chain_id, self.evening.id)
 
     def test_frozen_future_scheduleday_not_mirrored(self):
         # A from_date in the future that is frozen must NOT be mirrored (D3): only
         # today gets the ScheduleDay reflect.
         freeze_day(self.tomorrow)
         before = {
-            (sd.habit_id, sd.plan_id)
+            (sd.habit_id, sd.chain_id)
             for sd in ScheduleDay.objects.filter(date=self.tomorrow)
         }
         self._forward(
             from_date=self.tomorrow.isoformat(),
-            items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}],
+            items=[{"habit": self.stretch.id, "chain": self.evening.id, "order": 1}],
         )
         after = {
-            (sd.habit_id, sd.plan_id)
+            (sd.habit_id, sd.chain_id)
             for sd in ScheduleDay.objects.filter(date=self.tomorrow)
         }
         self.assertEqual(before, after)   # frozen future day untouched
@@ -1962,7 +1965,7 @@ class ArrangeForwardTests(TestCase):
     # --- idempotency ---------------------------------------------------------
 
     def test_idempotent_repeat(self):
-        items = [{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}]
+        items = [{"habit": self.stretch.id, "chain": self.evening.id, "order": 1}]
         self._forward(items=items)
         self._forward(items=items)   # same edit again
         # Exactly one from_date generation for the slot — not duplicated.
@@ -1970,11 +1973,11 @@ class ArrangeForwardTests(TestCase):
             habit=self.stretch, tier__isnull=True, valid_from=self.today
         )
         self.assertEqual(gen.count(), 1)
-        self.assertEqual(gen.first().plan_id, self.evening.id)
+        self.assertEqual(gen.first().chain_id, self.evening.id)
 
     def test_repeat_with_new_order_updates_generation(self):
-        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
-        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 5}])
+        self._forward(items=[{"habit": self.stretch.id, "chain": self.evening.id, "order": 1}])
+        self._forward(items=[{"habit": self.stretch.id, "chain": self.evening.id, "order": 5}])
         gen = Schedule.objects.get(
             habit=self.stretch, tier__isnull=True, valid_from=self.today
         )
@@ -1983,7 +1986,7 @@ class ArrangeForwardTests(TestCase):
     # --- defaults / validation ----------------------------------------------
 
     def test_from_date_defaults_to_today(self):
-        resp = self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+        resp = self._forward(items=[{"habit": self.stretch.id, "chain": self.evening.id, "order": 1}])
         self.assertEqual(json.loads(resp.content)["from_date"], self.today.isoformat())
         self.assertTrue(
             Schedule.objects.filter(habit=self.stretch, valid_from=self.today).exists()
@@ -1991,11 +1994,11 @@ class ArrangeForwardTests(TestCase):
 
     def test_place_at_anytime_with_null_plan(self):
         # plan: null moves Stretch out of Morning into Anytime, going forward.
-        self._forward(items=[{"habit": self.stretch.id, "plan": None, "order": 1}])
-        future = self._placement(self._plan(self.tomorrow))
+        self._forward(items=[{"habit": self.stretch.id, "chain": None, "order": 1}])
+        future = self._placement(self._chain(self.tomorrow))
         self.assertEqual(future[self.stretch.id], [None])
         # Past still in Morning.
-        past = self._placement(self._plan(self.yesterday))
+        past = self._placement(self._chain(self.yesterday))
         self.assertEqual(past[self.stretch.id], [self.morning.id])
 
     def test_rejects_bad_input(self):
@@ -2005,13 +2008,13 @@ class ArrangeForwardTests(TestCase):
             400,
         )   # missing plan
         self.assertEqual(
-            self._forward(items=[{"habit": 99999, "plan": self.morning.id, "order": 1}]).status_code,
+            self._forward(items=[{"habit": 99999, "chain": self.morning.id, "order": 1}]).status_code,
             400,
         )   # unknown habit
         self.assertEqual(
             self._forward(
                 from_date="not-a-date",
-                items=[{"habit": self.stretch.id, "plan": self.morning.id, "order": 1}],
+                items=[{"habit": self.stretch.id, "chain": self.morning.id, "order": 1}],
             ).status_code,
             400,
         )
@@ -2021,8 +2024,8 @@ class ArrangeForwardTests(TestCase):
         # silently win) — reject it up front before any DB write.
         before = Schedule.objects.count()
         resp = self._forward(items=[
-            {"habit": self.stretch.id, "plan": self.morning.id, "order": 1},
-            {"habit": self.stretch.id, "plan": self.evening.id, "order": 2},
+            {"habit": self.stretch.id, "chain": self.morning.id, "order": 1},
+            {"habit": self.stretch.id, "chain": self.evening.id, "order": 2},
         ])
         self.assertEqual(resp.status_code, 400)
         # Nothing written (validation runs before the DB pass).
@@ -2031,8 +2034,8 @@ class ArrangeForwardTests(TestCase):
     def test_duplicate_slot_differing_by_tier_is_allowed(self):
         # Same habit but DIFFERENT tiers are distinct slots and may co-exist.
         resp = self._forward(items=[
-            {"habit": self.stretch.id, "plan": self.morning.id, "tier": 1, "order": 1},
-            {"habit": self.stretch.id, "plan": self.evening.id, "tier": 2, "order": 1},
+            {"habit": self.stretch.id, "chain": self.morning.id, "tier": 1, "order": 1},
+            {"habit": self.stretch.id, "chain": self.evening.id, "tier": 2, "order": 1},
         ])
         self.assertEqual(resp.status_code, 200)
 
@@ -2041,15 +2044,15 @@ class ArrangeForwardTests(TestCase):
         # (habit, tier, valid_from) the writer upserts. update_or_create would
         # raise MultipleObjectsReturned; the view must catch it and 409.
         Schedule.objects.create(
-            habit=self.water, plan=self.morning, tier=None,
+            habit=self.water, chain=self.morning, tier=None,
             order=1, valid_from=self.today,
         )
         Schedule.objects.create(
-            habit=self.water, plan=self.evening, tier=None,
+            habit=self.water, chain=self.evening, tier=None,
             order=2, valid_from=self.today,
         )
         resp = self._forward(items=[
-            {"habit": self.water.id, "plan": self.morning.id, "order": 1},
+            {"habit": self.water.id, "chain": self.morning.id, "order": 1},
         ])
         self.assertEqual(resp.status_code, 409)
         # Rolled back: the two pre-existing rows are untouched, none added.
@@ -2071,7 +2074,7 @@ class ArrangeForwardTests(TestCase):
             data=json.dumps({
                 "date": self.today.isoformat(),
                 "items": [
-                    {"habit": self.water.id, "plan": self.evening.id, "order": 1},
+                    {"habit": self.water.id, "chain": self.evening.id, "order": 1},
                 ],
             }),
             content_type="application/json",
@@ -2080,10 +2083,10 @@ class ArrangeForwardTests(TestCase):
         # No new Schedule rows (no recurring write).
         self.assertEqual(Schedule.objects.count(), before)
         # Tomorrow (template) does NOT see the per-day placement.
-        future = self._placement(self._plan(self.tomorrow))
+        future = self._placement(self._chain(self.tomorrow))
         self.assertEqual(future.get(self.water.id), [None])   # still Anytime
         # Today (now frozen) DOES.
-        today = self._placement(self._plan(self.today))
+        today = self._placement(self._chain(self.today))
         self.assertEqual(today[self.water.id], [self.evening.id])
 
     # --- per-moved-habit scope (fix #3) -------------------------------------
@@ -2096,11 +2099,11 @@ class ArrangeForwardTests(TestCase):
         # Move ONLY Stretch into Evening. Read (the sibling) shares Morning and is
         # NOT in the payload — its forward placement must not change.
         resp = self._forward(
-            items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}]
+            items=[{"habit": self.stretch.id, "chain": self.evening.id, "order": 1}]
         )
         self.assertEqual(resp.status_code, 200)
 
-        future = self._placement(self._plan(self.tomorrow))
+        future = self._placement(self._chain(self.tomorrow))
         # The moved habit changed forward.
         self.assertEqual(future[self.stretch.id], [self.evening.id])
         # The sibling is UNCHANGED forward — still Morning, where it always was.
@@ -2114,20 +2117,20 @@ class ArrangeForwardTests(TestCase):
 
     def test_forward_move_does_not_disturb_an_earlier_forward_edit(self):
         # An EARLIER toggle-ON edit moved Read into Evening (its own generation).
-        self._forward(items=[{"habit": self.read.id, "plan": self.evening.id, "order": 5}])
+        self._forward(items=[{"habit": self.read.id, "chain": self.evening.id, "order": 5}])
         read_gen_id = Schedule.objects.get(
             habit=self.read, tier__isnull=True, valid_from=self.today
         ).id
 
         # Now a SEPARATE forward move of Stretch into Morning's slot. It must not
         # touch Read's existing forward generation at all.
-        self._forward(items=[{"habit": self.stretch.id, "plan": self.morning.id, "order": 1}])
+        self._forward(items=[{"habit": self.stretch.id, "chain": self.morning.id, "order": 1}])
 
         read_gen = Schedule.objects.get(id=read_gen_id)
-        self.assertEqual(read_gen.plan_id, self.evening.id)   # untouched
+        self.assertEqual(read_gen.chain_id, self.evening.id)   # untouched
         self.assertEqual(read_gen.order, 5)
         # And forward, Read still reflects its earlier edit.
-        future = self._placement(self._plan(self.tomorrow))
+        future = self._placement(self._chain(self.tomorrow))
         self.assertEqual(future[self.read.id], [self.evening.id])
 
     def test_frozen_today_mirror_touches_only_the_moved_habit(self):
@@ -2137,27 +2140,27 @@ class ArrangeForwardTests(TestCase):
             date=self.today, habit=self.read, tier__isnull=True
         )
 
-        self._forward(items=[{"habit": self.stretch.id, "plan": self.evening.id, "order": 1}])
+        self._forward(items=[{"habit": self.stretch.id, "chain": self.evening.id, "order": 1}])
 
         # The moved habit's ScheduleDay mirror moved to Evening.
         stretch_sd = ScheduleDay.objects.get(
             date=self.today, habit=self.stretch, tier__isnull=True
         )
-        self.assertEqual(stretch_sd.plan_id, self.evening.id)
+        self.assertEqual(stretch_sd.chain_id, self.evening.id)
         # The sibling's ScheduleDay for today is byte-for-byte unchanged (same row,
         # same cycle, same order) — the mirror never rewrote it.
         read_sd_after = ScheduleDay.objects.get(
             date=self.today, habit=self.read, tier__isnull=True
         )
         self.assertEqual(read_sd_after.id, read_sd_before.id)
-        self.assertEqual(read_sd_after.plan_id, read_sd_before.plan_id)
+        self.assertEqual(read_sd_after.chain_id, read_sd_before.chain_id)
         self.assertEqual(read_sd_after.order, read_sd_before.order)
 
 
 class RetimeForwardTests(TestCase):
-    """apply-to-future Phase 3: /plans/retime-forward/ writes a dated `PlanTime`
+    """apply-to-future Phase 3: /plans/retime-forward/ writes a dated `ChainTime`
     row so a CYCLE'S TIME change sticks every day from a date forward, read via
-    the precedence frozen-PlanDay > PlanTime > Plan.start_time. Independent of
+    the precedence frozen-ChainDay > ChainTime > Chain.start_time. Independent of
     placement: it never touches Schedule/ScheduleDay, only the one cycle's time."""
 
     def setUp(self):
@@ -2167,9 +2170,9 @@ class RetimeForwardTests(TestCase):
 
         # Three cycles. A couple of habits, backdated so they "existed" on past
         # days (so the existed-by-then read filter doesn't hide them).
-        self.morning = Plan.objects.create(start_time=time(7, 0))
-        self.midday = Plan.objects.create(start_time=time(12, 0))
-        self.evening = Plan.objects.create(start_time=time(20, 0))
+        self.morning = Chain.objects.create(start_time=time(7, 0))
+        self.midday = Chain.objects.create(start_time=time(12, 0))
+        self.evening = Chain.objects.create(start_time=time(20, 0))
         self.stretch = Habit.objects.create(name="Stretch")
         self.read = Habit.objects.create(name="Read")
         for h in (self.stretch, self.read):
@@ -2177,9 +2180,9 @@ class RetimeForwardTests(TestCase):
                 date_added=timezone.now() - timedelta(days=30)
             )
         # Stretch lives in Morning, Read in Midday (so each cycle has a habit and
-        # therefore renders / freezes a PlanDay).
-        Schedule.objects.create(habit=self.stretch, plan=self.morning, order=1)
-        Schedule.objects.create(habit=self.read, plan=self.midday, order=1)
+        # therefore renders / freezes a ChainDay).
+        Schedule.objects.create(habit=self.stretch, chain=self.morning, order=1)
+        Schedule.objects.create(habit=self.read, chain=self.midday, order=1)
 
     def _forward(self, **body):
         return self.client.post(
@@ -2187,13 +2190,13 @@ class RetimeForwardTests(TestCase):
             data=json.dumps(body), content_type="application/json",
         )
 
-    def _plan(self, date):
+    def _chain(self, date):
         return self.client.get(reverse("habits:plan"), {"date": date.isoformat()})
 
-    def _time_of(self, response, plan_id):
+    def _time_of(self, response, chain_id):
         """The effective time string a /plan/ response shows for a cycle, or None."""
         for g in json.loads(response.content):
-            if g["id"] == plan_id:
+            if g["id"] == chain_id:
                 return g["time"]
         return None
 
@@ -2208,199 +2211,199 @@ class RetimeForwardTests(TestCase):
 
     def test_forward_time_shows_on_unfrozen_future_day(self):
         # Move Morning to 08:00 from today forward.
-        resp = self._forward(plan=self.morning.id, time="08:00")
+        resp = self._forward(chain=self.morning.id, time="08:00")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(json.loads(resp.content)["from_date"], self.today.isoformat())
 
-        # Tomorrow (not frozen): reads the new time via PlanTime.
-        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+        # Tomorrow (not frozen): reads the new time via ChainTime.
+        self.assertEqual(self._time_of(self._chain(self.tomorrow), self.morning.id),
                          "08:00:00")
-        # Exactly one PlanTime row, for this cycle, at today.
-        rows = PlanTime.objects.filter(plan=self.morning)
+        # Exactly one ChainTime row, for this cycle, at today.
+        rows = ChainTime.objects.filter(chain=self.morning)
         self.assertEqual(rows.count(), 1)
         self.assertEqual(rows.first().valid_from, self.today)
         self.assertEqual(rows.first().start_time, time(8, 0))
 
     def test_past_day_unchanged(self):
-        self._forward(plan=self.morning.id, time="08:00")
-        # Yesterday: still the recurring 07:00 (PlanTime.valid_from=today doesn't
+        self._forward(chain=self.morning.id, time="08:00")
+        # Yesterday: still the recurring 07:00 (ChainTime.valid_from=today doesn't
         # reach back; a frozen past day keeps its own locked time).
-        self.assertEqual(self._time_of(self._plan(self.yesterday), self.morning.id),
+        self.assertEqual(self._time_of(self._chain(self.yesterday), self.morning.id),
                          "07:00:00")
 
     # --- per-cycle only ------------------------------------------------------
 
     def test_only_the_named_cycle_moves(self):
-        self._forward(plan=self.morning.id, time="08:00")
-        groups = self._plan(self.tomorrow)
+        self._forward(chain=self.morning.id, time="08:00")
+        groups = self._chain(self.tomorrow)
         # The other two cycles keep their recurring times.
         self.assertEqual(self._time_of(groups, self.midday.id), "12:00:00")
         self.assertEqual(self._time_of(groups, self.evening.id), "20:00:00")
-        # And no PlanTime row was written for them.
-        self.assertFalse(PlanTime.objects.filter(plan=self.midday).exists())
-        self.assertFalse(PlanTime.objects.filter(plan=self.evening).exists())
+        # And no ChainTime row was written for them.
+        self.assertFalse(ChainTime.objects.filter(chain=self.midday).exists())
+        self.assertFalse(ChainTime.objects.filter(chain=self.evening).exists())
 
     # --- placement untouched (independence) ---------------------------------
 
     def test_placement_untouched(self):
         sched_before = {
-            (s.habit_id, s.plan_id, s.valid_from)
+            (s.habit_id, s.chain_id, s.valid_from)
             for s in Schedule.objects.all()
         }
         sd_before = ScheduleDay.objects.count()
-        self._forward(plan=self.morning.id, time="08:00")
+        self._forward(chain=self.morning.id, time="08:00")
         sched_after = {
-            (s.habit_id, s.plan_id, s.valid_from)
+            (s.habit_id, s.chain_id, s.valid_from)
             for s in Schedule.objects.all()
         }
         self.assertEqual(sched_before, sched_after)   # no Schedule generation
         self.assertEqual(ScheduleDay.objects.count(), sd_before)  # no ScheduleDay write
         # The habits still sit where they were on a forward day.
-        future = self._placement(self._plan(self.tomorrow))
+        future = self._placement(self._chain(self.tomorrow))
         self.assertEqual(future[self.stretch.id], [self.morning.id])
         self.assertEqual(future[self.read.id], [self.midday.id])
 
     # --- frozen today is reflected ------------------------------------------
 
     def test_frozen_today_is_mirrored(self):
-        freeze_day(self.today)   # today now reads its PlanDay-locked times
+        freeze_day(self.today)   # today now reads its ChainDay-locked times
         self.assertTrue(ScheduleDay.objects.filter(date=self.today).exists())
 
-        self._forward(plan=self.morning.id, time="08:00")
+        self._forward(chain=self.morning.id, time="08:00")
 
-        # Today shows the new time (via the PlanDay mirror, since a frozen day
-        # ignores PlanTime).
-        self.assertEqual(self._time_of(self._plan(self.today), self.morning.id),
+        # Today shows the new time (via the ChainDay mirror, since a frozen day
+        # ignores ChainTime).
+        self.assertEqual(self._time_of(self._chain(self.today), self.morning.id),
                          "08:00:00")
-        pd = PlanDay.objects.get(plan=self.morning, date=self.today)
+        pd = ChainDay.objects.get(chain=self.morning, date=self.today)
         self.assertEqual(pd.start_time, time(8, 0))
-        # Tomorrow (still not frozen) shows it via PlanTime.
-        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+        # Tomorrow (still not frozen) shows it via ChainTime.
+        self.assertEqual(self._time_of(self._chain(self.tomorrow), self.morning.id),
                          "08:00:00")
 
     def test_frozen_today_mirror_touches_only_the_named_cycle(self):
         freeze_day(self.today)
-        midday_pd_before = PlanDay.objects.get(plan=self.midday, date=self.today)
+        midday_pd_before = ChainDay.objects.get(chain=self.midday, date=self.today)
 
-        self._forward(plan=self.morning.id, time="08:00")
+        self._forward(chain=self.morning.id, time="08:00")
 
         # The OTHER cycle's locked time for today is byte-for-byte unchanged.
-        midday_pd_after = PlanDay.objects.get(plan=self.midday, date=self.today)
+        midday_pd_after = ChainDay.objects.get(chain=self.midday, date=self.today)
         self.assertEqual(midday_pd_after.id, midday_pd_before.id)
         self.assertEqual(midday_pd_after.start_time, midday_pd_before.start_time)
-        self.assertEqual(self._time_of(self._plan(self.today), self.midday.id),
+        self.assertEqual(self._time_of(self._chain(self.today), self.midday.id),
                          "12:00:00")
 
     def test_non_frozen_today_needs_no_mirror(self):
-        # Today is NOT frozen, so it reads PlanTime directly — no PlanDay written.
-        self._forward(plan=self.morning.id, time="08:00")
+        # Today is NOT frozen, so it reads ChainTime directly — no ChainDay written.
+        self._forward(chain=self.morning.id, time="08:00")
         self.assertFalse(
-            PlanDay.objects.filter(plan=self.morning, date=self.today).exists()
+            ChainDay.objects.filter(chain=self.morning, date=self.today).exists()
         )
-        self.assertEqual(self._time_of(self._plan(self.today), self.morning.id),
+        self.assertEqual(self._time_of(self._chain(self.today), self.morning.id),
                          "08:00:00")
 
     def test_frozen_future_day_keeps_its_own_time(self):
         # A deliberately pre-edited (frozen) FUTURE day keeps its locked time (D3).
         freeze_day(self.tomorrow)   # locks Morning at its recurring 07:00 for tomorrow
-        self._forward(plan=self.morning.id, time="08:00")
-        # Tomorrow still 07:00 (frozen PlanDay wins over the PlanTime).
-        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+        self._forward(chain=self.morning.id, time="08:00")
+        # Tomorrow still 07:00 (frozen ChainDay wins over the ChainTime).
+        self.assertEqual(self._time_of(self._chain(self.tomorrow), self.morning.id),
                          "07:00:00")
         # The day AFTER tomorrow (not frozen) does get the new time.
         day_after = self.tomorrow + timedelta(days=1)
-        self.assertEqual(self._time_of(self._plan(day_after), self.morning.id),
+        self.assertEqual(self._time_of(self._chain(day_after), self.morning.id),
                          "08:00:00")
 
     # --- precedence ----------------------------------------------------------
 
-    def test_planday_beats_plantime_on_a_frozen_day(self):
-        # PlanTime moves Morning to 08:00 forward...
-        self._forward(plan=self.morning.id, time="08:00")
-        # ...but tomorrow gets a per-day PlanDay shift to 09:30 (e.g. running late),
+    def test_chainday_beats_chaintime_on_a_frozen_day(self):
+        # ChainTime moves Morning to 08:00 forward...
+        self._forward(chain=self.morning.id, time="08:00")
+        # ...but tomorrow gets a per-day ChainDay shift to 09:30 (e.g. running late),
         # then is frozen with that time.
-        PlanDay.objects.create(plan=self.morning, date=self.tomorrow,
+        ChainDay.objects.create(chain=self.morning, date=self.tomorrow,
                                start_time=time(9, 30))
-        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
-                         "09:30:00")   # PlanDay wins for that date
+        self.assertEqual(self._time_of(self._chain(self.tomorrow), self.morning.id),
+                         "09:30:00")   # ChainDay wins for that date
 
-    def test_latest_plantime_wins(self):
+    def test_latest_chaintime_wins(self):
         # Two forward retimes; the later valid_from should win going forward.
-        PlanTime.objects.create(plan=self.morning, valid_from=self.yesterday,
+        ChainTime.objects.create(chain=self.morning, valid_from=self.yesterday,
                                 start_time=time(6, 30))
-        self._forward(plan=self.morning.id, time="08:00")  # valid_from=today
+        self._forward(chain=self.morning.id, time="08:00")  # valid_from=today
         # Yesterday reads the 06:30 generation; tomorrow the 08:00 one.
-        self.assertEqual(self._time_of(self._plan(self.yesterday), self.morning.id),
+        self.assertEqual(self._time_of(self._chain(self.yesterday), self.morning.id),
                          "06:30:00")
-        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+        self.assertEqual(self._time_of(self._chain(self.tomorrow), self.morning.id),
                          "08:00:00")
 
     # --- idempotency ---------------------------------------------------------
 
     def test_idempotent_repeat_updates_not_duplicates(self):
-        self._forward(plan=self.morning.id, time="08:00")
-        self._forward(plan=self.morning.id, time="09:15")   # same slot again
-        rows = PlanTime.objects.filter(plan=self.morning, valid_from=self.today)
+        self._forward(chain=self.morning.id, time="08:00")
+        self._forward(chain=self.morning.id, time="09:15")   # same slot again
+        rows = ChainTime.objects.filter(chain=self.morning, valid_from=self.today)
         self.assertEqual(rows.count(), 1)                   # updated, not a 2nd row
         self.assertEqual(rows.first().start_time, time(9, 15))
 
     # --- defaults / validation ----------------------------------------------
 
     def test_from_date_defaults_to_today(self):
-        self._forward(plan=self.morning.id, time="08:00")
+        self._forward(chain=self.morning.id, time="08:00")
         self.assertTrue(
-            PlanTime.objects.filter(plan=self.morning, valid_from=self.today).exists()
+            ChainTime.objects.filter(chain=self.morning, valid_from=self.today).exists()
         )
 
     def test_honors_explicit_from_date(self):
         future = self.today + timedelta(days=5)
-        resp = self._forward(plan=self.morning.id, time="08:00",
+        resp = self._forward(chain=self.morning.id, time="08:00",
                              from_date=future.isoformat())
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(
-            PlanTime.objects.filter(plan=self.morning, valid_from=future).exists()
+            ChainTime.objects.filter(chain=self.morning, valid_from=future).exists()
         )
         # Tomorrow (before the from_date) is still the recurring time.
-        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+        self.assertEqual(self._time_of(self._chain(self.tomorrow), self.morning.id),
                          "07:00:00")
 
     def test_rejects_bad_input(self):
-        self.assertEqual(self._forward(plan=999999, time="08:00").status_code, 400)
-        self.assertEqual(self._forward(plan=self.morning.id, time="nope").status_code, 400)
-        self.assertEqual(self._forward(plan=self.morning.id, time="25:00").status_code, 400)
+        self.assertEqual(self._forward(chain=999999, time="08:00").status_code, 400)
+        self.assertEqual(self._forward(chain=self.morning.id, time="nope").status_code, 400)
+        self.assertEqual(self._forward(chain=self.morning.id, time="25:00").status_code, 400)
         self.assertEqual(self._forward(time="08:00").status_code, 400)  # missing plan
-        self.assertEqual(self._forward(plan=self.morning.id).status_code, 400)  # missing time
+        self.assertEqual(self._forward(chain=self.morning.id).status_code, 400)  # missing time
         self.assertEqual(
-            self._forward(plan=self.morning.id, time="08:00",
+            self._forward(chain=self.morning.id, time="08:00",
                           from_date="not-a-date").status_code,
             400,
         )
 
-    # --- zero-PlanTime behavior unchanged -----------------------------------
+    # --- zero-ChainTime behavior unchanged -----------------------------------
 
-    def test_zero_plantime_reads_recurring_time(self):
-        # With no PlanTime rows at all, every day reads the plain recurring time —
+    def test_zero_chaintime_reads_recurring_time(self):
+        # With no ChainTime rows at all, every day reads the plain recurring time —
         # identical to pre-Phase-3 behavior.
-        self.assertFalse(PlanTime.objects.exists())
+        self.assertFalse(ChainTime.objects.exists())
         for d in (self.yesterday, self.today, self.tomorrow):
-            self.assertEqual(self._time_of(self._plan(d), self.morning.id), "07:00:00")
-            self.assertEqual(self._time_of(self._plan(d), self.midday.id), "12:00:00")
+            self.assertEqual(self._time_of(self._chain(d), self.morning.id), "07:00:00")
+            self.assertEqual(self._time_of(self._chain(d), self.midday.id), "12:00:00")
 
     # --- OFF path (per-day retime) still per-day ----------------------------
 
     def test_off_path_retime_is_today_only(self):
         # The toggle-OFF gesture hits /plans/retime/ and must stay per-day: write a
-        # PlanDay, never a PlanTime, and never reach tomorrow.
+        # ChainDay, never a ChainTime, and never reach tomorrow.
         resp = self.client.post(
-            reverse("habits:retime_plan"),
-            data=json.dumps({"plan": self.morning.id, "time": "08:00"}),
+            reverse("habits:retime_chain"),
+            data=json.dumps({"chain": self.morning.id, "time": "08:00"}),
             content_type="application/json",
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertFalse(PlanTime.objects.exists())   # no recurring write
+        self.assertFalse(ChainTime.objects.exists())   # no recurring write
         self.assertTrue(
-            PlanDay.objects.filter(plan=self.morning, date=self.today).exists()
+            ChainDay.objects.filter(chain=self.morning, date=self.today).exists()
         )
         # Tomorrow is back to the recurring time (per-day only).
-        self.assertEqual(self._time_of(self._plan(self.tomorrow), self.morning.id),
+        self.assertEqual(self._time_of(self._chain(self.tomorrow), self.morning.id),
                          "07:00:00")

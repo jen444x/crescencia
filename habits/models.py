@@ -4,7 +4,7 @@ from django.db import models
 
 # The fixed early sentinel every existing/base placement is stamped with: "this
 # has always been the plan." A single base generation at this date reproduces
-# today's behavior (see Schedule.valid_from / PlanTime).
+# today's behavior (see Schedule.valid_from / ChainTime).
 BASE_VALID_FROM = date(1970, 1, 1)
 
 class Area(models.Model):
@@ -68,8 +68,8 @@ class Habit(models.Model):
     order = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
-        # Default sort by the related plan's start time
-        ordering = ['schedule__plan__start_time', 'schedule__order']
+        # Default sort by the related chain's start time
+        ordering = ['schedule__chain__start_time', 'schedule__order']
 
     def __str__(self):
         return f"{self.name}"
@@ -127,7 +127,7 @@ class Routine(models.Model):
         return self.name
 
 
-class Plan(models.Model):
+class Chain(models.Model):
     start_date = models.DateField(auto_now_add=True)
     start_time = models.TimeField(blank=True, null=True)
     # Optional user-facing name for this time block (the "cycle"). Empty = unnamed,
@@ -141,32 +141,32 @@ class Plan(models.Model):
     def __str__(self):
         return f"{self.start_time}"
 
-class PlanDay(models.Model):
-    """A one-day override of a Plan's time.
+class ChainDay(models.Model):
+    """A one-day override of a Chain's time.
 
-    The Plan holds the recurring time (same every day); this records that *on a
+    The Chain holds the recurring time (same every day); this records that *on a
     specific date* the routine actually started somewhere else — e.g. you woke
-    up late and pushed the morning back. No row for a day = use the Plan's
-    normal time. One override per plan per day, so a shift just updates it.
+    up late and pushed the morning back. No row for a day = use the Chain's
+    normal time. One override per chain per day, so a shift just updates it.
     """
-    plan = models.ForeignKey(Plan, on_delete=models.CASCADE)
+    chain = models.ForeignKey(Chain, on_delete=models.CASCADE)
     date = models.DateField()
     start_time = models.TimeField()
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["plan", "date"],
+                fields=["chain", "date"],
                 name="one_time_override_per_plan_per_day",
             )
         ]
 
     def __str__(self):
-        return f"{self.date} - plan {self.plan_id} @ {self.start_time}"
+        return f"{self.date} - chain {self.chain_id} @ {self.start_time}"
 
 class Schedule(models.Model):
     habit = models.ForeignKey(Habit, on_delete=models.CASCADE)
-    plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True)
+    chain = models.ForeignKey(Chain, on_delete=models.SET_NULL, null=True)
     # Groups (no order) the habits in a block under a named routine. SET_NULL,
     # not CASCADE: deleting a Routine just ungroups its habits — they stay on the
     # plan as standalone rows — rather than dropping them off the plan.
@@ -189,18 +189,18 @@ class Schedule(models.Model):
     # by a DB constraint, to keep this migration purely additive (valid_from only).
 
     def __str__(self):
-        return f"{self.plan.start_time} - {self.habit.name}"
+        return f"{self.chain.start_time} - {self.habit.name}"
 
 
-class PlanTime(models.Model):
+class ChainTime(models.Model):
     """Recurring time change effective from a date forward — the 'this and
-    following' twin of PlanDay (one day). NOT read yet (wired in Phase 3)."""
-    plan = models.ForeignKey(Plan, on_delete=models.CASCADE)
+    following' twin of ChainDay (one day). NOT read yet (wired in Phase 3)."""
+    chain = models.ForeignKey(Chain, on_delete=models.CASCADE)
     valid_from = models.DateField()
     start_time = models.TimeField()
 
     def __str__(self):
-        return f"plan {self.plan_id} from {self.valid_from} @ {self.start_time}"
+        return f"chain {self.chain_id} from {self.valid_from} @ {self.start_time}"
 
 
 class ScheduleDay(models.Model):
@@ -209,7 +209,7 @@ class ScheduleDay(models.Model):
     `Schedule` is the recurring plan (same every day): which habit sits in which
     block, its routine, its order. `ScheduleDay` records what a *specific date*
     actually looked like, so editing one day never changes the rest — exactly how
-    `PlanDay` is the per-day twin of `Plan`'s time.
+    `ChainDay` is the per-day twin of `Chain`'s time.
 
     No rows for a date = that day isn't frozen yet, so `/plan/` draws it from the
     recurring `Schedule` (today's behaviour, unchanged). The first time a day is
@@ -225,7 +225,7 @@ class ScheduleDay(models.Model):
     date = models.DateField()
     habit = models.ForeignKey(Habit, on_delete=models.SET_NULL, null=True)
     habit_name = models.CharField(max_length=200)
-    plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True, blank=True)
+    chain = models.ForeignKey(Chain, on_delete=models.SET_NULL, null=True, blank=True)
     routine = models.ForeignKey(Routine, on_delete=models.SET_NULL, null=True, blank=True)
     tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
     order = models.PositiveIntegerField(null=True, blank=True)
