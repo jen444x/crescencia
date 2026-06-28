@@ -7,6 +7,7 @@ import {
 import { createPortal } from "react-dom";
 import Header from "../components/layout/Header";
 import { useToast } from "../components/Toast";
+import { useNavigate } from "react-router-dom";
 import {
   DndContext,
   closestCenter,
@@ -488,6 +489,7 @@ function HabitsPage() {
   // aim); pick Roots to put Roots above Growth.
   const [focus, setFocus] = useState<TierFocus>("GROWTH");
   const toast = useToast();
+  const navigate = useNavigate();
 
   useEffect(() => {
     async function fetchHabits() {
@@ -643,6 +645,12 @@ function HabitsPage() {
             <p className="text-stone-400 text-sm">
               Add your first habit to start growing
             </p>
+            <button
+              onClick={() => navigate("/habits/new")}
+              className="mt-5 bg-calm-600 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-calm-700 transition-colors"
+            >
+              + Add habit
+            </button>
           </div>
         </div>
       </>
@@ -657,6 +665,13 @@ function HabitsPage() {
     <>
       <Header title="Habits" body="" />
       <div className="max-w-md mx-auto">
+        <button
+          onClick={() => navigate("/habits/new")}
+          className="w-full mb-4 bg-calm-600 text-white py-3 rounded-xl font-medium hover:bg-calm-700 transition-colors"
+        >
+          + Add habit
+        </button>
+
         {/* Controls: which-tier-on-top picker (left), Show-helpers toggle (right). */}
         <div className="mb-5 flex items-center justify-between gap-2">
           <div className="inline-flex rounded-full bg-white p-0.5 shadow-sm">

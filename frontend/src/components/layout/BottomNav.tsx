@@ -6,8 +6,9 @@ const tabClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? "bg-white/20 text-white" : "text-white/60 hover:text-white/80"
   }`;
 
-// Just the two destinations we have today: the daily Plan and Add habit. More
-// tabs (Areas, Insights) can slot back in here once those pages are ready.
+// The four destinations: daily Plan, Journal, Habits, and Aspirations. Adding a
+// habit lives on the Habits page now (it didn't belong in the nav). Areas/Insights
+// can still slot back in here once those pages are ready.
 function BottomNav() {
   return (
     // z-40 keeps the bar above page content (chain step badges are z-10, so
@@ -68,7 +69,7 @@ function BottomNav() {
           <span className="text-xs font-medium">Habits</span>
         </NavLink>
 
-        <NavLink to="/habits/new" className={tabClass}>
+        <NavLink to="/aspirations" className={tabClass}>
           <svg
             xmlns="http://www.w3.org/2000/svg"
             className="h-6 w-6"
@@ -80,10 +81,10 @@ function BottomNav() {
               strokeLinecap="round"
               strokeLinejoin="round"
               strokeWidth={2}
-              d="M12 4v16m8-8H4"
+              d="M3 3v1.5M3 21v-6m0 0l2.77-.693a9 9 0 016.208.682l.108.054a9 9 0 006.086.71l3.114-.732a48.524 48.524 0 01-.005-10.499l-3.11.732a9 9 0 01-6.085-.711l-.108-.054a9 9 0 00-6.208-.682L3 4.5M3 15V4.5"
             />
           </svg>
-          <span className="text-xs font-medium">Add Habit</span>
+          <span className="text-xs font-medium">Aspirations</span>
         </NavLink>
       </div>
     </nav>
