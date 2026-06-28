@@ -12,7 +12,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Routine, Habit, Plan, PlanDay, PlanTime, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
+from .models import Area, Aspiration, Routine, Habit, Plan, PlanDay, PlanTime, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -2605,3 +2605,140 @@ def area(request, area_id):
     habits = area.habit_set.order_by('-date_added')
     data = list(habits.values('id', 'name', 'notes'))
     return JsonResponse({"area": area.name, "habits": data})
+
+
+# --- Aspirations -----------------------------------------------------------
+# A directional intent ("move more") that a set of habits serves. The detail
+# view shows each attached habit's recent completion as a row of dots + a
+# streak, so you can eyeball whether you've been living the aspiration.
+
+ASPIRATION_PROGRESS_DAYS = 14     # dots shown per habit (oldest first; last = today)
+ASPIRATION_STREAK_LOOKBACK = 90   # how far back a current streak may reach
+
+
+def _aspiration_habit_progress(habits, today):
+    """Per-habit recent completion for the aspiration detail rows.
+
+    For each habit: the last ASPIRATION_PROGRESS_DAYS days as booleans (oldest
+    first, so the rightmost dot is today) plus the current streak — consecutive
+    completed days ending today; a still-pending today doesn't break it. "Done"
+    on a day = at least one COMPLETED HabitLog that day (any tier or untiered).
+    One query across all the habits, then grouped in memory.
+    """
+    habits = list(habits)
+    if not habits:
+        return []
+
+    habit_ids = [h.id for h in habits]
+    earliest = today - timedelta(days=ASPIRATION_STREAK_LOOKBACK)
+    # habit_id -> set of dates it was completed, over the streak lookback window.
+    done_by_habit = defaultdict(set)
+    for hid, d in HabitLog.objects.filter(
+        habit_id__in=habit_ids,
+        date__gte=earliest,
+        date__lte=today,
+        status=HabitLog.Status.COMPLETED,
+    ).values_list("habit_id", "date"):
+        done_by_habit[hid].add(d)
+
+    window = [today - timedelta(days=i)
+              for i in range(ASPIRATION_PROGRESS_DAYS - 1, -1, -1)]
+
+    rows = []
+    for h in habits:
+        done = done_by_habit.get(h.id, set())
+        # Current streak: start at today (or yesterday if today isn't done yet),
+        # walk back while each day was completed.
+        streak = 0
+        cursor = today if today in done else today - timedelta(days=1)
+        while cursor in done and cursor >= earliest:
+            streak += 1
+            cursor -= timedelta(days=1)
+        rows.append({
+            "id": h.id,
+            "name": h.name,
+            "days": [d in done for d in window],
+            "streak": streak,
+        })
+    return rows
+
+
+def aspirations(request):
+    """List all aspirations (id + name), newest first."""
+    data = list(Aspiration.objects.order_by("-created_at").values("id", "name"))
+    return JsonResponse(data, safe=False)
+
+
+def aspiration(request, aspiration_id):
+    """One aspiration: its text fields, the ids of its attached habits, and each
+    attached habit's recent completion (for the per-habit progress rows)."""
+    asp = get_object_or_404(Aspiration, id=aspiration_id)
+    habits = asp.habits.order_by("name")
+    today = timezone.localdate()
+    return JsonResponse({
+        "id": asp.id,
+        "name": asp.name,
+        "reason": asp.reason,
+        "motivation": asp.motivation,
+        "notes": asp.notes,
+        "created_at": asp.created_at,
+        "habit_ids": [h.id for h in habits],
+        "habits": _aspiration_habit_progress(habits, today),
+        "progress_days": ASPIRATION_PROGRESS_DAYS,
+    })
+
+
+@csrf_exempt
+@require_POST
+def create_aspiration(request):
+    """Create an aspiration. Body: {name, reason?, motivation?, notes?,
+    habit_ids?}. habit_ids attaches existing habits to it."""
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JsonResponse({"error": "Name is required."}, status=400)
+
+    asp = Aspiration.objects.create(
+        name=name,
+        reason=(body.get("reason") or "").strip(),
+        motivation=(body.get("motivation") or "").strip(),
+        notes=(body.get("notes") or "").strip(),
+    )
+    habit_ids = body.get("habit_ids")
+    if habit_ids:
+        asp.habits.set(Habit.objects.filter(id__in=habit_ids))
+    return JsonResponse({"id": asp.id}, status=201)
+
+
+@csrf_exempt
+@require_POST
+def edit_aspiration(request, aspiration_id):
+    """Update an aspiration. Body may carry any of name, reason, motivation,
+    notes, habit_ids; absent keys are left unchanged. A present habit_ids
+    REPLACES the whole attached-habit set (the edit form always sends it)."""
+    asp = get_object_or_404(Aspiration, id=aspiration_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    if "name" in body:
+        name = (body.get("name") or "").strip()
+        if not name:
+            return JsonResponse({"error": "Name is required."}, status=400)
+        asp.name = name
+    if "reason" in body:
+        asp.reason = (body.get("reason") or "").strip()
+    if "motivation" in body:
+        asp.motivation = (body.get("motivation") or "").strip()
+    if "notes" in body:
+        asp.notes = (body.get("notes") or "").strip()
+    asp.save()
+
+    if "habit_ids" in body:
+        asp.habits.set(Habit.objects.filter(id__in=(body.get("habit_ids") or [])))
+    return JsonResponse({"id": asp.id})

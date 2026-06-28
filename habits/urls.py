@@ -42,4 +42,8 @@ urlpatterns = [
     path("plans/retime-forward/", views.retime_forward, name="retime_forward"),
     path("areas/", views.areas, name="areas"),
     path("areas/<int:area_id>/", views.area, name="area"),
+    path("aspirations/", views.aspirations, name="aspirations"),
+    path("aspirations/create/", views.create_aspiration, name="create_aspiration"),
+    path("aspirations/<int:aspiration_id>/", views.aspiration, name="aspiration"),
+    path("aspirations/<int:aspiration_id>/edit/", views.edit_aspiration, name="edit_aspiration"),
 ]

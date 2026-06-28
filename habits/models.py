@@ -13,6 +13,28 @@ class Area(models.Model):
     def __str__(self):
         return self.name    # return string representation of the name attribute
 
+class Aspiration(models.Model):
+    """A directional intent that habits work toward — "Move more", "Walk more",
+    "Sleep better". It's the *why* above a habit: fuzzy and goal-shaped on
+    purpose. The concrete amount ("5000 steps") isn't stored here — that lives on
+    the habit's tier value. Habits are attached via `habits` (M2M) to show what
+    it's made of.
+    """
+    name = models.CharField(max_length=200)        # the aspiration itself: "Move more"
+    reason = models.TextField(blank=True)          # why you want it
+    motivation = models.TextField(blank=True)      # what keeps you going
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # The habits that serve this aspiration. Many-to-many: one habit can support
+    # several aspirations ("walk 5000 steps" feeds both "move more" and "get
+    # outside"), and an aspiration is made of several habits. blank=True so an
+    # aspiration can exist before any habit is attached. "Habit" is a string ref
+    # because that model is defined below this one.
+    habits = models.ManyToManyField("Habit", related_name="aspirations", blank=True)
+
+    def __str__(self):
+        return self.name
+
 class TierChoices(models.IntegerChoices):
     ROOTS = 1, 'Roots'
     GROWTH = 2, 'Growth'

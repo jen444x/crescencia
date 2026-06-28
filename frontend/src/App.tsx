@@ -8,6 +8,10 @@ import PlanPage from "./pages/PlanPage.tsx";
 import JournalPage from "./pages/JournalPage.tsx";
 import AreasPage from "./pages/AreasPage.tsx";
 import AreaPage from "./pages/AreaPage.tsx";
+import AspirationsPage from "./pages/AspirationsPage.tsx";
+import AspirationPage from "./pages/AspirationPage.tsx";
+import AddAspirationPage from "./pages/AddAspirationPage.tsx";
+import EditAspirationPage from "./pages/EditAspirationPage.tsx";
 import AddHabitPage from "./pages/AddHabitPage.tsx";
 import EditHabitPage from "./pages/EditHabitPage.tsx";
 import HabitsPage from "./pages/HabitsPage.tsx";
@@ -26,6 +30,10 @@ function App() {
           <Route path="/habits/:id" element={<EditHabitPage />} />
           <Route path="/areas" element={<AreasPage />} />
           <Route path="/areas/:id" element={<AreaPage />} />
+          <Route path="/aspirations" element={<AspirationsPage />} />
+          <Route path="/aspirations/new" element={<AddAspirationPage />} />
+          <Route path="/aspirations/:id" element={<AspirationPage />} />
+          <Route path="/aspirations/:id/edit" element={<EditAspirationPage />} />
         </Route>
       </Routes>
     </ToastProvider>
