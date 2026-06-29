@@ -105,7 +105,7 @@ function SortableHabit({ h }: { h: RoutineHabit }) {
       }}
       {...attributes}
       {...listeners}
-      className="flex cursor-grab touch-none select-none items-center gap-2 px-4 py-3 active:cursor-grabbing"
+      className="flex cursor-grab select-none items-center gap-2 px-4 py-3 active:cursor-grabbing"
     >
       <HabitRow h={h} />
     </li>
@@ -148,7 +148,7 @@ function EverydayRoutinePage() {
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 450, tolerance: 5 } }),
   );
 
   async function load() {

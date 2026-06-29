@@ -3271,11 +3271,11 @@ function PlanPage() {
   const planSensors = useSensors(
     // Mouse: a tiny 6px threshold so a plain click still toggles / opens detail.
     useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
-    // Touch: press-and-HOLD ~250ms to pick a row up. Any finger movement over
-    // `tolerance` (5px) before the delay elapses keeps it a scroll, so it never
-    // grabs a habit by accident — the standard mobile reorder gesture.
+    // Touch: press-and-HOLD ~450ms (close to native iOS) to pick a row up. Any
+    // finger movement over `tolerance` (5px) before the delay elapses keeps it a
+    // scroll, so it never grabs a habit by accident — the standard mobile gesture.
     useSensor(TouchSensor, {
-      activationConstraint: { delay: 250, tolerance: 5 },
+      activationConstraint: { delay: 450, tolerance: 5 },
     }),
   );
 

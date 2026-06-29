@@ -553,13 +553,14 @@ function HabitsPage() {
   }
 
   // Mouse keeps a tiny 6px threshold so a tap (to complete) isn't misread as a
-  // drag. Touch needs a ~250ms press-and-HOLD, and any finger drift over 5px
-  // during that hold cancels into a scroll, so a scroll-swipe never grabs a
-  // row by accident — the standard mobile reorder gesture.
+  // drag. Touch needs a ~450ms press-and-HOLD (close to native iOS), and any
+  // finger drift over 5px during that hold cancels into a scroll, so a
+  // scroll-swipe never grabs a row by accident — the standard mobile reorder
+  // gesture.
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, {
-      activationConstraint: { delay: 250, tolerance: 5 },
+      activationConstraint: { delay: 450, tolerance: 5 },
     }),
   );
 
