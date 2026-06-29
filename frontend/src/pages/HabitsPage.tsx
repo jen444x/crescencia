@@ -313,10 +313,10 @@ function HabitRowWithMenu({
   );
 }
 
-// The tap menu: pick Complete / Skip / Miss for one habit version, or Clear to
-// reset it to pending. Same overlay style as ConfirmDialog (backdrop tap +
-// Escape close); portaled to the body so nothing can clip it. The current
-// status gets a check so you can see what it's set to.
+// The tap menu: pick Skip / Complete / Miss for one habit version (or Clear to
+// reset it to pending), jump to the habit's page via its name, and toggle its
+// routine. Mirrors the Plan page's status sheet. Portaled to the body so nothing
+// can clip it; the current status keeps a ring. Backdrop tap + Escape close.
 function HabitStatusSheet({
   open,
   habit,
@@ -336,6 +336,7 @@ function HabitStatusSheet({
   onSetRoutine: (habitId: number, routineId: number | null) => void;
   onClose: () => void;
 }) {
+  const navigate = useNavigate();
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -354,26 +355,31 @@ function HabitStatusSheet({
     ? "COMPLETED"
     : (tier?.status ?? "PENDING");
 
-  const options: { status: HabitStatus; label: string; className: string }[] = [
-    {
-      status: "COMPLETED",
-      label: "Complete",
-      className: "bg-calm-600 text-white hover:bg-calm-700",
-    },
+  // Skip / Complete / Miss, shown side-by-side; the current status keeps a ring.
+  // Clear (back to pending) renders separately below, only when a status is set.
+  const statuses: {
+    status: HabitStatus;
+    label: string;
+    className: string;
+    ring: string;
+  }[] = [
     {
       status: "SKIPPED",
       label: "Skip",
       className: "bg-stone-100 text-stone-600 hover:bg-stone-200",
+      ring: "ring-stone-400",
+    },
+    {
+      status: "COMPLETED",
+      label: "Complete",
+      className: "bg-calm-600 text-white hover:bg-calm-700",
+      ring: "ring-calm-700",
     },
     {
       status: "MISSED",
       label: "Miss",
       className: "bg-rose-50 text-rose-600 hover:bg-rose-100",
-    },
-    {
-      status: "PENDING",
-      label: "Clear",
-      className: "border border-calm-200 text-calm-700 hover:bg-calm-50",
+      ring: "ring-rose-400",
     },
   ];
 
@@ -383,35 +389,74 @@ function HabitStatusSheet({
     // tap handler and instantly re-open the menu. Stop it at the root.
     <div
       onClick={(e) => e.stopPropagation()}
-      className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-end gap-2 p-3 sm:justify-center"
     >
       <div
         className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
         onClick={onClose}
         aria-hidden
       />
+
+      {/* The sheet */}
       <div
         role="dialog"
         aria-modal="true"
         aria-label={`Set status for ${habit.name}`}
-        className="animate-sheet-in relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl"
+        className="animate-sheet-in relative w-full max-w-sm rounded-3xl bg-white p-4 shadow-xl"
       >
-        <p className="px-2 pb-3 text-sm font-medium text-calm-900">
-          {habit.name}
-        </p>
-        <div className="flex flex-col gap-2">
-          {options.map((o) => (
+        {/* Grab-handle pill — reads as a bottom sheet on the phone. */}
+        <div
+          className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-calm-200"
+          aria-hidden
+        />
+
+        {/* Habit name — big, centered, with a chevron; opens the habit's page. */}
+        <button
+          type="button"
+          onClick={() => navigate(`/habits/${habit.id}`)}
+          className="group mb-6 flex w-full items-center justify-center gap-1 px-4"
+        >
+          <span className="min-w-0 truncate text-lg font-semibold text-calm-900 group-hover:text-calm-700">
+            {habit.name}
+          </span>
+          <svg
+            aria-hidden
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            className="h-4 w-4 shrink-0 text-calm-400 group-hover:text-calm-600"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Skip / Complete / Miss, side by side. The current status keeps a ring. */}
+        <div className="flex gap-2">
+          {statuses.map((o) => (
             <button
               key={o.status}
               type="button"
               onClick={() => onPick(o.status)}
-              className={`flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition-colors ${o.className}`}
+              className={`flex flex-1 items-center justify-center rounded-xl py-3.5 text-sm font-medium transition-colors ${
+                o.className
+              } ${current === o.status ? `ring-2 ring-offset-2 ring-offset-white ${o.ring}` : ""}`}
             >
               {o.label}
-              {current === o.status && <span aria-hidden>✓</span>}
             </button>
           ))}
         </div>
+
+        {/* Clear back to pending — only when a status is actually set. */}
+        {current !== "PENDING" && (
+          <button
+            type="button"
+            onClick={() => onPick("PENDING")}
+            className="mt-2 w-full rounded-xl py-2.5 text-sm font-medium text-calm-500 transition-colors hover:bg-calm-50"
+          >
+            Clear
+          </button>
+        )}
 
         {/* Routine grouping — per habit (independent of the per-day status above).
             Tapping a routine toggles membership: tap the current one to leave it,
@@ -420,11 +465,11 @@ function HabitStatusSheet({
         {routines.length > 0 &&
           habitRoutine &&
           habitRoutine.scheduleIds.length > 0 && (
-            <div className="mt-3 border-t border-calm-100 pt-3">
-              <p className="px-2 pb-2 text-xs font-medium uppercase tracking-wide text-stone-400">
+            <div className="mt-4 border-t border-calm-100 pt-3">
+              <p className="px-1 pb-2 text-xs font-medium uppercase tracking-wide text-stone-400">
                 Routine
               </p>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 {routines.map((r) => {
                   const inThis = habitRoutine.routineId === r.id;
                   return (
@@ -448,15 +493,16 @@ function HabitStatusSheet({
               </div>
             </div>
           )}
-
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-2 w-full rounded-xl py-3 text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
-        >
-          Cancel
-        </button>
       </div>
+
+      {/* Cancel — its own card, iOS action-sheet style. */}
+      <button
+        type="button"
+        onClick={onClose}
+        className="relative w-full max-w-sm rounded-2xl bg-white py-3.5 text-sm font-semibold text-stone-500 shadow-xl transition-colors hover:text-stone-700"
+      >
+        Cancel
+      </button>
     </div>,
     document.body,
   );
