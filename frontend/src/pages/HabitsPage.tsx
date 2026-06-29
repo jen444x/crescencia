@@ -106,6 +106,46 @@ function CheckIcon() {
   );
 }
 
+// A dash — the status-dot glyph for a SKIPPED slot (neutral / on purpose).
+function DashIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={3}
+        d="M6 12h12"
+      />
+    </svg>
+  );
+}
+
+// An X — the status-dot glyph for a MISSED slot.
+function XIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={3}
+        d="M7 7l10 10M17 7L7 17"
+      />
+    </svg>
+  );
+}
+
 // Drag-handle grip (six dots). Same icon as the Plan page's reorder handle, so
 // "grab here to drag" reads the same across the app.
 function GripIcon() {
@@ -190,17 +230,8 @@ function HabitTierRow({
         )}
       </div>
 
-      {skipped && (
-        <span className="shrink-0 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-500">
-          Skipped
-        </span>
-      )}
-      {missed && (
-        <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-500">
-          Missed
-        </span>
-      )}
-
+      {/* Status dot: shows the slot's state (✓ done · – skipped · ✗ missed),
+        and a one-tap toggles Complete / undo. */}
       <button
         type="button"
         data-no-menu
@@ -214,10 +245,14 @@ function HabitTierRow({
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
           done
             ? "border-calm-600 bg-calm-600 text-white"
-            : "border-calm-300 text-transparent hover:border-calm-500"
+            : skipped
+              ? "border-stone-400 bg-stone-400 text-white"
+              : missed
+                ? "border-rose-400 bg-rose-400 text-white"
+                : "border-calm-300 text-transparent hover:border-calm-500"
         }`}
       >
-        <CheckIcon />
+        {skipped ? <DashIcon /> : missed ? <XIcon /> : <CheckIcon />}
       </button>
     </div>
   );
