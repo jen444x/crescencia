@@ -48,10 +48,9 @@ function formatTime(t: string | null): string {
   return `${hr}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
-// Recurring edits here apply from TOMORROW forward, so today is left untouched.
+// Recurring edits here apply from TODAY forward (today included).
 function fromDateYMD(): string {
   const d = new Date();
-  d.setDate(d.getDate() + 1);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
