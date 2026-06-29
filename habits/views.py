@@ -2700,13 +2700,15 @@ def _aspiration_habit_progress(habits, today):
 
 
 def aspirations(request):
-    """List all aspirations, newest first, each WITH its habits and their last
-    ASPIRATION_LIST_DAYS days of whole-habit completion — so the list page can
-    show an expandable habit strip per aspiration in one round-trip.
+    """List all aspirations, newest first, each WITH its habits — and, for a
+    tiered habit, one strip PER VERSION (Roots/Growth/...) — so the list page can
+    show an expandable per-version habit strip per aspiration in one round-trip.
 
     Each day is {"done", "existed"}: `existed` is False for days before the habit
     was created (the list greys those out — it couldn't have been done then), else
-    `done` is whether the whole habit read COMPLETED that day (any version)."""
+    `done` is whether THAT VERSION read COMPLETED that day (same higher-completes-
+    lower cascade as the detail/Habits pages). A tiered habit returns a `tiers`
+    list; an untiered one returns top-level `days` (its `tiers` is [])."""
     today = timezone.localdate()
     asps = list(
         Aspiration.objects.order_by("-created_at").prefetch_related("habits")
@@ -2728,24 +2730,40 @@ def aspirations(request):
             else:
                 b["specific"][level] = status
 
-    def cell(habit, day):
+    def cell(habit, day, level):
         if day < timezone.localtime(habit.date_added).date():
             return {"done": False, "existed": False}     # before it existed -> grey
         b = buckets.get((habit.id, day))
         specific = b["specific"] if b else {}
         fallback = b["fallback"] if b else None
         done = _version_status(
-            specific, fallback, None, is_past=day < today
+            specific, fallback, level, is_past=day < today
         ) == HabitLog.Status.COMPLETED
         return {"done": done, "existed": True}
+
+    def habit_strip(h):
+        tiers = _habit_tiers(h)   # [] for an untiered habit
+        if tiers:
+            return {
+                "id": h.id, "name": h.name,
+                "tiers": [
+                    {"level": t["level"], "name": t["name"], "value": t["value"],
+                     "days": [cell(h, day, t["level"]) for day in window]}
+                    for t in tiers
+                ],
+                "days": [],
+            }
+        return {
+            "id": h.id, "name": h.name, "tiers": [],
+            "days": [cell(h, day, None) for day in window],
+        }
 
     data = [
         {
             "id": a.id,
             "name": a.name,
             "habits": [
-                {"id": h.id, "name": h.name,
-                 "days": [cell(h, day) for day in window]}
+                habit_strip(h)
                 for h in sorted(a.habits.all(), key=lambda h: h.name.lower())
             ],
         }

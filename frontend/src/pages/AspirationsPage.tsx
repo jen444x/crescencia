@@ -3,7 +3,18 @@ import { useNavigate, Link } from "react-router-dom";
 import Header from "../components/layout/Header";
 
 type DayCell = { done: boolean; existed: boolean };
-type HabitWeek = { id: number; name: string; days: DayCell[] };
+type VersionWeek = {
+  level: number;
+  name: string; // "Roots" / "Growth" / ...
+  value: string; // e.g. "5000 steps"
+  days: DayCell[];
+};
+type HabitWeek = {
+  id: number;
+  name: string;
+  tiers: VersionWeek[]; // one strip per version; [] when the habit is untiered
+  days: DayCell[]; // untiered habit only
+};
 type Aspiration = { id: number; name: string; habits: HabitWeek[] };
 
 // 7-day completion strip: filled = done, hollow = not done, grey = the habit
@@ -161,14 +172,38 @@ function AspirationsPage() {
                     {a.habits.length === 0 ? (
                       <p className="text-stone-400 text-sm">No habits yet.</p>
                     ) : (
-                      a.habits.map((h) => (
-                        <div key={h.id}>
-                          <p className="mb-1.5 text-sm text-calm-900">
-                            {h.name}
-                          </p>
-                          <WeekRow days={h.days} />
-                        </div>
-                      ))
+                      a.habits.map((h) =>
+                        h.tiers.length > 0 ? (
+                          <div key={h.id}>
+                            <p className="mb-2 text-sm text-calm-900">
+                              {h.name}
+                            </p>
+                            <div className="space-y-2">
+                              {h.tiers.map((t) => (
+                                <div key={t.level}>
+                                  <p className="mb-1 text-xs font-medium text-calm-600">
+                                    {t.name}
+                                    {t.value && (
+                                      <span className="text-calm-400">
+                                        {" · "}
+                                        {t.value}
+                                      </span>
+                                    )}
+                                  </p>
+                                  <WeekRow days={t.days} />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div key={h.id}>
+                            <p className="mb-1.5 text-sm text-calm-900">
+                              {h.name}
+                            </p>
+                            <WeekRow days={h.days} />
+                          </div>
+                        ),
+                      )
                     )}
                     <Link
                       to={`/aspirations/${a.id}`}
