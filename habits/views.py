@@ -2982,6 +2982,7 @@ def recurring_schedule(request):
             "time": start_time,                     # "HH:MM:SS" or null (Anytime)
             "habits": [
                 {
+                    "schedule": s.id,
                     "habit": s.habit_id,
                     "name": s.habit.name,
                     "tier": s.tier.level if s.tier_id else None,

@@ -696,9 +696,19 @@ function HabitsPage() {
       <div className="max-w-md mx-auto">
         <button
           onClick={() => navigate("/habits/new")}
-          className="w-full mb-4 bg-calm-600 text-white py-3 rounded-xl font-medium hover:bg-calm-700 transition-colors"
+          className="w-full mb-3 bg-calm-600 text-white py-3 rounded-xl font-medium hover:bg-calm-700 transition-colors"
         >
           + Add habit
+        </button>
+
+        <button
+          onClick={() => navigate("/routines")}
+          className="w-full mb-4 flex items-center justify-between rounded-xl bg-white px-4 py-3 text-sm font-medium text-calm-700 shadow-sm transition-colors hover:bg-calm-50"
+        >
+          <span>Manage routines</span>
+          <span className="text-calm-300" aria-hidden>
+            ›
+          </span>
         </button>
 
         {/* Controls: which-tier-on-top picker (left), Show-helpers toggle (right). */}

@@ -16,6 +16,8 @@ import AddHabitPage from "./pages/AddHabitPage.tsx";
 import EditHabitPage from "./pages/EditHabitPage.tsx";
 import HabitsPage from "./pages/HabitsPage.tsx";
 import EverydayRoutinePage from "./pages/EverydayRoutinePage.tsx";
+import RoutinesPage from "./pages/RoutinesPage.tsx";
+import RoutinePage from "./pages/RoutinePage.tsx";
 
 function App() {
   return (
@@ -36,6 +38,8 @@ function App() {
           <Route path="/aspirations/:id" element={<AspirationPage />} />
           <Route path="/aspirations/:id/edit" element={<EditAspirationPage />} />
           <Route path="/routine" element={<EverydayRoutinePage />} />
+          <Route path="/routines" element={<RoutinesPage />} />
+          <Route path="/routines/:id" element={<RoutinePage />} />
         </Route>
       </Routes>
     </ToastProvider>
