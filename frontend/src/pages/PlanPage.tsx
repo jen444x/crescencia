@@ -541,8 +541,8 @@ function HabitCard({
   return (
     <div
       // A tap anywhere on the card opens the status menu (Complete / Skip / Miss
-      // / Clear / Details). The grip, note, and dot carry data-no-swipe + their
-      // own stopPropagation, so they keep doing their own thing.
+      // / Clear, plus note + Details). The grip and dot carry data-no-swipe +
+      // their own stopPropagation, so they keep doing their own thing.
       onClick={(e) => {
         if ((e.target as HTMLElement).closest("[data-no-swipe]")) return;
         setMenuOpen(true);
@@ -600,27 +600,8 @@ function HabitCard({
           </span>
         )}
 
-        {/* Per-day note. data-no-swipe + stopPropagation so it doesn't start a
-          swipe or open the detail page. Accented once a note exists. */}
-        <button
-          type="button"
-          data-no-swipe
-          aria-label={hasNotes ? "Edit notes" : "Add note"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenNote(habit);
-          }}
-          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors ${
-            hasNotes
-              ? "text-calm-600 hover:bg-calm-100"
-              : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
-          }`}
-        >
-          <NoteIcon />
-        </button>
-
         {/* Quick one-tap Complete (toggles done/undo with the same cascade as the
-          menu). Skip / Miss / Clear / Details all live in the tap menu now. */}
+          menu). Skip / Miss / Clear / note / Details all live in the tap menu. */}
         <button
           type="button"
           data-no-swipe
@@ -650,9 +631,14 @@ function HabitCard({
         open={menuOpen}
         title={habit.name}
         current={cardStatus}
+        hasNotes={hasNotes}
         onPick={(action) => {
           applyStatusAction(habit, tierToSend, action, done, onStatus);
           setMenuOpen(false);
+        }}
+        onNote={() => {
+          setMenuOpen(false);
+          onOpenNote(habit);
         }}
         onDetails={() => {
           setMenuOpen(false);
@@ -664,22 +650,27 @@ function HabitCard({
   );
 }
 
-// The tap menu for a Plan-page habit slot: Complete / Skip / Miss / Clear, plus
-// Details to open the habit page. Same overlay as ConfirmDialog; portaled so the
-// card's drag transforms can't clip it, and a stopPropagation at the root keeps
-// a click inside from bubbling back to the card and re-opening the menu.
+// The tap menu for a Plan-page habit slot: Skip / Complete / Miss in a row (plus
+// Clear when a status is set), a note icon top-right, and the habit name as a
+// link to its Details page. Portaled so the card's drag transforms can't clip
+// it; a stopPropagation at the root keeps a click inside from bubbling back to
+// the card and re-opening the menu.
 function PlanStatusSheet({
   open,
   title,
   current,
+  hasNotes,
   onPick,
+  onNote,
   onDetails,
   onClose,
 }: {
   open: boolean;
   title: string;
   current: ReadStatus;
+  hasNotes: boolean;
   onPick: (action: "COMPLETE" | "SKIP" | "MISS" | "CLEAR") => void;
+  onNote: () => void;
   onDetails: () => void;
   onClose: () => void;
 }) {
@@ -694,83 +685,136 @@ function PlanStatusSheet({
 
   if (!open) return null;
 
-  const options: {
-    action: "COMPLETE" | "SKIP" | "MISS" | "CLEAR";
+  // The three primary statuses, shown side-by-side. Clear (back to pending) is
+  // rendered separately below, and only when a status is actually set.
+  const statuses: {
+    action: "SKIP" | "COMPLETE" | "MISS";
     status: ReadStatus;
     label: string;
     className: string;
+    ring: string;
   }[] = [
-    {
-      action: "COMPLETE",
-      status: "COMPLETED",
-      label: "Complete",
-      className: "bg-calm-600 text-white hover:bg-calm-700",
-    },
     {
       action: "SKIP",
       status: "SKIPPED",
       label: "Skip",
       className: "bg-stone-100 text-stone-600 hover:bg-stone-200",
+      ring: "ring-stone-400",
+    },
+    {
+      action: "COMPLETE",
+      status: "COMPLETED",
+      label: "Complete",
+      className: "bg-calm-600 text-white hover:bg-calm-700",
+      ring: "ring-calm-700",
     },
     {
       action: "MISS",
       status: "MISSED",
       label: "Miss",
       className: "bg-rose-50 text-rose-600 hover:bg-rose-100",
-    },
-    {
-      action: "CLEAR",
-      status: "PENDING",
-      label: "Clear",
-      className: "border border-calm-200 text-calm-700 hover:bg-calm-50",
+      ring: "ring-rose-400",
     },
   ];
 
   return createPortal(
     <div
       onClick={(e) => e.stopPropagation()}
-      className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-end gap-2 p-3 sm:justify-center"
     >
       <div
         className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
         onClick={onClose}
         aria-hidden
       />
+
+      {/* The sheet */}
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`Set status for ${title}`}
-        className="animate-sheet-in relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl"
+        aria-label={`Actions for ${title}`}
+        className="animate-sheet-in relative w-full max-w-sm rounded-3xl bg-white p-4 shadow-xl"
       >
-        <p className="px-2 pb-3 text-sm font-medium text-calm-900">{title}</p>
-        <div className="flex flex-col gap-2">
-          {options.map((o) => (
+        {/* Grab-handle pill — reads as a bottom sheet on the phone. */}
+        <div
+          className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-calm-200"
+          aria-hidden
+        />
+
+        {/* Header: the note icon gets its OWN row in the top-right, above the
+          name; the habit name (centered, with a chevron) opens its page on tap. */}
+        <div className="mb-8">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={onNote}
+              aria-label={hasNotes ? "Edit notes" : "Add note"}
+              className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+                hasNotes
+                  ? "bg-calm-50 text-calm-600 hover:bg-calm-100"
+                  : "text-calm-400 hover:bg-calm-50 hover:text-calm-600"
+              }`}
+            >
+              <NoteIcon />
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={onDetails}
+            className="group -mt-1 flex w-full items-center justify-center gap-1 px-4"
+          >
+            <span className="min-w-0 truncate text-lg font-semibold text-calm-900 group-hover:text-calm-700">
+              {title}
+            </span>
+            <svg
+              aria-hidden
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              className="h-4 w-4 shrink-0 text-calm-400 group-hover:text-calm-600"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Skip / Complete / Miss, side by side. The current status keeps a ring. */}
+        <div className="flex gap-2">
+          {statuses.map((o) => (
             <button
               key={o.action}
               type="button"
               onClick={() => onPick(o.action)}
-              className={`flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition-colors ${o.className}`}
+              className={`flex flex-1 items-center justify-center rounded-xl py-3.5 text-sm font-medium transition-colors ${
+                o.className
+              } ${current === o.status ? `ring-2 ring-offset-2 ring-offset-white ${o.ring}` : ""}`}
             >
               {o.label}
-              {current === o.status && <span aria-hidden>✓</span>}
             </button>
           ))}
+        </div>
+
+        {/* Clear back to pending — only when a status is actually set. */}
+        {current !== "PENDING" && (
           <button
             type="button"
-            onClick={onDetails}
-            className="rounded-xl py-3 text-sm font-medium text-calm-500 transition-colors hover:bg-calm-50"
+            onClick={() => onPick("CLEAR")}
+            className="mt-2 w-full rounded-xl py-2.5 text-sm font-medium text-calm-500 transition-colors hover:bg-calm-50"
           >
-            Details
+            Clear
           </button>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-2 w-full rounded-xl py-3 text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
-        >
-          Cancel
-        </button>
+        )}
       </div>
+
+      {/* Cancel — its own card, iOS action-sheet style. */}
+      <button
+        type="button"
+        onClick={onClose}
+        className="relative w-full max-w-sm rounded-2xl bg-white py-3.5 text-sm font-semibold text-stone-500 shadow-xl transition-colors hover:text-stone-700"
+      >
+        Cancel
+      </button>
     </div>,
     document.body,
   );
@@ -930,23 +974,6 @@ function CompletedRow({
       <span className="min-w-0 flex-1 truncate text-sm text-calm-400 line-through">
         {habit.name}
       </span>
-      {/* Jot a reflection even after it's done ("felt great after"). */}
-      <button
-        type="button"
-        data-no-swipe
-        aria-label={note ? "Edit note" : "Add note"}
-        onClick={(e) => {
-          e.stopPropagation();
-          onOpenNote(habit);
-        }}
-        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors ${
-          note
-            ? "text-calm-600 hover:bg-calm-100"
-            : "text-calm-300 hover:bg-calm-100 hover:text-calm-500"
-        }`}
-      >
-        <NoteIcon />
-      </button>
       <button
         type="button"
         data-no-swipe
@@ -965,9 +992,14 @@ function CompletedRow({
         open={menuOpen}
         title={habit.name}
         current="COMPLETED"
+        hasNotes={note !== ""}
         onPick={(action) => {
           applyStatusAction(habit, tierToSend, action, true, onStatus);
           setMenuOpen(false);
+        }}
+        onNote={() => {
+          setMenuOpen(false);
+          onOpenNote(habit);
         }}
         onDetails={() => {
           setMenuOpen(false);
