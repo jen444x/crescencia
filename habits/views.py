@@ -2614,27 +2614,33 @@ def logs(request):
 
 
 def habits_list(request):
-    """Every habit with its tiers and today's completion status — powers the
+    """Every habit with its tiers and completion status for a day — powers the
     Habits overview page.
 
-    Returns a flat array, one object per habit, ordered by area name then habit
-    name. Unlike /chains/ (which emits a row per Schedule slot), this lists each
-    habit ONCE: we order_by("area__name", "name") instead of relying on the
-    model's default ordering, which JOINs Schedule and would duplicate a habit
-    that sits in several time-slots.
+    `?date=YYYY-MM-DD` picks the day (defaults today); the Habits page's day-nav
+    passes it to browse other days, exactly like /plan/. Statuses come from that
+    day's logs, and a past untouched day derives MISSED (same rule as the Plan
+    page). Returns a flat array, one object per habit, ordered by hand-picked
+    Habit.order then area/name (NOT the model default, which JOINs Schedule and
+    would duplicate a habit that sits in several time-slots).
+
+    For a given day the list is the habits that APPLIED then: created by that date
+    and not paused on it (date-aware, via pause windows) — so browsing back never
+    shows a habit before it existed or while it was stopped, and never marks those
+    days missed. `?include_ended=1` instead returns ALL habits (incl. currently
+    paused, with ended_on set) for the Paused page; it ignores the day filter.
 
     Each habit carries its tier ladder (`_habit_tiers`, low->high, each entry
-    {level,name,value,status,done} for today; [] if untiered) and a habit-level
-    `status` — the whole-habit view (done if any version is done).
+    {level,name,value,status,done}) and a habit-level `status` — the whole-habit
+    view (done if any version is done).
     """
     today = timezone.localdate()
-    day_logs = _day_logs(today)
+    target_date, date_error = _resolve_date(request.GET.get("date"))
+    if date_error:
+        return date_error
+    is_past = target_date < today
+    day_logs = _day_logs(target_date)
 
-    # Retired ("stopped") habits are hidden by default — the Habits page is your
-    # CURRENT habits. ?include_ended=1 surfaces them too (with their ended_on set)
-    # for the "Show ended" view, where each can be resumed. Unlike the date-aware
-    # Plan filter, this is a flat "is it retired at all" hide, since the list isn't
-    # a single day's view.
     include_ended = request.GET.get("include_ended") in ("1", "true", "True")
 
     # Override the model's default ordering (which JOINs Schedule -> duplicates):
@@ -2645,7 +2651,12 @@ def habits_list(request):
         F("order").asc(nulls_last=True), "area__name", "name"
     )
     if not include_ended:
-        habits = habits.filter(ended_on__isnull=True)
+        # Only habits that applied on the viewed day: existed by then and not
+        # paused on it. For today this is the usual "active habits" set; browsing
+        # back drops habits that didn't exist yet or were stopped that day.
+        habits = habits.filter(date_added__date__lte=target_date).exclude(
+            id__in=_paused_habit_ids(target_date)
+        )
 
     data = []
     for habit in habits:
@@ -2655,7 +2666,7 @@ def habits_list(request):
 
         tiers = _habit_tiers(habit)
         for t in tiers:
-            st = _version_status(specific, fallback, t["level"], is_past=False)
+            st = _version_status(specific, fallback, t["level"], is_past)
             t["status"] = st
             t["done"] = st == HabitLog.Status.COMPLETED
 
@@ -2668,7 +2679,7 @@ def habits_list(request):
             "ended_on": habit.ended_on,            # null = active; a date = retired
             "tiers": tiers,                        # per-version, [] if untiered
             # whole-habit status: done if any version done, else skip/missed/pending
-            "status": _version_status(specific, fallback, None, is_past=False),
+            "status": _version_status(specific, fallback, None, is_past),
         })
 
     return JsonResponse(data, safe=False)

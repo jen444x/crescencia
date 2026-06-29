@@ -25,6 +25,8 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { DateNav } from "./plan/components/DateNav";
+import { startOfDay, toYMD, addDays, isSameDay } from "./plan/dates";
 
 // The statuses for a habit's day (matches the backend HabitLog). MISSED is now
 // settable too (not just derived for past days).
@@ -583,6 +585,11 @@ function HabitsPage() {
   // Which tier sits on top (both always show). Growth on top by default (your
   // aim); pick Roots to put Roots above Growth.
   const [focus, setFocus] = useState<TierFocus>("GROWTH");
+  // The day being viewed (default: today). The ◀/▶ nav moves it and we re-fetch
+  // /habits/ for that day, exactly like the Plan page — same statuses, just for
+  // the chosen date.
+  const [viewedDate, setViewedDate] = useState(() => startOfDay(new Date()));
+  const isViewingToday = isSameDay(viewedDate, new Date());
   // Routine groups (for the "Add to routine" tap-menu) and, per habit, its
   // current routine + the schedule rows to tag. Derived from the recurring read.
   const [routines, setRoutines] = useState<Routine[]>([]);
@@ -592,9 +599,10 @@ function HabitsPage() {
   const toast = useToast();
   const navigate = useNavigate();
 
-  // The Habits page lists only ACTIVE habits; paused ones live on their own page
-  // (/habits/paused), so this never asks for ended ones.
-  const listUrl = `${import.meta.env.VITE_API_URL}/habits/`;
+  // The Habits page lists only ACTIVE habits for the VIEWED day; paused ones live
+  // on their own page (/habits/paused), so this never asks for ended ones. The
+  // date drives which day's statuses come back (re-fetches when you change days).
+  const listUrl = `${import.meta.env.VITE_API_URL}/habits/?date=${toYMD(viewedDate)}`;
 
   useEffect(() => {
     async function fetchHabits() {
@@ -702,9 +710,13 @@ function HabitsPage() {
   async function logHabit(habitId: number, status: HabitStatus, tier?: number) {
     try {
       // Send the tier for EVERY status (not just completion) so undo / skip /
-      // missed target that version's row, not the whole habit.
-      const body: { status: HabitStatus; tier?: number } = { status };
+      // missed target that version's row, not the whole habit. On another day,
+      // send the date too so the log lands on the VIEWED day, not today.
+      const body: { status: HabitStatus; tier?: number; date?: string } = {
+        status,
+      };
       if (tier != null) body.tier = tier;
+      if (!isViewingToday) body.date = toYMD(viewedDate);
 
       const res = await fetch(
         `${import.meta.env.VITE_API_URL}/habits/${habitId}/log/`,
@@ -781,61 +793,6 @@ function HabitsPage() {
     }
   }
 
-  if (isLoading) {
-    return (
-      <div className="max-w-md mx-auto">
-        <div className="flex items-center justify-center py-12">
-          <div className="w-6 h-6 border-2 border-calm-300 border-t-calm-600 rounded-full animate-spin"></div>
-          <span className="ml-3 text-stone-400 text-sm">Loading habits...</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="max-w-md mx-auto">
-        <div className="bg-red-50 rounded-xl p-4 text-center">
-          <p className="text-red-500 text-sm">{error}</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (habits.length === 0) {
-    return (
-      <>
-        <Header title="Habits" body="" />
-        <div className="max-w-md mx-auto">
-          <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-accent-100 flex items-center justify-center">
-              <span className="text-3xl">&#x1F331;</span>
-            </div>
-            <h3 className="font-heading text-xl text-stone-900 mb-2">
-              No habits yet
-            </h3>
-            <p className="text-stone-400 text-sm">
-              Add your first habit to start growing
-            </p>
-            <button
-              onClick={() => navigate("/habits/new")}
-              className="mt-5 bg-calm-600 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-calm-700 transition-colors"
-            >
-              + Add habit
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={() => navigate("/habits/paused")}
-            className="mt-2 w-full rounded-xl py-2.5 text-center text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
-          >
-            View paused habits
-          </button>
-        </div>
-      </>
-    );
-  }
-
   const visible = showHelpers
     ? habits
     : habits.filter((habit) => !habit.is_support);
@@ -844,74 +801,121 @@ function HabitsPage() {
     <>
       <Header title="Habits" body="" />
       <div className="max-w-md mx-auto">
-        <button
-          onClick={() => navigate("/habits/new")}
-          className="w-full mb-3 bg-calm-600 text-white py-3 rounded-xl font-medium hover:bg-calm-700 transition-colors"
-        >
-          + Add habit
-        </button>
+        {/* ◀ [day] ▶ — browse other days, same as the Plan page. Always visible
+            so it never vanishes mid-load and you can move off an empty day. */}
+        <DateNav
+          date={viewedDate}
+          onPrev={() => setViewedDate((d) => addDays(d, -1))}
+          onNext={() => setViewedDate((d) => addDays(d, 1))}
+          onToday={() => setViewedDate(startOfDay(new Date()))}
+        />
 
-        <button
-          onClick={() => navigate("/routines")}
-          className="w-full mb-4 flex items-center justify-between rounded-xl bg-white px-4 py-3 text-sm font-medium text-calm-700 shadow-sm transition-colors hover:bg-calm-50"
-        >
-          <span>Manage routines</span>
-          <span className="text-calm-300" aria-hidden>
-            ›
-          </span>
-        </button>
-
-        {/* Controls: which-tier-on-top picker (left), Show-helpers toggle (right). */}
-        <div className="mb-5 flex items-center justify-between gap-2">
-          <div className="inline-flex rounded-full bg-white p-0.5 shadow-sm">
-            {(["GROWTH", "ROOTS"] as const).map((option) => (
+        {error ? (
+          <div className="bg-red-50 rounded-xl p-4 text-center">
+            <p className="text-red-500 text-sm">{error}</p>
+          </div>
+        ) : isLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="w-6 h-6 border-2 border-calm-300 border-t-calm-600 rounded-full animate-spin"></div>
+            <span className="ml-3 text-stone-400 text-sm">Loading habits...</span>
+          </div>
+        ) : habits.length === 0 ? (
+          isViewingToday ? (
+            <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-accent-100 flex items-center justify-center">
+                <span className="text-3xl">&#x1F331;</span>
+              </div>
+              <h3 className="font-heading text-xl text-stone-900 mb-2">
+                No habits yet
+              </h3>
+              <p className="text-stone-400 text-sm">
+                Add your first habit to start growing
+              </p>
               <button
-                key={option}
+                onClick={() => navigate("/habits/new")}
+                className="mt-5 bg-calm-600 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-calm-700 transition-colors"
+              >
+                + Add habit
+              </button>
+            </div>
+          ) : (
+            <p className="py-12 text-center text-sm text-stone-400">
+              No habits on this day.
+            </p>
+          )
+        ) : (
+          <>
+            <button
+              onClick={() => navigate("/habits/new")}
+              className="w-full mb-3 bg-calm-600 text-white py-3 rounded-xl font-medium hover:bg-calm-700 transition-colors"
+            >
+              + Add habit
+            </button>
+
+            <button
+              onClick={() => navigate("/routines")}
+              className="w-full mb-4 flex items-center justify-between rounded-xl bg-white px-4 py-3 text-sm font-medium text-calm-700 shadow-sm transition-colors hover:bg-calm-50"
+            >
+              <span>Manage routines</span>
+              <span className="text-calm-300" aria-hidden>
+                ›
+              </span>
+            </button>
+
+            {/* Controls: which-tier-on-top picker (left), Show-helpers toggle (right). */}
+            <div className="mb-5 flex items-center justify-between gap-2">
+              <div className="inline-flex rounded-full bg-white p-0.5 shadow-sm">
+                {(["GROWTH", "ROOTS"] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setFocus(option)}
+                    aria-pressed={focus === option}
+                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                      focus === option
+                        ? "bg-calm-600 text-white"
+                        : "text-stone-400 hover:text-stone-600"
+                    }`}
+                  >
+                    {option === "ROOTS" ? "Roots" : "Growth"}
+                  </button>
+                ))}
+              </div>
+
+              <button
                 type="button"
-                onClick={() => setFocus(option)}
-                aria-pressed={focus === option}
-                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                  focus === option
-                    ? "bg-calm-600 text-white"
-                    : "text-stone-400 hover:text-stone-600"
+                onClick={() => setShowHelpers((on) => !on)}
+                aria-pressed={showHelpers}
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                  showHelpers
+                    ? "bg-calm-100 text-calm-700"
+                    : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
                 }`}
               >
-                {option === "ROOTS" ? "Roots" : "Growth"}
+                {showHelpers ? "Hide helpers" : "Show helpers"}
               </button>
+            </div>
+
+            {/* Both tiers always render; the picker just chooses which sits on
+                top. TierSection returns null for a tier no habit has, so mapping
+                over both is safe. Reorder is the global catalog order, so it's
+                only offered on today (sortable=false elsewhere keeps tap-to-log). */}
+            {(focus === "ROOTS" ? [ROOTS, GROWTH] : [GROWTH, ROOTS]).map((level) => (
+              <TierSection
+                key={level}
+                level={level}
+                habits={visible}
+                onLog={logHabit}
+                sortable={isViewingToday}
+                sensors={sensors}
+                onReorder={handleReorder}
+                routines={routines}
+                routineMap={routineMap}
+                onSetRoutine={setHabitRoutine}
+              />
             ))}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setShowHelpers((on) => !on)}
-            aria-pressed={showHelpers}
-            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-              showHelpers
-                ? "bg-calm-100 text-calm-700"
-                : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
-            }`}
-          >
-            {showHelpers ? "Hide helpers" : "Show helpers"}
-          </button>
-        </div>
-
-        {/* Both tiers always render; the picker just chooses which sits on top.
-            TierSection returns null for a tier no habit has, so mapping over
-            both is safe. */}
-        {(focus === "ROOTS" ? [ROOTS, GROWTH] : [GROWTH, ROOTS]).map((level) => (
-          <TierSection
-            key={level}
-            level={level}
-            habits={visible}
-            onLog={logHabit}
-            sortable={true}
-            sensors={sensors}
-            onReorder={handleReorder}
-            routines={routines}
-            routineMap={routineMap}
-            onSetRoutine={setHabitRoutine}
-          />
-        ))}
+          </>
+        )}
 
         {/* Paused habits live on their own page — a quiet link to get there. */}
         <button

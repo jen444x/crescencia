@@ -2627,3 +2627,48 @@ class PauseWindowTests(TestCase):
         self._resume()
         # The gap a day in the middle stays clean even after resuming.
         self.assertNotIn(self.habit.id, self._plan(self.today - timedelta(days=3)))
+
+
+class HabitsListDateTests(TestCase):
+    """/habits/ takes ?date= to browse other days like /plan/: statuses come from
+    that day, a past untouched day derives MISSED, and the list is the habits that
+    APPLIED then (existed by the date and not paused on it)."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        self.habit = Habit.objects.create(name="Stretch")
+        Habit.objects.filter(id=self.habit.id).update(
+            date_added=timezone.now() - timedelta(days=30))
+
+    def _get(self, date=None):
+        params = {"date": date.isoformat()} if date else {}
+        resp = self.client.get(reverse("habits:habits_list"), params)
+        self.assertEqual(resp.status_code, 200)
+        return {h["id"]: h for h in json.loads(resp.content)}
+
+    def test_status_is_for_the_requested_day(self):
+        HabitLog.objects.create(habit=self.habit, date=self.yesterday,
+                                status=HabitLog.Status.COMPLETED)
+        self.assertEqual(self._get(self.yesterday)[self.habit.id]["status"], "COMPLETED")
+        self.assertEqual(self._get()[self.habit.id]["status"], "PENDING")  # today
+
+    def test_past_untouched_day_reads_missed(self):
+        self.assertEqual(self._get(self.yesterday)[self.habit.id]["status"], "MISSED")
+
+    def test_hides_habit_created_after_the_viewed_day(self):
+        new = Habit.objects.create(name="Meditate")   # date_added = today
+        three_ago = self.today - timedelta(days=3)
+        self.assertNotIn(new.id, self._get(three_ago))
+        self.assertIn(new.id, self._get())            # today
+
+    def test_hides_habit_paused_on_the_viewed_day(self):
+        HabitPause.objects.create(
+            habit=self.habit, start_date=self.today - timedelta(days=5),
+            end_date=self.today - timedelta(days=2))
+        self.assertNotIn(self.habit.id, self._get(self.today - timedelta(days=3)))
+        self.assertIn(self.habit.id, self._get(self.today - timedelta(days=6)))
+
+    def test_bad_date_is_rejected(self):
+        resp = self.client.get(reverse("habits:habits_list"), {"date": "nope"})
+        self.assertEqual(resp.status_code, 400)
