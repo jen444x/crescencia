@@ -1,7 +1,102 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import Header from "../components/layout/Header";
 import HabitForm, { type HabitValues } from "../components/HabitForm";
+import ConfirmDialog from "../components/ConfirmDialog";
+
+// The bottom sheet offering the two ways to remove a habit, modeled on Google
+// Calendar's recurring-event delete. "Stop going forward" retires it from today
+// (keeps ALL history, reversible); "Delete forever" wipes it and its history
+// (the caller gates this one behind an extra ConfirmDialog).
+function DeleteHabitSheet({
+  name,
+  open,
+  busy,
+  onStop,
+  onForever,
+  onClose,
+}: {
+  name: string;
+  open: boolean;
+  busy: boolean;
+  onStop: () => void;
+  onForever: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center">
+      <div
+        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Remove ${name}`}
+        className="animate-sheet-in relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl"
+      >
+        <p className="px-2 pt-1 text-sm font-medium text-calm-900">
+          Remove &ldquo;{name}&rdquo;
+        </p>
+        <p className="px-2 pb-3 text-xs text-stone-400">
+          This removes the whole habit, including every tier/version of it. (To
+          drop just one tier, use Remove in the Tiers section instead.)
+        </p>
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onStop}
+            className="rounded-xl border border-calm-200 px-4 py-3 text-left transition-colors hover:bg-calm-50 disabled:opacity-50"
+          >
+            <span className="block text-sm font-medium text-calm-900">
+              Stop going forward
+            </span>
+            <span className="mt-0.5 block text-xs text-stone-400">
+              Hides the whole habit (every tier) from today on and stops counting
+              it. Keeps all your past history &mdash; you can resume it later.
+            </span>
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onForever}
+            className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-left transition-colors hover:bg-rose-100 disabled:opacity-50"
+          >
+            <span className="block text-sm font-medium text-rose-600">
+              Delete forever
+            </span>
+            <span className="mt-0.5 block text-xs text-rose-400">
+              Permanently deletes the habit, every tier/version of it, and its
+              whole history. Can&rsquo;t be undone.
+            </span>
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-2 w-full rounded-xl py-3 text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>,
+    document.body,
+  );
+}
 
 // One per-day note as returned by /habits/:id/notes/.
 type Note = {
@@ -32,6 +127,16 @@ function EditHabitPage() {
   const [initial, setInitial] = useState<HabitValues | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+
+  // Delete / stop / resume state. `endedOn` is the habit's retirement date (null
+  // = active); when set, the page shows "stopped" + Resume instead of Delete.
+  // `deleteOpen` is the two-choice sheet; `confirmForever` gates the irreversible
+  // purge behind a second confirm.
+  const [endedOn, setEndedOn] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [confirmForever, setConfirmForever] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   // Notes section: which day to show, the notes for it, and its own load/error
   // state so it doesn't interfere with loading the habit itself.
@@ -67,6 +172,7 @@ function EditHabitPage() {
           area: data.area,
           is_support: data.is_support,
         });
+        setEndedOn(data.ended_on ?? null);
         setTiers(data.tiers ?? []);
       } catch (err) {
         setError(
@@ -178,6 +284,53 @@ function EditHabitPage() {
       );
     } finally {
       setTiersSaving(false);
+    }
+  }
+
+  // Remove the habit. mode "stop" retires it from today (keeps history); mode
+  // "forever" wipes it and its history. Both leave the page on success.
+  async function deleteHabit(mode: "stop" | "forever") {
+    setDeleteBusy(true);
+    setDeleteError("");
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/habits/${id}/delete/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Could not remove habit.");
+      navigate(-1);
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "An unknown error occurred",
+      );
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  // Un-retire a stopped habit: clear its end date so it's back on the plan.
+  async function resumeHabit() {
+    setDeleteBusy(true);
+    setDeleteError("");
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/habits/${id}/resume/`,
+        { method: "POST", headers: { "Content-Type": "application/json" } },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Could not resume habit.");
+      setEndedOn(null);
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "An unknown error occurred",
+      );
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -307,7 +460,73 @@ function EditHabitPage() {
             </div>
           </section>
         )}
+
+        {/* Remove the habit: stop it going forward (keeps history) or delete it
+            forever. When it's already stopped, this becomes a Resume control. */}
+        {initial && (
+          <section className="mt-10 border-t border-stone-100 pt-6">
+            {deleteError && (
+              <p className="mb-3 text-center text-sm text-red-500">
+                {deleteError}
+              </p>
+            )}
+
+            {endedOn ? (
+              <div className="text-center">
+                <p className="text-sm text-stone-500">
+                  Stopped as of {endedOn} &mdash; it&rsquo;s off your plan and
+                  isn&rsquo;t counted. Your past history is kept.
+                </p>
+                <button
+                  type="button"
+                  onClick={resumeHabit}
+                  disabled={deleteBusy}
+                  className="mt-3 rounded-xl bg-calm-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+                >
+                  Resume habit
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setDeleteOpen(true)}
+                disabled={deleteBusy}
+                className="w-full rounded-xl border border-rose-200 py-3 text-sm font-medium text-rose-600 transition-colors hover:bg-rose-50 disabled:opacity-50"
+              >
+                Delete habit
+              </button>
+            )}
+          </section>
+        )}
       </div>
+
+      <DeleteHabitSheet
+        name={initial?.name ?? "this habit"}
+        open={deleteOpen}
+        busy={deleteBusy}
+        onStop={() => {
+          setDeleteOpen(false);
+          deleteHabit("stop");
+        }}
+        onForever={() => {
+          setDeleteOpen(false);
+          setConfirmForever(true);
+        }}
+        onClose={() => setDeleteOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmForever}
+        title="Delete forever?"
+        message={`This permanently deletes “${initial?.name ?? "this habit"}”, every tier/version of it, and all of its logs and history. This can’t be undone.`}
+        confirmLabel="Delete forever"
+        destructive
+        onConfirm={() => {
+          setConfirmForever(false);
+          deleteHabit("forever");
+        }}
+        onCancel={() => setConfirmForever(false)}
+      />
     </>
   );
 }

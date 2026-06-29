@@ -66,6 +66,15 @@ class Habit(models.Model):
     # a habit's position WITHIN a time-slot on the Plan page; this orders the
     # flat all-habits list. Set in bulk by reorder_habits.
     order = models.PositiveIntegerField(null=True, blank=True)
+    # The day this habit was retired ("stop going forward" — Google Calendar's
+    # "this and following"). null = still active. A habit APPLIES on a date when
+    # date_added <= date AND (ended_on is null OR ended_on > date) — the symmetric
+    # twin of the date_added "didn't exist yet" rule: from its end date forward it
+    # drops off the Plan and the Habits page and stops counting as "missed", while
+    # every EARLIER day keeps it intact as history (so retiring never rewrites the
+    # past). Reversible: clear it (resume_habit) to bring it back. Distinct from a
+    # hard delete ("delete forever"), which removes the row and its history.
+    ended_on = models.DateField(null=True, blank=True)
 
     class Meta:
         # Default sort by the related chain's start time

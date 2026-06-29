@@ -173,6 +173,11 @@ def _effective_schedules(target_date):
             habit__date_added__date__lte=target_date,
             valid_from__lte=target_date,
         )
+        # Symmetric "no longer applies" twin of the date_added rule above: a habit
+        # retired on/before this date ("stop going forward") drops out of the
+        # projection, so it leaves the Plan and stops generating "missed" from its
+        # end date on. ended_on=null (still active) keeps the row (NULL isn't <=).
+        .exclude(habit__ended_on__lte=target_date)
         .select_related("habit", "routine", "tier")
         # Greatest valid_from (then id) last, so the dict write below keeps the
         # latest generation per slot.
@@ -487,7 +492,11 @@ def plan(request):
             (sd.habit_id, sd.tier_id): sd
             for sd in (ScheduleDay.objects.filter(date=target_date)
                        .select_related("habit", "routine", "tier"))
+            # Skip a retired habit's leftover "just today" row too, or a stale
+            # ScheduleDay from an earlier same-day freeze would resurrect it on the
+            # live day after it was stopped (same ended_on rule as _effective_schedules).
             if sd.habit_id is not None
+            and not (sd.habit.ended_on and sd.habit.ended_on <= target_date)
         }
 
         # Build the merged placement list. Each entry is a small uniform record so
@@ -585,7 +594,7 @@ def plan(request):
         placed_ids |= {s.habit_id for s in _effective_schedules(target_date)}
         unscheduled = Habit.objects.filter(
             date_added__date__lte=target_date
-        ).exclude(id__in=placed_ids)
+        ).exclude(id__in=placed_ids).exclude(ended_on__lte=target_date)  # drop retired-by-then
         anytime_habits = by_chain.get(None, []) + [
             habit_payload(h) for h in unscheduled
         ]
@@ -602,7 +611,7 @@ def plan(request):
         placed_ids = {m["habit"].id for m in merged}
         unscheduled = Habit.objects.filter(
             date_added__date__lte=target_date
-        ).exclude(id__in=placed_ids)
+        ).exclude(id__in=placed_ids).exclude(ended_on__lte=target_date)  # drop retired-by-then
         anytime_habits = by_chain.get(None, []) + [
             habit_payload(h) for h in unscheduled
         ]
@@ -778,12 +787,14 @@ def skip_day(request):
     if date_error:
         return date_error
 
-    # Only habits that existed on that day (same rule /chains/ uses). .order_by()
-    # clears the model's default (Schedule-joining) ordering, so a habit with
-    # several tier-slots isn't returned once per slot — which would make the
-    # blanket skip try to write duplicate untiered rows.
+    # Only habits that APPLIED on that day (same rule /chains/ uses): created by
+    # then and not retired by then, so a blanket skip never resurrects a habit
+    # that was stopped. .order_by() clears the model's default (Schedule-joining)
+    # ordering, so a habit with several tier-slots isn't returned once per slot —
+    # which would make the blanket skip try to write duplicate untiered rows.
     habit_ids = list(
         Habit.objects.filter(date_added__date__lte=target_date)
+        .exclude(ended_on__lte=target_date)
         .order_by().values_list("id", flat=True)
     )
     todays_logs = HabitLog.objects.filter(date=target_date, habit_id__in=habit_ids)
@@ -1879,6 +1890,7 @@ def _habit_detail(habit):
         "area": habit.area_id,
         "date_added": habit.date_added,
         "is_support": habit.is_support,
+        "ended_on": habit.ended_on,     # null = active; a date = retired (stopped)
         "tiers": _habit_tiers(habit),   # same shape as in /chains/
     }
 
@@ -1976,6 +1988,78 @@ def edit_habit(request, habit_id):
         habit.is_support = body["is_support"]
 
     habit.save()
+    return JsonResponse(_habit_detail(habit))
+
+
+@csrf_exempt
+@require_POST
+def delete_habit(request, habit_id):
+    """Remove a habit — two modes, mirroring Google Calendar's recurring-event delete.
+
+    Body: {"mode": "stop" | "forever"}.
+
+      - "stop"  (GCal "this and following"): RETIRE the habit as of today. Sets
+        ended_on=today, so it drops off the Habits page + Plan from today forward
+        and stops counting as "missed" — but every PAST day keeps it intact as
+        history (the date-aware ended_on filter only hides it on/after its end
+        date). Nothing is deleted; reversible via resume_habit.
+
+      - "forever" (GCal "all events"): PERMANENTLY delete the habit and its whole
+        history. CASCADE drops its Schedule placements and HabitTier/TierValue
+        versions; we also delete its HabitLogs and ScheduleDays (those FKs are
+        SET_NULL, so they'd otherwise linger as nameless rows) and clean up any
+        Note left with no habits (the orphan rule, same as delete_note). Its M2M
+        links to Aspirations are auto-cleared; the aspirations themselves stay.
+    """
+    habit = get_object_or_404(Habit, id=habit_id)
+
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    mode = body.get("mode")
+
+    if mode == "stop":
+        habit.ended_on = timezone.localdate()
+        habit.save(update_fields=["ended_on"])
+        return JsonResponse(
+            {"id": habit_id, "ended": True, "ended_on": habit.ended_on}
+        )
+
+    if mode == "forever":
+        with transaction.atomic():
+            # Capture notes linked to this habit BEFORE the delete unlinks them, so
+            # we can sweep any left with zero habits afterwards.
+            note_ids = list(habit.day_notes.values_list("id", flat=True))
+            # Delete the SET_NULL history rows explicitly while we still know which
+            # habit they were — otherwise they'd survive as habit=null, nameless.
+            logs_deleted = HabitLog.objects.filter(habit=habit).delete()[0]
+            days_deleted = ScheduleDay.objects.filter(habit=habit).delete()[0]
+            habit.delete()  # CASCADE: Schedule, HabitTier -> TierValue; M2M unlinked
+            notes_deleted = (
+                Note.objects.filter(id__in=note_ids, habits__isnull=True).delete()[0]
+            )
+        return JsonResponse({
+            "id": habit_id,
+            "deleted": True,
+            "logs_deleted": logs_deleted,
+            "days_deleted": days_deleted,
+            "notes_deleted": notes_deleted,
+        })
+
+    return JsonResponse({"error": "'mode' must be 'stop' or 'forever'."}, status=400)
+
+
+@csrf_exempt
+@require_POST
+def resume_habit(request, habit_id):
+    """Un-retire a "stopped" habit: clear ended_on so it's active again from today.
+    Its past was never touched, so resuming just puts it back on the Plan and the
+    Habits page going forward."""
+    habit = get_object_or_404(Habit, id=habit_id)
+    habit.ended_on = None
+    habit.save(update_fields=["ended_on"])
     return JsonResponse(_habit_detail(habit))
 
 
@@ -2506,6 +2590,13 @@ def habits_list(request):
     today = timezone.localdate()
     day_logs = _day_logs(today)
 
+    # Retired ("stopped") habits are hidden by default — the Habits page is your
+    # CURRENT habits. ?include_ended=1 surfaces them too (with their ended_on set)
+    # for the "Show ended" view, where each can be resumed. Unlike the date-aware
+    # Plan filter, this is a flat "is it retired at all" hide, since the list isn't
+    # a single day's view.
+    include_ended = request.GET.get("include_ended") in ("1", "true", "True")
+
     # Override the model's default ordering (which JOINs Schedule -> duplicates):
     # hand-picked Habit.order first (unplaced habits are null -> sort last), then
     # area/name as the stable fallback. Ordering by Habit fields drops that join,
@@ -2513,6 +2604,8 @@ def habits_list(request):
     habits = Habit.objects.select_related("area").order_by(
         F("order").asc(nulls_last=True), "area__name", "name"
     )
+    if not include_ended:
+        habits = habits.filter(ended_on__isnull=True)
 
     data = []
     for habit in habits:
@@ -2532,6 +2625,7 @@ def habits_list(request):
             "area": habit.area_id,
             "area_name": habit.area.name if habit.area_id else None,
             "is_support": habit.is_support,
+            "ended_on": habit.ended_on,            # null = active; a date = retired
             "tiers": tiers,                        # per-version, [] if untiered
             # whole-habit status: done if any version done, else skip/missed/pending
             "status": _version_status(specific, fallback, None, is_past=False),

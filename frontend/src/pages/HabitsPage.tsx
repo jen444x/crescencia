@@ -49,6 +49,10 @@ type HabitRow = {
   area: number | null;
   area_name: string | null;
   is_support: boolean;
+  // The retirement date ("stopped" via the Edit page), or null if active. Only
+  // populated when the list is fetched with ?include_ended=1 (Show ended on);
+  // these rows are shown in their own "Stopped" section with a Resume button.
+  ended_on: string | null;
   tiers: HabitTier[];
   status: HabitStatus;
 };
@@ -485,20 +489,25 @@ function HabitsPage() {
   // cares about (helper/support habits hidden, like her old app). On reveals the
   // helpers too, each tagged "helper".
   const [showHelpers, setShowHelpers] = useState(false);
+  // "Show ended" — off by default. On asks the backend to include retired
+  // ("stopped") habits (?include_ended=1); they render in their own "Stopped"
+  // section with a Resume button, never mixed into the active tier lists.
+  const [showEnded, setShowEnded] = useState(false);
   // Which tier sits on top (both always show). Growth on top by default (your
   // aim); pick Roots to put Roots above Growth.
   const [focus, setFocus] = useState<TierFocus>("GROWTH");
   const toast = useToast();
   const navigate = useNavigate();
 
+  const listUrl = `${import.meta.env.VITE_API_URL}/habits/${
+    showEnded ? "?include_ended=1" : ""
+  }`;
+
   useEffect(() => {
     async function fetchHabits() {
       setIsLoading(true);
       try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/habits/`, {
-          method: "GET",
-          headers: {},
-        });
+        const res = await fetch(listUrl, { method: "GET", headers: {} });
         const data = await res.json();
         if (!res.ok) {
           setError(data.error ?? "Couldn't load your habits");
@@ -514,18 +523,29 @@ function HabitsPage() {
       }
     }
     fetchHabits();
-  }, []);
+  }, [listUrl]);
 
-  // A quiet re-fetch (no spinner) after a log POST, so the cascaded per-version
-  // truth comes straight from the backend.
+  // A quiet re-fetch (no spinner) after a log/resume POST, so the cascaded
+  // per-version truth comes straight from the backend.
   async function reloadHabits() {
-    const res = await fetch(`${import.meta.env.VITE_API_URL}/habits/`, {
-      method: "GET",
-      headers: {},
-    });
+    const res = await fetch(listUrl, { method: "GET", headers: {} });
     const data = await res.json();
     if (!res.ok) throw new Error("Request failed");
     setHabits(data);
+  }
+
+  // Un-retire a stopped habit, then refresh the list so it moves back up.
+  async function resumeHabit(habitId: number) {
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/habits/${habitId}/resume/`,
+        { method: "POST", headers: { "Content-Type": "application/json" } },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      await reloadHabits();
+    } catch {
+      toast("Couldn't resume that habit", { variant: "error" });
+    }
   }
 
   // Complete / undo a habit (optionally at a tier), then re-fetch so the cascade
@@ -573,7 +593,9 @@ function HabitsPage() {
     // hidden helper keeps its global slot instead of being swept into the new
     // order (mirrors the Plan page's "reorder keeps hidden rows in place" rule).
     const inSection = (h: HabitRow) =>
-      h.tiers.some((t) => t.level === level) && (showHelpers || !h.is_support);
+      !h.ended_on &&
+      h.tiers.some((t) => t.level === level) &&
+      (showHelpers || !h.is_support);
     const section = habits.filter(inSection);
     const from = section.findIndex((h) => h.id === activeId);
     const to = section.findIndex((h) => h.id === overId);
@@ -659,9 +681,14 @@ function HabitsPage() {
     );
   }
 
+  // Active habits drive the tier lists; retired ones go in their own "Stopped"
+  // section (only present when Show ended is on, since the backend omits them
+  // otherwise).
+  const active = habits.filter((habit) => !habit.ended_on);
+  const ended = habits.filter((habit) => habit.ended_on);
   const visible = showHelpers
-    ? habits
-    : habits.filter((habit) => !habit.is_support);
+    ? active
+    : active.filter((habit) => !habit.is_support);
 
   return (
     <>
@@ -694,18 +721,32 @@ function HabitsPage() {
             ))}
           </div>
 
-          <button
-            type="button"
-            onClick={() => setShowHelpers((on) => !on)}
-            aria-pressed={showHelpers}
-            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-              showHelpers
-                ? "bg-calm-100 text-calm-700"
-                : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
-            }`}
-          >
-            {showHelpers ? "Hide helpers" : "Show helpers"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowEnded((on) => !on)}
+              aria-pressed={showEnded}
+              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                showEnded
+                  ? "bg-calm-100 text-calm-700"
+                  : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
+              }`}
+            >
+              {showEnded ? "Hide ended" : "Show ended"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowHelpers((on) => !on)}
+              aria-pressed={showHelpers}
+              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                showHelpers
+                  ? "bg-calm-100 text-calm-700"
+                  : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
+              }`}
+            >
+              {showHelpers ? "Hide helpers" : "Show helpers"}
+            </button>
+          </div>
         </div>
 
         {/* Both tiers always render; the picker just chooses which sits on top.
@@ -722,6 +763,42 @@ function HabitsPage() {
             onReorder={handleReorder}
           />
         ))}
+
+        {/* Stopped habits (only fetched when Show ended is on): off the plan and
+            no longer counted, but their history is kept. Tap Resume to bring one
+            back. No status controls — they're retired, not pending. */}
+        {showEnded && ended.length > 0 && (
+          <div className="mb-6">
+            <div className="mb-3 flex items-center gap-3">
+              <h3 className="text-sm font-medium text-stone-400">Stopped</h3>
+              <div className="h-px flex-1 bg-calm-200" />
+            </div>
+            <div className="space-y-1.5">
+              {ended.map((habit) => (
+                <div
+                  key={habit.id}
+                  className="flex items-center gap-3 rounded-xl bg-stone-50 px-3 py-2.5"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="block break-words text-sm font-medium text-stone-500">
+                      {habit.name}
+                    </span>
+                    <span className="block text-xs text-stone-400">
+                      Stopped {habit.ended_on}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => resumeHabit(habit.id)}
+                    className="shrink-0 rounded-full border border-calm-300 px-3 py-1 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-50"
+                  >
+                    Resume
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

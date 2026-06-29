@@ -901,7 +901,7 @@ class HabitsListTests(TestCase):
         self.assertEqual(
             set(row.keys()),
             {"id", "name", "area", "area_name", "is_support",
-             "tiers", "status"},
+             "ended_on", "tiers", "status"},
         )
         self.assertEqual(row["id"], self.meditate.id)
         self.assertEqual(row["name"], "Meditate")
@@ -2407,3 +2407,158 @@ class RetimeForwardTests(TestCase):
         # Tomorrow is back to the recurring time (per-day only).
         self.assertEqual(self._time_of(self._chain(self.tomorrow), self.morning.id),
                          "07:00:00")
+
+
+class DeleteHabitTests(TestCase):
+    """`/habits/<id>/delete/` removes a habit two ways, mirroring Google
+    Calendar's recurring delete: "stop" (this and following — retire from today,
+    keep the past) and "forever" (all — wipe the habit and its whole history).
+    `/habits/<id>/resume/` un-retires a stopped habit."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        self.tomorrow = self.today + timedelta(days=1)
+
+        # A scheduled habit, backdated so it counts as existing on past days
+        # (update() bypasses auto_now_add).
+        self.habit = Habit.objects.create(name="Stretch")
+        Habit.objects.filter(id=self.habit.id).update(
+            date_added=timezone.now() - timedelta(days=30)
+        )
+        self.chain = Chain.objects.create()
+        Schedule.objects.create(habit=self.habit, chain=self.chain, order=1)
+
+    def _statuses(self, response):
+        groups = json.loads(response.content)
+        return {h["id"]: h["status"] for group in groups for h in group["habits"]}
+
+    def _plan(self, day):
+        return self._statuses(
+            self.client.get(reverse("habits:plan"), {"date": day.isoformat()})
+        )
+
+    def _stop(self):
+        return self.client.post(
+            reverse("habits:delete_habit", args=[self.habit.id]),
+            data=json.dumps({"mode": "stop"}),
+            content_type="application/json",
+        )
+
+    # --- stop (retire from today, keep history) -----------------------------
+
+    def test_stop_sets_ended_on_today_and_keeps_the_row(self):
+        resp = self._stop()
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(json.loads(resp.content)["ended"])
+        self.habit.refresh_from_db()
+        self.assertEqual(self.habit.ended_on, self.today)  # row still exists
+
+    def test_stopped_habit_leaves_today_and_future_but_keeps_past(self):
+        # A real, untouched past day BEFORE the stop so it's frozen as history.
+        HabitLog.objects.create(
+            habit=self.habit, date=self.yesterday, status=HabitLog.Status.COMPLETED
+        )
+        self._stop()
+        # Gone from today and tomorrow (so it can never read as MISSED again)...
+        self.assertNotIn(self.habit.id, self._plan(self.today))
+        self.assertNotIn(self.habit.id, self._plan(self.tomorrow))
+        # ...but yesterday still shows it, with its real status intact.
+        self.assertEqual(self._plan(self.yesterday)[self.habit.id], "COMPLETED")
+
+    def test_stopped_habit_does_not_read_as_missed_going_forward(self):
+        # The whole point: an untouched FUTURE day must not turn the retired habit
+        # into a miss — it simply isn't there.
+        self._stop()
+        self.assertNotIn(self.habit.id, self._plan(self.tomorrow))
+
+    def test_stopped_habit_hidden_from_habits_list_unless_included(self):
+        self._stop()
+        default = json.loads(
+            self.client.get(reverse("habits:habits_list")).content
+        )
+        self.assertNotIn(self.habit.id, [h["id"] for h in default])
+        # ?include_ended=1 brings it back, flagged with its ended_on.
+        included = json.loads(
+            self.client.get(reverse("habits:habits_list"),
+                             {"include_ended": "1"}).content
+        )
+        row = {h["id"]: h for h in included}[self.habit.id]
+        self.assertEqual(row["ended_on"], self.today.isoformat())
+
+    def test_stop_then_resume_brings_it_back(self):
+        self._stop()
+        resp = self.client.post(reverse("habits:resume_habit", args=[self.habit.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(json.loads(resp.content)["ended_on"])
+        self.habit.refresh_from_db()
+        self.assertIsNone(self.habit.ended_on)
+        self.assertIn(self.habit.id, self._plan(self.today))  # back on the plan
+
+    def test_blanket_skip_ignores_a_stopped_habit_today(self):
+        self._stop()
+        self.client.post(reverse("habits:skip_day"), data=json.dumps({}),
+                         content_type="application/json")
+        # No SKIPPED log written for the retired habit today.
+        self.assertFalse(
+            HabitLog.objects.filter(habit=self.habit, date=self.today).exists()
+        )
+
+    # --- forever (wipe the habit and all its history) -----------------------
+
+    def test_forever_deletes_habit_and_all_its_history(self):
+        # Give the habit a version + a past log + a frozen day so we can prove
+        # everything attached is gone.
+        tier, _ = Tier.objects.get_or_create(level=2)
+        habit_tier = HabitTier.objects.create(habit=self.habit, tier=tier)
+        TierValue.objects.create(habit_tier=habit_tier, value="5 min",
+                                 started=self.today)
+        HabitLog.objects.create(habit=self.habit, date=self.yesterday,
+                                status=HabitLog.Status.COMPLETED)
+        ScheduleDay.objects.create(date=self.yesterday, habit=self.habit,
+                                   habit_name=self.habit.name, chain=self.chain)
+
+        resp = self.client.post(
+            reverse("habits:delete_habit", args=[self.habit.id]),
+            data=json.dumps({"mode": "forever"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(json.loads(resp.content)["deleted"])
+
+        self.assertFalse(Habit.objects.filter(id=self.habit.id).exists())
+        self.assertFalse(Schedule.objects.filter(habit_id=self.habit.id).exists())
+        self.assertFalse(HabitTier.objects.filter(habit_id=self.habit.id).exists())
+        self.assertFalse(TierValue.objects.filter(habit_tier_id=habit_tier.id).exists())
+        # History rows are explicitly removed, not left as nameless habit=null rows.
+        self.assertFalse(HabitLog.objects.filter(habit_id=self.habit.id).exists())
+        self.assertEqual(HabitLog.objects.filter(habit__isnull=True).count(), 0)
+        self.assertFalse(ScheduleDay.objects.filter(habit_id=self.habit.id).exists())
+
+    def test_forever_drops_orphan_note_but_keeps_a_shared_one(self):
+        other = Habit.objects.create(name="Walk")
+        orphan = Note.objects.create(body="only mine", date=self.today)
+        orphan.habits.add(self.habit)
+        shared = Note.objects.create(body="ours", date=self.today)
+        shared.habits.add(self.habit, other)
+
+        self.client.post(
+            reverse("habits:delete_habit", args=[self.habit.id]),
+            data=json.dumps({"mode": "forever"}),
+            content_type="application/json",
+        )
+        self.assertFalse(Note.objects.filter(id=orphan.id).exists())   # no habits left
+        self.assertTrue(Note.objects.filter(id=shared.id).exists())    # still on Walk
+
+    # --- validation ---------------------------------------------------------
+
+    def test_unknown_mode_is_rejected_and_changes_nothing(self):
+        resp = self.client.post(
+            reverse("habits:delete_habit", args=[self.habit.id]),
+            data=json.dumps({"mode": "oops"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(Habit.objects.filter(id=self.habit.id).exists())
+        self.habit.refresh_from_db()
+        self.assertIsNone(self.habit.ended_on)
