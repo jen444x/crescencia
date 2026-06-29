@@ -2845,3 +2845,59 @@ def edit_aspiration(request, aspiration_id):
     if "habit_ids" in body:
         asp.habits.set(Habit.objects.filter(id__in=(body.get("habit_ids") or [])))
     return JsonResponse({"id": asp.id})
+
+
+# --- Everyday routine ------------------------------------------------------
+# The recurring/default schedule that plays every day, before any per-day edits.
+# Read-only here; the Everyday Routine page edits it through the sanctioned
+# recurring writer (/schedules/arrange-forward/), never by writing Schedule rows
+# directly — that's what the docstring on arrange_forward insists on.
+
+def recurring_schedule(request):
+    """The everyday/recurring default schedule as of today.
+
+    Built from `_effective_schedules(today)` — the same generation-aware
+    projection `/plan/` and `freeze_day` read — so this page can never disagree
+    with what actually plays on a fresh (unedited) day. Blocks are Chains (time +
+    name) each holding their habits in `order`; habits with no chain are the
+    "Anytime" group, returned last. Times overlay any recurring ChainTime change.
+    """
+    today = timezone.localdate()
+    schedules = _effective_schedules(today)
+    times = _chain_times_for_date(today)            # {chain_id: start_time} override
+    chains = {c.id: c for c in Chain.objects.all()}
+
+    by_chain = defaultdict(list)
+    for s in schedules:
+        by_chain[s.chain_id].append(s)
+
+    blocks = []
+    for chain_id, rows in by_chain.items():
+        rows.sort(key=lambda s: s.order if s.order is not None else 0)
+        if chain_id is None:
+            name, start_time = "", None
+        else:
+            c = chains.get(chain_id)
+            name = c.name if c else ""
+            start_time = times.get(chain_id) or (c.start_time if c else None)
+        blocks.append({
+            "chain": chain_id,
+            "name": name,
+            "time": start_time,                     # "HH:MM:SS" or null (Anytime)
+            "habits": [
+                {
+                    "habit": s.habit_id,
+                    "name": s.habit.name,
+                    "tier": s.tier.level if s.tier_id else None,
+                    "tier_name": s.tier.get_level_display() if s.tier_id else None,
+                    "routine": s.routine_id,
+                    "routine_name": s.routine.name if s.routine_id else None,
+                    "order": s.order,
+                }
+                for s in rows
+            ],
+        })
+
+    # Timed blocks first (by time), the Anytime block (no time) last.
+    blocks.sort(key=lambda b: (b["time"] is None, b["time"] or ""))
+    return JsonResponse({"blocks": blocks})

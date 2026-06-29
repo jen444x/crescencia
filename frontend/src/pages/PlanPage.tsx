@@ -13,7 +13,7 @@ import { useToast } from "../components/Toast";
 import { LoadingSpinner } from "../components/LoadingSpinner";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { EmptyState } from "../components/EmptyState";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import {
   DndContext,
   DragOverlay,
@@ -4408,6 +4408,14 @@ function PlanPage() {
             setViewedDate(startOfDay(new Date()));
           }}
         />
+        {/* Shortcut to the recurring "everyday routine" editor — the default
+            schedule that plays every day, separate from this day-by-day view. */}
+        <Link
+          to="/routine"
+          className="mb-3 flex items-center justify-center gap-1 rounded-xl border border-calm-200 py-2 text-sm font-medium text-calm-600 transition-colors hover:border-calm-400"
+        >
+          Everyday routine ›
+        </Link>
         {/* "Apply to future days" — placement scope. Only on today (forward edits
             anchor to today), off by default. When ON it's unmistakable (a filled
             bar + an explicit caption) so she always knows she's editing the

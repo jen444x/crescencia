@@ -46,4 +46,5 @@ urlpatterns = [
     path("aspirations/create/", views.create_aspiration, name="create_aspiration"),
     path("aspirations/<int:aspiration_id>/", views.aspiration, name="aspiration"),
     path("aspirations/<int:aspiration_id>/edit/", views.edit_aspiration, name="edit_aspiration"),
+    path("schedules/recurring/", views.recurring_schedule, name="recurring_schedule"),
 ]
