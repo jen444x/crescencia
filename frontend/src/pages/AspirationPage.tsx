@@ -2,12 +2,37 @@ import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Header from "../components/layout/Header";
 
-type HabitProgress = {
-  id: number;
-  name: string;
+type VersionProgress = {
+  level: number;
+  name: string; // "Roots" / "Growth" / ...
+  value: string; // e.g. "5000 steps"
   days: boolean[]; // oldest first; last = today
   streak: number;
 };
+
+type HabitProgress = {
+  id: number;
+  name: string;
+  tiers: VersionProgress[]; // one row per version; [] when the habit is untiered
+  days: boolean[]; // untiered habit only (oldest first; last = today)
+  streak: number;
+};
+
+// A habit/version's last-N-days completion as filled/hollow dots.
+function DotRow({ days }: { days: boolean[] }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      {days.map((done, i) => (
+        <span
+          key={i}
+          className={`h-3 w-3 rounded-full ${
+            done ? "bg-calm-600" : "border border-calm-300"
+          }`}
+        />
+      ))}
+    </div>
+  );
+}
 
 type AspirationDetail = {
   id: number;
@@ -130,22 +155,46 @@ function AspirationPage() {
             <ul className="space-y-3">
               {detail.habits.map((h) => (
                 <li key={h.id} className="bg-white rounded-xl p-4 shadow-sm">
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-calm-900 font-medium text-sm">{h.name}</p>
-                    <span className="text-xs text-calm-500 whitespace-nowrap">
-                      🔥 {h.streak}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {h.days.map((done, i) => (
-                      <span
-                        key={i}
-                        className={`h-3 w-3 rounded-full ${
-                          done ? "bg-calm-600" : "border border-calm-300"
-                        }`}
-                      />
-                    ))}
-                  </div>
+                  {h.tiers.length > 0 ? (
+                    <>
+                      <p className="text-calm-900 font-medium text-sm mb-3">
+                        {h.name}
+                      </p>
+                      <div className="space-y-3">
+                        {h.tiers.map((t) => (
+                          <div key={t.level}>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-xs font-medium text-calm-600">
+                                {t.name}
+                                {t.value && (
+                                  <span className="text-calm-400">
+                                    {" · "}
+                                    {t.value}
+                                  </span>
+                                )}
+                              </span>
+                              <span className="text-xs text-calm-500 whitespace-nowrap">
+                                🔥 {t.streak}
+                              </span>
+                            </div>
+                            <DotRow days={t.days} />
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-calm-900 font-medium text-sm">
+                          {h.name}
+                        </p>
+                        <span className="text-xs text-calm-500 whitespace-nowrap">
+                          🔥 {h.streak}
+                        </span>
+                      </div>
+                      <DotRow days={h.days} />
+                    </>
+                  )}
                 </li>
               ))}
             </ul>

@@ -2610,20 +2610,27 @@ def area(request, area_id):
 # --- Aspirations -----------------------------------------------------------
 # A directional intent ("move more") that a set of habits serves. The detail
 # view shows each attached habit's recent completion as a row of dots + a
-# streak, so you can eyeball whether you've been living the aspiration.
+# streak, so you can eyeball whether you've been living the aspiration. A tiered
+# habit shows ONE row PER VERSION (Roots/Growth/...) — the same per-version view
+# the Habits and Plan pages use — not a single merged row.
 
-ASPIRATION_PROGRESS_DAYS = 14     # dots shown per habit (oldest first; last = today)
+ASPIRATION_PROGRESS_DAYS = 14     # dots shown per row (oldest first; last = today)
 ASPIRATION_STREAK_LOOKBACK = 90   # how far back a current streak may reach
 
 
 def _aspiration_habit_progress(habits, today):
-    """Per-habit recent completion for the aspiration detail rows.
+    """Per-habit (and per-version) recent completion for the aspiration rows.
 
-    For each habit: the last ASPIRATION_PROGRESS_DAYS days as booleans (oldest
-    first, so the rightmost dot is today) plus the current streak — consecutive
-    completed days ending today; a still-pending today doesn't break it. "Done"
-    on a day = at least one COMPLETED HabitLog that day (any tier or untiered).
-    One query across all the habits, then grouped in memory.
+    For each habit we resolve, for every day in the lookback, that day's logs into
+    the {specific, fallback} shape `_version_status` needs, so a version reads
+    "done" exactly as it does elsewhere — including the higher-completes-lower
+    cascade. A tiered habit returns a `tiers` list (one entry per version, each
+    with its own dots + streak); an untiered habit returns top-level dots + streak
+    (its `tiers` is []). "Done" on a day = that version reads COMPLETED.
+
+    Each row carries `days` (last ASPIRATION_PROGRESS_DAYS as booleans, oldest
+    first so the rightmost dot is today) and `streak` (consecutive completed days
+    ending today; a still-pending today doesn't break it).
     """
     habits = list(habits)
     if not habits:
@@ -2631,35 +2638,63 @@ def _aspiration_habit_progress(habits, today):
 
     habit_ids = [h.id for h in habits]
     earliest = today - timedelta(days=ASPIRATION_STREAK_LOOKBACK)
-    # habit_id -> set of dates it was completed, over the streak lookback window.
-    done_by_habit = defaultdict(set)
-    for hid, d in HabitLog.objects.filter(
+    # (habit_id, date) -> {"specific": {level: status}, "fallback": status|None},
+    # one pass over every log in the window (mirrors _day_logs, but range-wide).
+    buckets = defaultdict(lambda: {"specific": {}, "fallback": None})
+    for hid, d, level, status in HabitLog.objects.filter(
         habit_id__in=habit_ids,
         date__gte=earliest,
         date__lte=today,
-        status=HabitLog.Status.COMPLETED,
-    ).values_list("habit_id", "date"):
-        done_by_habit[hid].add(d)
+    ).values_list("habit_id", "date", "tier__level", "status"):
+        b = buckets[(hid, d)]
+        if level is None:
+            b["fallback"] = status
+        else:
+            b["specific"][level] = status
 
     window = [today - timedelta(days=i)
               for i in range(ASPIRATION_PROGRESS_DAYS - 1, -1, -1)]
 
-    rows = []
-    for h in habits:
-        done = done_by_habit.get(h.id, set())
+    def done_on(hid, day, level):
+        b = buckets.get((hid, day))
+        specific = b["specific"] if b else {}
+        fallback = b["fallback"] if b else None
+        status = _version_status(specific, fallback, level, is_past=day < today)
+        return status == HabitLog.Status.COMPLETED
+
+    def progress(hid, level):
+        days = [done_on(hid, day, level) for day in window]
         # Current streak: start at today (or yesterday if today isn't done yet),
-        # walk back while each day was completed.
+        # walk back while each day reads completed.
         streak = 0
-        cursor = today if today in done else today - timedelta(days=1)
-        while cursor in done and cursor >= earliest:
+        cursor = today if done_on(hid, today, level) else today - timedelta(days=1)
+        while cursor >= earliest and done_on(hid, cursor, level):
             streak += 1
             cursor -= timedelta(days=1)
-        rows.append({
-            "id": h.id,
-            "name": h.name,
-            "days": [d in done for d in window],
-            "streak": streak,
-        })
+        return {"days": days, "streak": streak}
+
+    rows = []
+    for h in habits:
+        tiers = _habit_tiers(h)   # [] for an untiered habit
+        if tiers:
+            rows.append({
+                "id": h.id,
+                "name": h.name,
+                "tiers": [
+                    {"level": t["level"], "name": t["name"], "value": t["value"],
+                     **progress(h.id, t["level"])}
+                    for t in tiers
+                ],
+                "days": [],
+                "streak": 0,
+            })
+        else:
+            rows.append({
+                "id": h.id,
+                "name": h.name,
+                "tiers": [],
+                **progress(h.id, None),
+            })
     return rows
 
 
