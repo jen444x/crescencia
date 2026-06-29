@@ -19,6 +19,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import Header from "../components/layout/Header";
+import AddHabitButton from "../components/AddHabitButton";
 
 type RoutineHabit = {
   habit: number;
@@ -283,6 +284,16 @@ function EverydayRoutinePage() {
     }
   }
 
+  // Open the Add Habit page to drop a new habit into a block. We pass which block
+  // and the append position; the Add Habit page creates the habit, places it
+  // (every day from today), and comes back here, which reloads on mount. The
+  // Anytime block (chain null) has nothing to place into, so it's a plain add.
+  function openAddHabit(chain: number | null, order: number) {
+    navigate(
+      chain == null ? "/habits/new" : `/habits/new?chain=${chain}&order=${order}`,
+    );
+  }
+
   async function addChain() {
     if (!newTime) return;
     try {
@@ -402,6 +413,12 @@ function EverydayRoutinePage() {
                     )}
                   </SortableContext>
                 </BlockDrop>
+
+                <div className="border-t border-calm-50">
+                  <AddHabitButton
+                    onClick={() => openAddHabit(b.chain, b.habits.length + 1)}
+                  />
+                </div>
               </div>
             ))}
           </div>

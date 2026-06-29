@@ -59,6 +59,7 @@ import PlanToolbar from "./plan/components/PlanToolbar";
 import { DateNav } from "./plan/components/DateNav";
 import { forwardItemForMove, forwardItemForPlan } from "./plan/forward";
 import { startOfDay, toYMD, addDays, isSameDay, dayLabel } from "./plan/dates";
+import AddHabitButton from "../components/AddHabitButton";
 
 // Read a habit's state, tolerating an older payload that only had done_today.
 function isDone(habit: Habit) {
@@ -2600,6 +2601,13 @@ function PlanPage() {
   // the new day and its statuses come from that day's logs.
   const [viewedDate, setViewedDate] = useState(() => startOfDay(new Date()));
   const isViewingToday = isSameDay(viewedDate, new Date());
+  // A past day is frozen history — you can't add a habit to it (the recurring
+  // add only ever reaches today forward), so the per-cycle "+ Add habit" control
+  // is hidden there.
+  const isPastDay = viewedDate.getTime() < startOfDay(new Date()).getTime();
+  // Used by the per-cycle "+ Add habit" button to open the Add Habit page,
+  // carrying which cycle to drop the new habit into.
+  const navigate = useNavigate();
 
   // The day's chosen tier (Roots=1 / Growth=2), the bar every tiered habit is
   // shown + completed at. Defaults to Growth and persists across reloads, so the
@@ -4258,7 +4266,22 @@ function PlanPage() {
                           </div>
                         }
                       >
-                        {collapsed ? null : planBoard}
+                        {collapsed ? null : (
+                          <>
+                            {planBoard}
+                            {!isPastDay && chain.id != null && (
+                              <AddHabitButton
+                                onClick={() =>
+                                  navigate(
+                                    `/habits/new?chain=${chain.id}&order=${
+                                      fullChain.habits.length + 1
+                                    }`,
+                                  )
+                                }
+                              />
+                            )}
+                          </>
+                        )}
                       </RetimeBlock>
                     ) : (
                       // "Anytime" group: no time, so nothing to retime.
@@ -4288,7 +4311,22 @@ function PlanPage() {
                           </span>
                           <div className="flex-1 h-px bg-calm-200" />
                         </div>
-                        {!collapsed && planBoard}
+                        {!collapsed && (
+                          <>
+                            {planBoard}
+                            {!isPastDay && chain.id != null && (
+                              <AddHabitButton
+                                onClick={() =>
+                                  navigate(
+                                    `/habits/new?chain=${chain.id}&order=${
+                                      fullChain.habits.length + 1
+                                    }`,
+                                  )
+                                }
+                              />
+                            )}
+                          </>
+                        )}
                       </>
                     )}
                   </section>
