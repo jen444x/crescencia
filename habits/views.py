@@ -2862,9 +2862,11 @@ def recurring_schedule(request):
     name) each holding their habits in `order`; habits with no chain are the
     "Anytime" group, returned last. Times overlay any recurring ChainTime change.
     """
-    today = timezone.localdate()
-    schedules = _effective_schedules(today)
-    times = _chain_times_for_date(today)            # {chain_id: start_time} override
+    # Project for the requested date (the page passes tomorrow, since edits here
+    # apply from tomorrow forward — so what's shown matches what's being edited).
+    target, _err = _resolve_date(request.GET.get("date"))
+    schedules = _effective_schedules(target)
+    times = _chain_times_for_date(target)           # {chain_id: start_time} override
     chains = {c.id: c for c in Chain.objects.all()}
 
     by_chain = defaultdict(list)

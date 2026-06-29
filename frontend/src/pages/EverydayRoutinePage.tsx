@@ -48,8 +48,10 @@ function formatTime(t: string | null): string {
   return `${hr}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
-function todayYMD(): string {
+// Recurring edits here apply from TOMORROW forward, so today is left untouched.
+function fromDateYMD(): string {
   const d = new Date();
+  d.setDate(d.getDate() + 1);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
@@ -154,7 +156,7 @@ function EverydayRoutinePage() {
     setIsLoading(true);
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/schedules/recurring/`,
+        `${import.meta.env.VITE_API_URL}/schedules/recurring/?date=${fromDateYMD()}`,
       );
       const data = await res.json();
       if (!res.ok) {
@@ -183,7 +185,7 @@ function EverydayRoutinePage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items }),
+          body: JSON.stringify({ items, from_date: fromDateYMD() }),
         },
       );
       if (!res.ok) throw new Error("save failed");
@@ -263,7 +265,7 @@ function EverydayRoutinePage() {
           body: JSON.stringify({
             chain: chainId,
             time: hhmm,
-            from_date: todayYMD(),
+            from_date: fromDateYMD(),
           }),
         },
       );
