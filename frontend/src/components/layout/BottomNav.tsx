@@ -6,7 +6,7 @@ const tabClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? "bg-white/20 text-white" : "text-white/60 hover:text-white/80"
   }`;
 
-// The four destinations: daily Plan, Journal, Habits, and Aspirations. Adding a
+// The four destinations: daily Plan, Aspirations, Habits, and Journal. Adding a
 // habit lives on the Habits page now (it didn't belong in the nav). Areas/Insights
 // can still slot back in here once those pages are ready.
 function BottomNav() {
@@ -33,7 +33,7 @@ function BottomNav() {
           <span className="text-xs font-medium">Plan</span>
         </NavLink>
 
-        <NavLink to="/journal/" className={tabClass}>
+        <NavLink to="/aspirations" className={tabClass}>
           <svg
             xmlns="http://www.w3.org/2000/svg"
             className="h-6 w-6"
@@ -45,10 +45,10 @@ function BottomNav() {
               strokeLinecap="round"
               strokeLinejoin="round"
               strokeWidth={2}
-              d="M12 6.5C10.5 5 8 4.5 4 5v13c4-.5 6.5 0 8 1.5M12 6.5C13.5 5 16 4.5 20 5v13c-4-.5-6.5 0-8 1.5M12 6.5v13"
+              d="M3 3v1.5M3 21v-6m0 0l2.77-.693a9 9 0 016.208.682l.108.054a9 9 0 006.086.71l3.114-.732a48.524 48.524 0 01-.005-10.499l-3.11.732a9 9 0 01-6.085-.711l-.108-.054a9 9 0 00-6.208-.682L3 4.5M3 15V4.5"
             />
           </svg>
-          <span className="text-xs font-medium">Journal</span>
+          <span className="text-xs font-medium">Aspirations</span>
         </NavLink>
 
         <NavLink to="/habits" end className={tabClass}>
@@ -69,7 +69,7 @@ function BottomNav() {
           <span className="text-xs font-medium">Habits</span>
         </NavLink>
 
-        <NavLink to="/aspirations" className={tabClass}>
+        <NavLink to="/journal/" className={tabClass}>
           <svg
             xmlns="http://www.w3.org/2000/svg"
             className="h-6 w-6"
@@ -81,10 +81,10 @@ function BottomNav() {
               strokeLinecap="round"
               strokeLinejoin="round"
               strokeWidth={2}
-              d="M3 3v1.5M3 21v-6m0 0l2.77-.693a9 9 0 016.208.682l.108.054a9 9 0 006.086.71l3.114-.732a48.524 48.524 0 01-.005-10.499l-3.11.732a9 9 0 01-6.085-.711l-.108-.054a9 9 0 00-6.208-.682L3 4.5M3 15V4.5"
+              d="M12 6.5C10.5 5 8 4.5 4 5v13c4-.5 6.5 0 8 1.5M12 6.5C13.5 5 16 4.5 20 5v13c-4-.5-6.5 0-8 1.5M12 6.5v13"
             />
           </svg>
-          <span className="text-xs font-medium">Aspirations</span>
+          <span className="text-xs font-medium">Journal</span>
         </NavLink>
       </div>
     </nav>
