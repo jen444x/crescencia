@@ -84,6 +84,30 @@ class Habit(models.Model):
         return f"{self.name}"
 
 
+class HabitPause(models.Model):
+    """One pause window for a habit: it was stopped on `start_date` and, if
+    `end_date` is set, resumed on `end_date` (end is EXCLUSIVE — active again ON
+    that day). `end_date` null = still paused.
+
+    A habit is OFF the schedule on a date `d` when some window covers it:
+    `start_date <= d AND (end_date is null OR d < end_date)`. Keeping the FULL
+    history of windows — instead of a single date that gets erased on resume — is
+    what makes resume safe: a closed PAST window keeps the habit off those days
+    forever, so resuming can never resurrect them as "missed". `Habit.ended_on`
+    mirrors the current OPEN window's start as a cheap "is it paused right now"
+    flag for the UI; this table is the authoritative date-aware history.
+    """
+    habit = models.ForeignKey(Habit, on_delete=models.CASCADE, related_name="pauses")
+    start_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True)   # null = still paused
+
+    class Meta:
+        ordering = ['start_date', 'id']
+
+    def __str__(self):
+        return f"habit {self.habit_id} paused {self.start_date}–{self.end_date or '…'}"
+
+
 class Note(models.Model):
     body = models.TextField()
     date = models.DateField()

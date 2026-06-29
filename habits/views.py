@@ -4,7 +4,7 @@ from datetime import time as dt_time, timedelta
 
 from django.core.exceptions import MultipleObjectsReturned
 from django.db import transaction
-from django.db.models import F, Max, Prefetch
+from django.db.models import F, Max, Prefetch, Q
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -12,7 +12,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Aspiration, Routine, Habit, Chain, ChainDay, ChainTime, Schedule, ScheduleDay, HabitLog, Note, JournalEntry, Tier, HabitTier, TierValue
+from .models import Area, Aspiration, Routine, Habit, Chain, ChainDay, ChainTime, Schedule, ScheduleDay, HabitLog, HabitPause, Note, JournalEntry, Tier, HabitTier, TierValue
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -25,6 +25,26 @@ MISSED_STATUS = "MISSED"
 # (see freeze_day). This is the no-infra alternative to a nightly Railway sweep:
 # the user opens the app ~daily, so this catches yesterday-and-back.
 FREEZE_CATCHUP_DAYS = 7
+
+
+def _paused_habit_ids(target_date):
+    """Habit ids that were PAUSED on `target_date` — any HabitPause window covers
+    it: ``start_date <= date AND (end_date is null OR date < end_date)`` (end is
+    exclusive: active again ON end_date). Used to drop retired habits from the
+    schedule for that date — the date-aware "is it retired by then" twin of the
+    date_added "did it exist yet" rule.
+
+    Reading full windows (not the single `Habit.ended_on`) is what makes resume
+    safe: a CLOSED past window keeps the habit off those days forever, so resuming
+    (which clears ended_on) can never resurrect a paused day as "missed". Returns
+    a lazy queryset of ids — pass straight to ``__in`` (subquery) or wrap in
+    ``set()`` for an in-Python membership check.
+    """
+    return (
+        HabitPause.objects.filter(start_date__lte=target_date)
+        .filter(Q(end_date__isnull=True) | Q(end_date__gt=target_date))
+        .values_list("habit_id", flat=True)
+    )
 
 
 def index(request):
@@ -174,10 +194,11 @@ def _effective_schedules(target_date):
             valid_from__lte=target_date,
         )
         # Symmetric "no longer applies" twin of the date_added rule above: a habit
-        # retired on/before this date ("stop going forward") drops out of the
-        # projection, so it leaves the Plan and stops generating "missed" from its
-        # end date on. ended_on=null (still active) keeps the row (NULL isn't <=).
-        .exclude(habit__ended_on__lte=target_date)
+        # PAUSED on this date (some HabitPause window covers it) drops out of the
+        # projection, so it leaves the Plan and stops generating "missed". Reading
+        # windows (not Habit.ended_on) means a CLOSED past window keeps the habit
+        # off those days even after resume — history can't be rewritten.
+        .exclude(habit_id__in=_paused_habit_ids(target_date))
         .select_related("habit", "routine", "tier")
         # Greatest valid_from (then id) last, so the dict write below keeps the
         # latest generation per slot.
@@ -488,15 +509,15 @@ def plan(request):
         # a no-op.) _effective_schedules drops older generations per slot so a habit
         # moved "from D forward" shows in its NEW cycle from D and never twice.
         effective = _effective_schedules(target_date)
+        paused_today = set(_paused_habit_ids(target_date))
         overrides = {
             (sd.habit_id, sd.tier_id): sd
             for sd in (ScheduleDay.objects.filter(date=target_date)
                        .select_related("habit", "routine", "tier"))
-            # Skip a retired habit's leftover "just today" row too, or a stale
+            # Skip a paused habit's leftover "just today" row too, or a stale
             # ScheduleDay from an earlier same-day freeze would resurrect it on the
-            # live day after it was stopped (same ended_on rule as _effective_schedules).
-            if sd.habit_id is not None
-            and not (sd.habit.ended_on and sd.habit.ended_on <= target_date)
+            # live day after it was stopped (same pause-window rule as _effective_schedules).
+            if sd.habit_id is not None and sd.habit_id not in paused_today
         }
 
         # Build the merged placement list. Each entry is a small uniform record so
@@ -594,7 +615,9 @@ def plan(request):
         placed_ids |= {s.habit_id for s in _effective_schedules(target_date)}
         unscheduled = Habit.objects.filter(
             date_added__date__lte=target_date
-        ).exclude(id__in=placed_ids).exclude(ended_on__lte=target_date)  # drop retired-by-then
+        ).exclude(id__in=placed_ids).exclude(
+            id__in=_paused_habit_ids(target_date)  # drop habits paused on this date
+        )
         anytime_habits = by_chain.get(None, []) + [
             habit_payload(h) for h in unscheduled
         ]
@@ -611,7 +634,9 @@ def plan(request):
         placed_ids = {m["habit"].id for m in merged}
         unscheduled = Habit.objects.filter(
             date_added__date__lte=target_date
-        ).exclude(id__in=placed_ids).exclude(ended_on__lte=target_date)  # drop retired-by-then
+        ).exclude(id__in=placed_ids).exclude(
+            id__in=_paused_habit_ids(target_date)  # drop habits paused on this date
+        )
         anytime_habits = by_chain.get(None, []) + [
             habit_payload(h) for h in unscheduled
         ]
@@ -788,13 +813,13 @@ def skip_day(request):
         return date_error
 
     # Only habits that APPLIED on that day (same rule /chains/ uses): created by
-    # then and not retired by then, so a blanket skip never resurrects a habit
+    # then and not paused on that day, so a blanket skip never touches a habit
     # that was stopped. .order_by() clears the model's default (Schedule-joining)
     # ordering, so a habit with several tier-slots isn't returned once per slot —
     # which would make the blanket skip try to write duplicate untiered rows.
     habit_ids = list(
         Habit.objects.filter(date_added__date__lte=target_date)
-        .exclude(ended_on__lte=target_date)
+        .exclude(id__in=_paused_habit_ids(target_date))
         .order_by().values_list("id", flat=True)
     )
     todays_logs = HabitLog.objects.filter(date=target_date, habit_id__in=habit_ids)
@@ -2021,8 +2046,16 @@ def delete_habit(request, habit_id):
     mode = body.get("mode")
 
     if mode == "stop":
-        habit.ended_on = timezone.localdate()
-        habit.save(update_fields=["ended_on"])
+        today = timezone.localdate()
+        with transaction.atomic():
+            habit.ended_on = today          # cheap "paused right now" flag for the UI
+            habit.save(update_fields=["ended_on"])
+            # Open a pause WINDOW so the gap is remembered permanently; resume
+            # closes it, and the closed window keeps these days off the schedule
+            # for good (resume can't rewrite history). Guard against a duplicate
+            # open window if "stop" is somehow hit twice.
+            if not HabitPause.objects.filter(habit=habit, end_date__isnull=True).exists():
+                HabitPause.objects.create(habit=habit, start_date=today)
         return JsonResponse(
             {"id": habit_id, "ended": True, "ended_on": habit.ended_on}
         )
@@ -2054,12 +2087,19 @@ def delete_habit(request, habit_id):
 @csrf_exempt
 @require_POST
 def resume_habit(request, habit_id):
-    """Un-retire a "stopped" habit: clear ended_on so it's active again from today.
-    Its past was never touched, so resuming just puts it back on the Plan and the
-    Habits page going forward."""
+    """Un-retire a "stopped" habit: close its open pause window at today (end is
+    exclusive, so it's active again ON today) and clear the ended_on flag. The
+    closed window stays as history, so the days it was paused remain off the
+    schedule — resuming brings it back going forward WITHOUT resurrecting those
+    paused days as "missed"."""
     habit = get_object_or_404(Habit, id=habit_id)
-    habit.ended_on = None
-    habit.save(update_fields=["ended_on"])
+    today = timezone.localdate()
+    with transaction.atomic():
+        HabitPause.objects.filter(habit=habit, end_date__isnull=True).update(
+            end_date=today
+        )
+        habit.ended_on = None
+        habit.save(update_fields=["ended_on"])
     return JsonResponse(_habit_detail(habit))
 
 

@@ -9,8 +9,8 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .models import (
-    Area, BASE_VALID_FROM, Habit, HabitLog, HabitTier, Note, Chain, ChainDay,
-    ChainTime, Routine, Schedule, ScheduleDay, Tier, TierValue,
+    Area, BASE_VALID_FROM, Habit, HabitLog, HabitPause, HabitTier, Note, Chain,
+    ChainDay, ChainTime, Routine, Schedule, ScheduleDay, Tier, TierValue,
 )
 from .views import FREEZE_CATCHUP_DAYS, freeze_day
 
@@ -2562,3 +2562,68 @@ class DeleteHabitTests(TestCase):
         self.assertTrue(Habit.objects.filter(id=self.habit.id).exists())
         self.habit.refresh_from_db()
         self.assertIsNone(self.habit.ended_on)
+
+
+class PauseWindowTests(TestCase):
+    """Pause windows (HabitPause) are what make resume safe: a CLOSED past window
+    keeps the days it covered off the schedule forever, so resuming never
+    resurrects them as 'missed'. This is the round-trip Jennifer flagged."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.habit = Habit.objects.create(name="Stretch")
+        Habit.objects.filter(id=self.habit.id).update(
+            date_added=timezone.now() - timedelta(days=60)
+        )
+        self.chain = Chain.objects.create()
+        Schedule.objects.create(habit=self.habit, chain=self.chain, order=1)
+
+    def _plan(self, day):
+        resp = self.client.get(reverse("habits:plan"), {"date": day.isoformat()})
+        return {h["id"]: h["status"]
+                for g in json.loads(resp.content) for h in g["habits"]}
+
+    def _stop(self):
+        return self.client.post(
+            reverse("habits:delete_habit", args=[self.habit.id]),
+            data=json.dumps({"mode": "stop"}), content_type="application/json")
+
+    def _resume(self):
+        return self.client.post(reverse("habits:resume_habit", args=[self.habit.id]))
+
+    def test_stop_opens_a_window_and_resume_closes_it(self):
+        self._stop()
+        win = HabitPause.objects.get(habit=self.habit)
+        self.assertEqual(win.start_date, self.today)
+        self.assertIsNone(win.end_date)          # open while paused
+        self._resume()
+        win.refresh_from_db()
+        self.assertEqual(win.end_date, self.today)  # closed on resume
+        self.habit.refresh_from_db()
+        self.assertIsNone(self.habit.ended_on)
+
+    def test_resume_does_not_resurrect_past_paused_days(self):
+        # A CLOSED window: paused 5 days ago, resumed 2 days ago. ended_on is null
+        # (not currently paused) — exactly the post-resume state that used to
+        # resurrect the gap as MISSED.
+        five_ago = self.today - timedelta(days=5)
+        two_ago = self.today - timedelta(days=2)
+        HabitPause.objects.create(
+            habit=self.habit, start_date=five_ago, end_date=two_ago)
+
+        # A day INSIDE the window stays off the schedule -> never missed.
+        self.assertNotIn(self.habit.id, self._plan(self.today - timedelta(days=3)))
+        # The day BEFORE the pause is unaffected (still scheduled -> missed, untouched).
+        self.assertEqual(
+            self._plan(self.today - timedelta(days=6))[self.habit.id], "MISSED")
+        # A day AFTER resume is back on the schedule.
+        self.assertIn(self.habit.id, self._plan(self.today - timedelta(days=1)))
+
+    def test_endpoint_round_trip_keeps_the_gap_clean(self):
+        # Simulate an elapsed open pause (stopped 5 days ago), then resume for real.
+        five_ago = self.today - timedelta(days=5)
+        Habit.objects.filter(id=self.habit.id).update(ended_on=five_ago)
+        HabitPause.objects.create(habit=self.habit, start_date=five_ago)  # open
+        self._resume()
+        # The gap a day in the middle stays clean even after resuming.
+        self.assertNotIn(self.habit.id, self._plan(self.today - timedelta(days=3)))
