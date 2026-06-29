@@ -238,14 +238,11 @@ function EverydayRoutinePage() {
     const removeIdx = next[srcIdx].habits.findIndex((h) => keyOf(h) === aKey);
     next[srcIdx].habits.splice(removeIdx, 1);
 
-    // A cross-chain move drops the habit's routine (a routine belongs to a chain).
-    const movedCopy: RoutineHabit = sameBlock
-      ? moved
-      : { ...moved, routine: null, routine_name: null };
-
+    // A routine is an optional tag independent of the time-block, so a habit
+    // keeps its routine when moved between chains.
     let idx = oKey.startsWith("block-") ? next[tgtIdx].habits.length : insertAt;
     if (sameBlock && removeIdx < idx) idx -= 1;
-    next[tgtIdx].habits.splice(idx, 0, movedCopy);
+    next[tgtIdx].habits.splice(idx, 0, moved);
 
     next[srcIdx].habits = next[srcIdx].habits.map((h, i) => ({ ...h, order: i + 1 }));
     next[tgtIdx].habits = next[tgtIdx].habits.map((h, i) => ({ ...h, order: i + 1 }));
