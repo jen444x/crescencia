@@ -75,7 +75,7 @@ type HabitRoutine = {
 };
 
 // Which tier sits on top. Both tiers always render; this only moves the picked
-// one to the front (GROWTH on top by default; pick ROOTS to flip the order).
+// one to the front (ROOTS on top by default; pick GROWTH to flip the order).
 type TierFocus = "ROOTS" | "GROWTH";
 
 const ROOTS = 1;
@@ -663,9 +663,9 @@ function HabitsPage() {
   // cares about (helper/support habits hidden, like her old app). On reveals the
   // helpers too, each tagged "helper".
   const [showHelpers, setShowHelpers] = useState(false);
-  // Which tier sits on top (both always show). Growth on top by default (your
-  // aim); pick Roots to put Roots above Growth.
-  const [focus, setFocus] = useState<TierFocus>("GROWTH");
+  // Which tier sits on top (both always show). Roots on top by default; pick
+  // Growth to put Growth above Roots.
+  const [focus, setFocus] = useState<TierFocus>("ROOTS");
   // The day being viewed (default: today). The ◀/▶ nav moves it and we re-fetch
   // /habits/ for that day, exactly like the Plan page — same statuses, just for
   // the chosen date.
