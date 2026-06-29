@@ -2614,7 +2614,8 @@ def area(request, area_id):
 # habit shows ONE row PER VERSION (Roots/Growth/...) — the same per-version view
 # the Habits and Plan pages use — not a single merged row.
 
-ASPIRATION_PROGRESS_DAYS = 14     # dots shown per row (oldest first; last = today)
+ASPIRATION_PROGRESS_DAYS = 14     # dots per version on the DETAIL page (last = today)
+ASPIRATION_LIST_DAYS = 7          # dots per habit on the LIST page accordion
 ASPIRATION_STREAK_LOOKBACK = 90   # how far back a current streak may reach
 
 
@@ -2699,8 +2700,57 @@ def _aspiration_habit_progress(habits, today):
 
 
 def aspirations(request):
-    """List all aspirations (id + name), newest first."""
-    data = list(Aspiration.objects.order_by("-created_at").values("id", "name"))
+    """List all aspirations, newest first, each WITH its habits and their last
+    ASPIRATION_LIST_DAYS days of whole-habit completion — so the list page can
+    show an expandable habit strip per aspiration in one round-trip.
+
+    Each day is {"done", "existed"}: `existed` is False for days before the habit
+    was created (the list greys those out — it couldn't have been done then), else
+    `done` is whether the whole habit read COMPLETED that day (any version)."""
+    today = timezone.localdate()
+    asps = list(
+        Aspiration.objects.order_by("-created_at").prefetch_related("habits")
+    )
+
+    window = [today - timedelta(days=i)
+              for i in range(ASPIRATION_LIST_DAYS - 1, -1, -1)]
+    habit_ids = {h.id for a in asps for h in a.habits.all()}
+
+    # (habit_id, date) -> {specific, fallback}, one query across every listed habit.
+    buckets = defaultdict(lambda: {"specific": {}, "fallback": None})
+    if habit_ids:
+        for hid, d, level, status in HabitLog.objects.filter(
+            habit_id__in=habit_ids, date__gte=window[0], date__lte=today,
+        ).values_list("habit_id", "date", "tier__level", "status"):
+            b = buckets[(hid, d)]
+            if level is None:
+                b["fallback"] = status
+            else:
+                b["specific"][level] = status
+
+    def cell(habit, day):
+        if day < timezone.localtime(habit.date_added).date():
+            return {"done": False, "existed": False}     # before it existed -> grey
+        b = buckets.get((habit.id, day))
+        specific = b["specific"] if b else {}
+        fallback = b["fallback"] if b else None
+        done = _version_status(
+            specific, fallback, None, is_past=day < today
+        ) == HabitLog.Status.COMPLETED
+        return {"done": done, "existed": True}
+
+    data = [
+        {
+            "id": a.id,
+            "name": a.name,
+            "habits": [
+                {"id": h.id, "name": h.name,
+                 "days": [cell(h, day) for day in window]}
+                for h in sorted(a.habits.all(), key=lambda h: h.name.lower())
+            ],
+        }
+        for a in asps
+    ]
     return JsonResponse(data, safe=False)
 
 
