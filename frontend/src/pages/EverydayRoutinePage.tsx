@@ -217,8 +217,18 @@ function EverydayRoutinePage() {
       insertAt = tgtIdx >= 0 ? cur[tgtIdx].habits.length : 0;
     } else {
       tgtIdx = cur.findIndex((b) => b.habits.some((h) => keyOf(h) === oKey));
-      insertAt =
+      const overIdx =
         tgtIdx >= 0 ? cur[tgtIdx].habits.findIndex((h) => keyOf(h) === oKey) : 0;
+      // dnd-kit reports the row under the pointer as `over`; inserting at its
+      // index drops ABOVE it. If the row is released past the over row's middle,
+      // insert AFTER it instead — otherwise you could never land as the last row.
+      const aRect = active.rect.current.translated;
+      const oRect = over.rect;
+      const after =
+        aRect && oRect
+          ? aRect.top + aRect.height / 2 > oRect.top + oRect.height / 2
+          : false;
+      insertAt = overIdx + (after ? 1 : 0);
     }
     if (tgtIdx < 0) return;
 
