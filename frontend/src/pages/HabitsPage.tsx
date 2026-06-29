@@ -1,6 +1,7 @@
 import {
   useState,
   useEffect,
+  useCallback,
   type CSSProperties,
   type ReactNode,
 } from "react";
@@ -55,6 +56,20 @@ type HabitRow = {
   ended_on: string | null;
   tiers: HabitTier[];
   status: HabitStatus;
+};
+
+// A routine group (id + name) from GET /routines/, for the "Add to routine"
+// picker in the tap menu.
+type Routine = { id: number; name: string };
+
+// A habit's current routine membership, derived from the recurring schedule.
+// `scheduleIds` are the Schedule rows the member endpoints tag (a habit can have
+// more than one slot); empty means the habit isn't on the schedule, so it can't
+// be grouped yet.
+type HabitRoutine = {
+  routineId: number | null;
+  routineName: string | null;
+  scheduleIds: number[];
 };
 
 // Which tier sits on top. Both tiers always render; this only moves the picked
@@ -216,11 +231,17 @@ function HabitRowWithMenu({
   level,
   onLog,
   handle,
+  routines,
+  habitRoutine,
+  onSetRoutine,
 }: {
   habit: HabitRow;
   level: number;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
   handle?: ReactNode;
+  routines: Routine[];
+  habitRoutine?: HabitRoutine;
+  onSetRoutine: (habitId: number, routineId: number | null) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -239,8 +260,14 @@ function HabitRowWithMenu({
         open={menuOpen}
         habit={habit}
         level={level}
+        routines={routines}
+        habitRoutine={habitRoutine}
         onPick={(status) => {
           onLog(habit.id, status, level);
+          setMenuOpen(false);
+        }}
+        onSetRoutine={(habitId, routineId) => {
+          onSetRoutine(habitId, routineId);
           setMenuOpen(false);
         }}
         onClose={() => setMenuOpen(false)}
@@ -257,13 +284,19 @@ function HabitStatusSheet({
   open,
   habit,
   level,
+  routines,
+  habitRoutine,
   onPick,
+  onSetRoutine,
   onClose,
 }: {
   open: boolean;
   habit: HabitRow;
   level: number;
+  routines: Routine[];
+  habitRoutine?: HabitRoutine;
   onPick: (status: HabitStatus) => void;
+  onSetRoutine: (habitId: number, routineId: number | null) => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -342,6 +375,43 @@ function HabitStatusSheet({
             </button>
           ))}
         </div>
+
+        {/* Routine grouping — per habit (independent of the per-day status above).
+            Tapping a routine toggles membership: tap the current one to leave it,
+            tap another to move into it. Hidden when there are no routines yet, or
+            the habit isn't on the schedule (nothing to tag). */}
+        {routines.length > 0 &&
+          habitRoutine &&
+          habitRoutine.scheduleIds.length > 0 && (
+            <div className="mt-3 border-t border-calm-100 pt-3">
+              <p className="px-2 pb-2 text-xs font-medium uppercase tracking-wide text-stone-400">
+                Routine
+              </p>
+              <div className="flex flex-col gap-2">
+                {routines.map((r) => {
+                  const inThis = habitRoutine.routineId === r.id;
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() =>
+                        onSetRoutine(habit.id, inThis ? null : r.id)
+                      }
+                      className={`flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${
+                        inThis
+                          ? "bg-calm-100 text-calm-700"
+                          : "text-calm-700 hover:bg-calm-50"
+                      }`}
+                    >
+                      <span>{r.name}</span>
+                      {inThis && <span aria-hidden>✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
         <button
           type="button"
           onClick={onClose}
@@ -361,10 +431,16 @@ function SortableHabitTierRow({
   habit,
   level,
   onLog,
+  routines,
+  habitRoutine,
+  onSetRoutine,
 }: {
   habit: HabitRow;
   level: number;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
+  routines: Routine[];
+  habitRoutine?: HabitRoutine;
+  onSetRoutine: (habitId: number, routineId: number | null) => void;
 }) {
   const {
     attributes,
@@ -401,6 +477,9 @@ function SortableHabitTierRow({
         level={level}
         onLog={onLog}
         handle={handle}
+        routines={routines}
+        habitRoutine={habitRoutine}
+        onSetRoutine={onSetRoutine}
       />
     </div>
   );
@@ -417,6 +496,9 @@ function TierSection({
   sortable,
   sensors,
   onReorder,
+  routines,
+  routineMap,
+  onSetRoutine,
 }: {
   level: number;
   habits: HabitRow[];
@@ -424,6 +506,9 @@ function TierSection({
   sortable: boolean;
   sensors: ReturnType<typeof useSensors>;
   onReorder: (level: number, activeId: number, overId: number) => void;
+  routines: Routine[];
+  routineMap: Map<number, HabitRoutine>;
+  onSetRoutine: (habitId: number, routineId: number | null) => void;
 }) {
   const rows = habits.filter((h) => h.tiers.some((t) => t.level === level));
   if (rows.length === 0) return null;
@@ -452,6 +537,9 @@ function TierSection({
               habit={habit}
               level={level}
               onLog={onLog}
+              routines={routines}
+              habitRoutine={routineMap.get(habit.id)}
+              onSetRoutine={onSetRoutine}
             />
           ))}
         </div>
@@ -465,6 +553,9 @@ function TierSection({
           habit={habit}
           level={level}
           onLog={onLog}
+          routines={routines}
+          habitRoutine={routineMap.get(habit.id)}
+          onSetRoutine={onSetRoutine}
         />
       ))}
     </div>
@@ -496,6 +587,12 @@ function HabitsPage() {
   // Which tier sits on top (both always show). Growth on top by default (your
   // aim); pick Roots to put Roots above Growth.
   const [focus, setFocus] = useState<TierFocus>("GROWTH");
+  // Routine groups (for the "Add to routine" tap-menu) and, per habit, its
+  // current routine + the schedule rows to tag. Derived from the recurring read.
+  const [routines, setRoutines] = useState<Routine[]>([]);
+  const [routineMap, setRoutineMap] = useState<Map<number, HabitRoutine>>(
+    new Map(),
+  );
   const toast = useToast();
   const navigate = useNavigate();
 
@@ -524,6 +621,76 @@ function HabitsPage() {
     }
     fetchHabits();
   }, [listUrl]);
+
+  // Load the routine groups + each habit's current routine membership (and the
+  // schedule rows to tag). Pulled from the same recurring read the routine editor
+  // uses, so the tap-menu and that page always agree.
+  const loadRoutineData = useCallback(async () => {
+    try {
+      const [rRes, sRes] = await Promise.all([
+        fetch(`${import.meta.env.VITE_API_URL}/routines/`),
+        fetch(`${import.meta.env.VITE_API_URL}/schedules/recurring/`),
+      ]);
+      if (!rRes.ok || !sRes.ok) return;
+      const rData: Routine[] = await rRes.json();
+      const sData = await sRes.json();
+      setRoutines(rData);
+
+      const map = new Map<number, HabitRoutine>();
+      for (const block of sData.blocks as {
+        habits: {
+          schedule: number;
+          habit: number;
+          routine: number | null;
+          routine_name: string | null;
+        }[];
+      }[]) {
+        for (const h of block.habits) {
+          const prev = map.get(h.habit);
+          map.set(h.habit, {
+            // Keep the first non-null routine across a habit's slots.
+            routineId: prev?.routineId ?? h.routine,
+            routineName: prev?.routineName ?? h.routine_name,
+            scheduleIds: prev
+              ? [...prev.scheduleIds, h.schedule]
+              : [h.schedule],
+          });
+        }
+      }
+      setRoutineMap(map);
+    } catch {
+      // Non-fatal: the tap-menu just won't show the routine section.
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRoutineData();
+  }, [loadRoutineData]);
+
+  // Join a routine (routineId set — moves the habit out of any other) or leave
+  // the current one (routineId null), tagging all the habit's schedule rows, then
+  // refresh the map.
+  async function setHabitRoutine(habitId: number, routineId: number | null) {
+    const info = routineMap.get(habitId);
+    if (!info || info.scheduleIds.length === 0) return;
+    const target = routineId ?? info.routineId;
+    if (target == null) return;
+    const action = routineId == null ? "remove" : "add";
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/routines/${target}/members/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [action]: info.scheduleIds }),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      await loadRoutineData();
+    } catch {
+      toast("Couldn't update the routine", { variant: "error" });
+    }
+  }
 
   // A quiet re-fetch (no spinner) after a log/resume POST, so the cascaded
   // per-version truth comes straight from the backend.
@@ -771,6 +938,9 @@ function HabitsPage() {
             sortable={true}
             sensors={sensors}
             onReorder={handleReorder}
+            routines={routines}
+            routineMap={routineMap}
+            onSetRoutine={setHabitRoutine}
           />
         ))}
 
