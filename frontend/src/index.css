@@ -56,6 +56,18 @@
   animation: sheet-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* iOS Safari zooms the whole page whenever you focus a form field whose
+   font-size is below 16px. Forcing text-entry fields to 16px stops that
+   unwanted zoom. This rule is intentionally unlayered so it overrides
+   Tailwind's text-sm / text-xs utilities (which live in @layer utilities)
+   without needing !important. <select> is left out on purpose — native
+   dropdowns open a picker instead of the keyboard and don't trigger zoom,
+   so small pill-style selects keep their size. */
+input,
+textarea {
+  font-size: 16px;
+}
+
 :root {
   font-family: var(--font-family-body);
   line-height: 1.5;
