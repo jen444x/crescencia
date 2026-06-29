@@ -15,6 +15,7 @@ import EditAspirationPage from "./pages/EditAspirationPage.tsx";
 import AddHabitPage from "./pages/AddHabitPage.tsx";
 import EditHabitPage from "./pages/EditHabitPage.tsx";
 import HabitsPage from "./pages/HabitsPage.tsx";
+import PausedHabitsPage from "./pages/PausedHabitsPage.tsx";
 import EverydayRoutinePage from "./pages/EverydayRoutinePage.tsx";
 import RoutinesPage from "./pages/RoutinesPage.tsx";
 import RoutinePage from "./pages/RoutinePage.tsx";
@@ -30,6 +31,7 @@ function App() {
           <Route path="/habits" element={<HabitsPage />} />
           <Route path="/journal/" element={<JournalPage />} />
           <Route path="/habits/new" element={<AddHabitPage />} />
+          <Route path="/habits/paused" element={<PausedHabitsPage />} />
           <Route path="/habits/:id" element={<EditHabitPage />} />
           <Route path="/areas" element={<AreasPage />} />
           <Route path="/areas/:id" element={<AreaPage />} />

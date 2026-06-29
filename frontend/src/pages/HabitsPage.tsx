@@ -580,10 +580,6 @@ function HabitsPage() {
   // cares about (helper/support habits hidden, like her old app). On reveals the
   // helpers too, each tagged "helper".
   const [showHelpers, setShowHelpers] = useState(false);
-  // "Show ended" — off by default. On asks the backend to include retired
-  // ("stopped") habits (?include_ended=1); they render in their own "Stopped"
-  // section with a Resume button, never mixed into the active tier lists.
-  const [showEnded, setShowEnded] = useState(false);
   // Which tier sits on top (both always show). Growth on top by default (your
   // aim); pick Roots to put Roots above Growth.
   const [focus, setFocus] = useState<TierFocus>("GROWTH");
@@ -596,9 +592,9 @@ function HabitsPage() {
   const toast = useToast();
   const navigate = useNavigate();
 
-  const listUrl = `${import.meta.env.VITE_API_URL}/habits/${
-    showEnded ? "?include_ended=1" : ""
-  }`;
+  // The Habits page lists only ACTIVE habits; paused ones live on their own page
+  // (/habits/paused), so this never asks for ended ones.
+  const listUrl = `${import.meta.env.VITE_API_URL}/habits/`;
 
   useEffect(() => {
     async function fetchHabits() {
@@ -701,20 +697,6 @@ function HabitsPage() {
     setHabits(data);
   }
 
-  // Un-retire a stopped habit, then refresh the list so it moves back up.
-  async function resumeHabit(habitId: number) {
-    try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/habits/${habitId}/resume/`,
-        { method: "POST", headers: { "Content-Type": "application/json" } },
-      );
-      if (!res.ok) throw new Error("Request failed");
-      await reloadHabits();
-    } catch {
-      toast("Couldn't resume that habit", { variant: "error" });
-    }
-  }
-
   // Complete / undo a habit (optionally at a tier), then re-fetch so the cascade
   // across tiers shows.
   async function logHabit(habitId: number, status: HabitStatus, tier?: number) {
@@ -760,7 +742,6 @@ function HabitsPage() {
     // hidden helper keeps its global slot instead of being swept into the new
     // order (mirrors the Plan page's "reorder keeps hidden rows in place" rule).
     const inSection = (h: HabitRow) =>
-      !h.ended_on &&
       h.tiers.some((t) => t.level === level) &&
       (showHelpers || !h.is_support);
     const section = habits.filter(inSection);
@@ -843,19 +824,21 @@ function HabitsPage() {
               + Add habit
             </button>
           </div>
+          <button
+            type="button"
+            onClick={() => navigate("/habits/paused")}
+            className="mt-2 w-full rounded-xl py-2.5 text-center text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
+          >
+            View paused habits
+          </button>
         </div>
       </>
     );
   }
 
-  // Active habits drive the tier lists; retired ones go in their own "Stopped"
-  // section (only present when Show ended is on, since the backend omits them
-  // otherwise).
-  const active = habits.filter((habit) => !habit.ended_on);
-  const ended = habits.filter((habit) => habit.ended_on);
   const visible = showHelpers
-    ? active
-    : active.filter((habit) => !habit.is_support);
+    ? habits
+    : habits.filter((habit) => !habit.is_support);
 
   return (
     <>
@@ -898,32 +881,18 @@ function HabitsPage() {
             ))}
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setShowEnded((on) => !on)}
-              aria-pressed={showEnded}
-              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-                showEnded
-                  ? "bg-calm-100 text-calm-700"
-                  : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
-              }`}
-            >
-              {showEnded ? "Hide ended" : "Show ended"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowHelpers((on) => !on)}
-              aria-pressed={showHelpers}
-              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-                showHelpers
-                  ? "bg-calm-100 text-calm-700"
-                  : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
-              }`}
-            >
-              {showHelpers ? "Hide helpers" : "Show helpers"}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowHelpers((on) => !on)}
+            aria-pressed={showHelpers}
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+              showHelpers
+                ? "bg-calm-100 text-calm-700"
+                : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
+            }`}
+          >
+            {showHelpers ? "Hide helpers" : "Show helpers"}
+          </button>
         </div>
 
         {/* Both tiers always render; the picker just chooses which sits on top.
@@ -944,41 +913,14 @@ function HabitsPage() {
           />
         ))}
 
-        {/* Stopped habits (only fetched when Show ended is on): off the plan and
-            no longer counted, but their history is kept. Tap Resume to bring one
-            back. No status controls — they're retired, not pending. */}
-        {showEnded && ended.length > 0 && (
-          <div className="mb-6">
-            <div className="mb-3 flex items-center gap-3">
-              <h3 className="text-sm font-medium text-stone-400">Stopped</h3>
-              <div className="h-px flex-1 bg-calm-200" />
-            </div>
-            <div className="space-y-1.5">
-              {ended.map((habit) => (
-                <div
-                  key={habit.id}
-                  className="flex items-center gap-3 rounded-xl bg-stone-50 px-3 py-2.5"
-                >
-                  <div className="min-w-0 flex-1">
-                    <span className="block break-words text-sm font-medium text-stone-500">
-                      {habit.name}
-                    </span>
-                    <span className="block text-xs text-stone-400">
-                      Stopped {habit.ended_on}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => resumeHabit(habit.id)}
-                    className="shrink-0 rounded-full border border-calm-300 px-3 py-1 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-50"
-                  >
-                    Resume
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Paused habits live on their own page — a quiet link to get there. */}
+        <button
+          type="button"
+          onClick={() => navigate("/habits/paused")}
+          className="mt-2 w-full rounded-xl py-2.5 text-center text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
+        >
+          View paused habits
+        </button>
       </div>
     </>
   );
