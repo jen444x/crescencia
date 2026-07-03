@@ -13,6 +13,18 @@ import { useToast } from "../components/Toast";
 import { LoadingSpinner } from "../components/LoadingSpinner";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { EmptyState } from "../components/EmptyState";
+import {
+  CheckIcon,
+  DashIcon,
+  XIcon,
+  GripIcon,
+  ChevronIcon,
+  PencilIcon,
+  ClockIcon,
+  NoteIcon,
+  SharedNoteIcon,
+  RetimeHandleIcon,
+} from "../components/icons";
 import { useNavigate, Link } from "react-router-dom";
 import {
   DndContext,
@@ -306,183 +318,6 @@ function movedHabitId(before: Habit[], after: Habit[]): number | null {
   // position, so we still write a single-habit generation rather than nothing.
   const i = after.findIndex((h, idx) => h.id !== before[idx]?.id);
   return i >= 0 ? after[i].id : null;
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={3}
-        d="M5 13l4 4L19 7"
-      />
-    </svg>
-  );
-}
-
-// A dash — the status-dot glyph for a SKIPPED slot (neutral / on purpose).
-function DashIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={3}
-        d="M6 12h12"
-      />
-    </svg>
-  );
-}
-
-// An X — the status-dot glyph for a MISSED slot.
-function XIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={3}
-        d="M7 7l10 10M17 7L7 17"
-      />
-    </svg>
-  );
-}
-
-function GripIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-    >
-      <circle cx="9" cy="6" r="1.6" />
-      <circle cx="15" cy="6" r="1.6" />
-      <circle cx="9" cy="12" r="1.6" />
-      <circle cx="15" cy="12" r="1.6" />
-      <circle cx="9" cy="18" r="1.6" />
-      <circle cx="15" cy="18" r="1.6" />
-    </svg>
-  );
-}
-
-// A chevron that points right when collapsed, down when expanded.
-function ChevronIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-90" : ""}`}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2.5}
-        d="M9 5l7 7-7 7"
-      />
-    </svg>
-  );
-}
-
-function PencilIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M15.232 5.232l3.536 3.536M9 11l6.232-6.232a2 2 0 112.828 2.828L11.828 14H9v-3z"
-      />
-    </svg>
-  );
-}
-
-function ClockIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
-      <circle cx="12" cy="12" r="9" strokeWidth={2} />
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M12 7v5l3 2"
-      />
-    </svg>
-  );
-}
-
-// A pencil-on-paper glyph for the per-day note affordance.
-function NoteIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-4 w-4"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-      />
-    </svg>
-  );
-}
-
-// Two linked rings — marks a note shared across more than one habit.
-function SharedNoteIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-3 w-3 shrink-0"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      aria-hidden
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M9 17H7A5 5 0 017 7h2M15 7h2a5 5 0 010 10h-2M8 12h8"
-      />
-    </svg>
-  );
 }
 
 // Apply a tap-menu choice to one habit slot, preserving the tier cascade:
@@ -807,7 +642,11 @@ function PlanStatusSheet({
               strokeWidth={2}
               className="h-4 w-4 shrink-0 text-calm-400 group-hover:text-calm-600"
             >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M9 5l7 7-7 7"
+              />
             </svg>
           </button>
         </div>
@@ -1605,27 +1444,6 @@ function avoidRetimeCollision(minutes: number, takenMinutes: number[]): number {
       return minutes - delta;
   }
   return minutes; // every nearby minute taken (degenerate) — let it stack
-}
-
-// A faint up/down chevron hinting the block can be dragged to a new time.
-function RetimeHandleIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className="h-3 w-3"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      aria-hidden
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2.5}
-        d="M8 9l4-4 4 4M8 15l4 4 4-4"
-      />
-    </svg>
-  );
 }
 
 // The ephemeral time ruler, shown only while a block is being dragged. A slim,
@@ -4236,125 +4054,42 @@ function PlanPage() {
                 />
               );
               return (
-                  <section
-                    key={key}
-                    ref={(el) => {
-                      sectionRefs.current[String(key)] = el;
-                    }}
-                    // Leave a little breathing room above the block when we scroll to it.
-                    className="scroll-mt-6"
-                  >
-                    {chain.id != null && chain.time ? (
-                      // Timed chain: the whole block is the unit you retime — grab the
-                      // header strip and it lifts to a new time. OFF = today only; with
-                      // "Apply to future days" ON it sticks every day from today.
-                      <RetimeBlock
-                        chainId={chain.id}
-                        time={chain.time}
-                        blockLabel={
-                          chain.name || chainLabel(chain.habits, chain.time)
-                        }
-                        otherBlocks={visibleChains.flatMap((p) =>
-                          p.id !== chain.id && p.time
-                            ? [
-                                {
-                                  min: timeToMinutes(p.time),
-                                  name: p.name || chainLabel(p.habits, p.time),
-                                },
-                              ]
-                            : [],
-                        )}
-                        onRetime={retimePlan}
-                        header={
-                          <div className="flex items-center gap-3 mb-2">
-                            {/* Collapse/expand this chain. Carries data-no-retime so
-                          tapping it toggles instead of starting a time-drag. */}
-                            <button
-                              type="button"
-                              data-no-retime
-                              onClick={() => toggleCollapsed(String(key))}
-                              aria-expanded={!collapsed}
-                              aria-label={
-                                collapsed
-                                  ? `Expand ${formatTime(chain.time)}`
-                                  : `Collapse ${formatTime(chain.time)}`
-                              }
-                              className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
-                            >
-                              <ChevronIcon open={!collapsed} />
-                            </button>
-                            {/* Time label + a drag hint; the whole strip is grabbable. */}
-                            <span
-                              className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
-                                isNow ? "text-calm-700" : "text-calm-600"
-                              }`}
-                            >
-                              {formatTime(chain.time)}
-                              {collapsed ? (
-                                <span className="normal-case tracking-normal text-calm-400">
-                                  · {handled}/{total} done
-                                </span>
-                              ) : (
-                                <span className="text-calm-300">
-                                  <RetimeHandleIcon />
-                                </span>
-                              )}
-                            </span>
-                            {/* The chain's name (or the chainLabel fallback when
-                          unnamed) — tap to name/rename. data-no-retime inside,
-                          so editing doesn't start the header's time-drag. */}
-                            {!collapsed && (
-                              <ChainNameControl
-                                name={chain.name ?? ""}
-                                label={
-                                  chain.name
-                                    ? chain.name
-                                    : chainLabel(chain.habits, chain.time)
-                                }
-                                onSave={(n) => renamePlan(chain.id!, n)}
-                              />
-                            )}
-                            {isNow && (
-                              <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
-                                Now
-                              </span>
-                            )}
-                            <div className="flex-1 h-px bg-calm-200" />
-                            {/* "Running late" shift stays tappable — opt it out of the
-                          block's retime drag. */}
-                            <div data-no-retime>
-                              <ShiftControl
-                                chainId={chain.id}
-                                onShift={shiftFromPlan}
-                              />
-                            </div>
-                          </div>
-                        }
-                      >
-                        {collapsed ? null : (
-                          <>
-                            {planBoard}
-                            {!isPastDay && chain.id != null && (
-                              <AddHabitButton
-                                onClick={() =>
-                                  navigate(
-                                    `/habits/new?chain=${chain.id}&order=${
-                                      fullChain.habits.length + 1
-                                    }`,
-                                  )
-                                }
-                              />
-                            )}
-                          </>
-                        )}
-                      </RetimeBlock>
-                    ) : (
-                      // "Anytime" group: no time, so nothing to retime.
-                      <>
+                <section
+                  key={key}
+                  ref={(el) => {
+                    sectionRefs.current[String(key)] = el;
+                  }}
+                  // Leave a little breathing room above the block when we scroll to it.
+                  className="scroll-mt-6"
+                >
+                  {chain.id != null && chain.time ? (
+                    // Timed chain: the whole block is the unit you retime — grab the
+                    // header strip and it lifts to a new time. OFF = today only; with
+                    // "Apply to future days" ON it sticks every day from today.
+                    <RetimeBlock
+                      chainId={chain.id}
+                      time={chain.time}
+                      blockLabel={
+                        chain.name || chainLabel(chain.habits, chain.time)
+                      }
+                      otherBlocks={visibleChains.flatMap((p) =>
+                        p.id !== chain.id && p.time
+                          ? [
+                              {
+                                min: timeToMinutes(p.time),
+                                name: p.name || chainLabel(p.habits, p.time),
+                              },
+                            ]
+                          : [],
+                      )}
+                      onRetime={retimePlan}
+                      header={
                         <div className="flex items-center gap-3 mb-2">
-                          {/* Collapse/expand toggle (no retime here, so no opt-out). */}
+                          {/* Collapse/expand this chain. Carries data-no-retime so
+                          tapping it toggles instead of starting a time-drag. */}
                           <button
                             type="button"
+                            data-no-retime
                             onClick={() => toggleCollapsed(String(key))}
                             aria-expanded={!collapsed}
                             aria-label={
@@ -4366,35 +4101,118 @@ function PlanPage() {
                           >
                             <ChevronIcon open={!collapsed} />
                           </button>
-                          <span className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-calm-600">
+                          {/* Time label + a drag hint; the whole strip is grabbable. */}
+                          <span
+                            className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
+                              isNow ? "text-calm-700" : "text-calm-600"
+                            }`}
+                          >
                             {formatTime(chain.time)}
-                            {collapsed && (
+                            {collapsed ? (
                               <span className="normal-case tracking-normal text-calm-400">
                                 · {handled}/{total} done
                               </span>
+                            ) : (
+                              <span className="text-calm-300">
+                                <RetimeHandleIcon />
+                              </span>
                             )}
                           </span>
+                          {/* The chain's name (or the chainLabel fallback when
+                          unnamed) — tap to name/rename. data-no-retime inside,
+                          so editing doesn't start the header's time-drag. */}
+                          {!collapsed && (
+                            <ChainNameControl
+                              name={chain.name ?? ""}
+                              label={
+                                chain.name
+                                  ? chain.name
+                                  : chainLabel(chain.habits, chain.time)
+                              }
+                              onSave={(n) => renamePlan(chain.id!, n)}
+                            />
+                          )}
+                          {isNow && (
+                            <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                              Now
+                            </span>
+                          )}
                           <div className="flex-1 h-px bg-calm-200" />
+                          {/* "Running late" shift stays tappable — opt it out of the
+                          block's retime drag. */}
+                          <div data-no-retime>
+                            <ShiftControl
+                              chainId={chain.id}
+                              onShift={shiftFromPlan}
+                            />
+                          </div>
                         </div>
-                        {!collapsed && (
-                          <>
-                            {planBoard}
-                            {!isPastDay && chain.id != null && (
-                              <AddHabitButton
-                                onClick={() =>
-                                  navigate(
-                                    `/habits/new?chain=${chain.id}&order=${
-                                      fullChain.habits.length + 1
-                                    }`,
-                                  )
-                                }
-                              />
-                            )}
-                          </>
-                        )}
-                      </>
-                    )}
-                  </section>
+                      }
+                    >
+                      {collapsed ? null : (
+                        <>
+                          {planBoard}
+                          {!isPastDay && chain.id != null && (
+                            <AddHabitButton
+                              onClick={() =>
+                                navigate(
+                                  `/habits/new?chain=${chain.id}&order=${
+                                    fullChain.habits.length + 1
+                                  }`,
+                                )
+                              }
+                            />
+                          )}
+                        </>
+                      )}
+                    </RetimeBlock>
+                  ) : (
+                    // "Anytime" group: no time, so nothing to retime.
+                    <>
+                      <div className="flex items-center gap-3 mb-2">
+                        {/* Collapse/expand toggle (no retime here, so no opt-out). */}
+                        <button
+                          type="button"
+                          onClick={() => toggleCollapsed(String(key))}
+                          aria-expanded={!collapsed}
+                          aria-label={
+                            collapsed
+                              ? `Expand ${formatTime(chain.time)}`
+                              : `Collapse ${formatTime(chain.time)}`
+                          }
+                          className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
+                        >
+                          <ChevronIcon open={!collapsed} />
+                        </button>
+                        <span className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-calm-600">
+                          {formatTime(chain.time)}
+                          {collapsed && (
+                            <span className="normal-case tracking-normal text-calm-400">
+                              · {handled}/{total} done
+                            </span>
+                          )}
+                        </span>
+                        <div className="flex-1 h-px bg-calm-200" />
+                      </div>
+                      {!collapsed && (
+                        <>
+                          {planBoard}
+                          {!isPastDay && chain.id != null && (
+                            <AddHabitButton
+                              onClick={() =>
+                                navigate(
+                                  `/habits/new?chain=${chain.id}&order=${
+                                    fullChain.habits.length + 1
+                                  }`,
+                                )
+                              }
+                            />
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </section>
               );
             })}
 
