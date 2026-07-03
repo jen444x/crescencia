@@ -1,4 +1,4 @@
-import type { Habit, SlotPlacement } from "./types";
+import type { Habit, SlotPlacement, ReadStatus } from "./types";
 
 // The day-tier levels. Roots = the hard/minimum day; Growth = the everyday bar.
 // Levels match the backend's tier levels.
@@ -56,7 +56,10 @@ export function rowDisplayValue(habit: Habit, dayTier: number): string | null {
 //   Case A: this slot's tier.
 //   Case B inline: the highest rung <= dayTier.
 //   untiered: undefined.
-export function rowCompleteTier(habit: Habit, dayTier: number): number | undefined {
+export function rowCompleteTier(
+  habit: Habit,
+  dayTier: number,
+): number | undefined {
   if (habit.tier != null) return habit.tier;
   if (isCaseB(habit)) return caseBInlineLevel(habit, dayTier) ?? undefined;
   return undefined;
@@ -75,13 +78,29 @@ export function slotPlacement(
   inlineTierByHabit: Map<number, number | null>,
   dayTier: number,
 ): SlotPlacement {
-  if (isUntiered(habit)) return "inline";               // untiered slot, always shown
+  if (isUntiered(habit)) return "inline"; // untiered slot, always shown
   if (isCaseB(habit))
     return caseBInlineLevel(habit, dayTier) != null ? "inline" : "stretch";
   const inline = inlineTierByHabit.get(habit.id) ?? null;
-  if (habit.tier === inline) return "inline";           // the highest tier <= today
-  if ((habit.tier ?? 0) > dayTier) return "stretch";    // harder than today -> bottom
-  return "hidden";                                      // lower, cascade-covered
+  if (habit.tier === inline) return "inline"; // the highest tier <= today
+  if ((habit.tier ?? 0) > dayTier) return "stretch"; // harder than today -> bottom
+  return "hidden"; // lower, cascade-covered
+}
+
+// The status to show on ONE tier-slot card: its own version's per-tier status
+// (the backend already folded in the higher-completes-lower cascade), so
+// completing the easy version never changes the harder card and vice versa. An
+// untiered card — or an older payload without per-tier status — falls back to
+// the whole-habit status / done_today.
+export function slotStatus(
+  habit: Habit,
+  level: number | undefined,
+): ReadStatus {
+  if (level != null) {
+    const t = habit.tiers?.find((tt) => tt.level === level);
+    if (t?.status) return t.status;
+  }
+  return habit.status ?? (habit.done_today ? "COMPLETED" : "PENDING");
 }
 
 // TODAY's highest rung that reads DONE (`tiers[].done`, which already folds in the
@@ -106,7 +125,10 @@ export function levelsUpTo(habit: Habit, level: number): number[] {
 // The rung a Case-B inline card should SHOW/act on: your highest achievement when
 // it's at least today's rung (so once Growth is done it reads "· 12:30am"), else
 // today's target rung. null only when the habit has no rung at/below today.
-export function caseBDisplayLevel(habit: Habit, dayTier: number): number | null {
+export function caseBDisplayLevel(
+  habit: Habit,
+  dayTier: number,
+): number | null {
   const today = caseBInlineLevel(habit, dayTier);
   const done = highestDoneLevel(habit);
   if (done != null && (today == null || done >= today)) return done;

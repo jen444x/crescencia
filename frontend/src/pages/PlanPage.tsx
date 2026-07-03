@@ -61,238 +61,29 @@ import {
   caseBDisplayLevel,
   highestDoneLevel,
   isCaseB,
-  isUntiered,
   levelsUpTo,
   rowDisplayValue,
   rowCompleteTier,
   slotPlacement,
+  slotStatus,
 } from "./plan/tier";
+import { isDone, isSkipped, applyStatus } from "./plan/status";
+import { chainLabel } from "./plan/chains";
 import PlanToolbar from "./plan/components/PlanToolbar";
 import { DateNav } from "./plan/components/DateNav";
-import { forwardItemForMove, forwardItemForPlan } from "./plan/forward";
-import { startOfDay, toYMD, addDays, isSameDay, dayLabel } from "./plan/dates";
 import AddHabitButton from "../components/AddHabitButton";
-
-// Read a habit's state, tolerating an older payload that only had done_today.
-function isDone(habit: Habit) {
-  return habit.status ? habit.status === "COMPLETED" : !!habit.done_today;
-}
-function isSkipped(habit: Habit) {
-  return habit.status === "SKIPPED";
-}
-// The status to show on ONE tier-slot card: its own version's per-tier status
-// (the backend already folded in the higher-completes-lower cascade), so
-// completing the easy version never changes the harder card and vice versa. An
-// untiered card — or an older payload without per-tier status — falls back to
-// the whole-habit status / done_today.
-function slotStatus(habit: Habit, level: number | undefined): ReadStatus {
-  if (level != null) {
-    const t = habit.tiers?.find((tt) => tt.level === level);
-    if (t?.status) return t.status;
-  }
-  return habit.status ?? (habit.done_today ? "COMPLETED" : "PENDING");
-}
-
-// "08:00:00" -> "8:00 AM"; null/empty -> "Anytime"
-function formatTime(time: string | null) {
-  if (!time) return "Anytime";
-  const [hourStr, minute] = time.split(":");
-  const hour = parseInt(hourStr, 10);
-  const period = hour >= 12 ? "PM" : "AM";
-  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
-  return `${hour12}:${minute} ${period}`;
-}
-
-// A short label for a whole chain: its first habit, plus "+N" when it holds more
-// (so a multi-habit block reads as more than just its first item). Falls back to
-// the time if a block somehow has no habits.
-function chainLabel(habits: Habit[], time: string | null): string {
-  const first = habits[0]?.name;
-  if (!first) return formatTime(time);
-  return habits.length > 1 ? `${first} +${habits.length - 1}` : first;
-}
-
-// "08:30:00" -> 510 (minutes since midnight). Used to find which time block
-// is "now" so we can open the page there.
-function timeToMinutes(time: string): number {
-  const [hourStr, minuteStr] = time.split(":");
-  return parseInt(hourStr, 10) * 60 + parseInt(minuteStr, 10);
-}
-
-// 510 -> "08:30". The inverse of timeToMinutes — the absolute time we send to
-// /plans/retime/ when a chain's time header is dragged.
-function minutesToHHMM(total: number): string {
-  const hour = Math.floor(total / 60);
-  const minute = total % 60;
-  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-}
-
-// Which time block is happening right now? The latest block whose start time has
-// already passed (at 9:10, the "9:00 AM" block is current). Before the day's
-// first block, fall back to it so the page still opens somewhere sensible.
-// Returns the plan id to scroll to, or null if there are no timed blocks.
-function currentBlockId(chains: Chain[]): number | null {
-  const now = new Date();
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  let currentId: number | null = null;
-  let currentMinutes = -1;
-  let earliestId: number | null = null;
-  let earliestMinutes = Infinity;
-
-  for (const chain of chains) {
-    if (chain.id == null || !chain.time) continue;
-    const minutes = timeToMinutes(chain.time);
-    if (minutes <= nowMinutes && minutes > currentMinutes) {
-      currentMinutes = minutes;
-      currentId = chain.id;
-    }
-    if (minutes < earliestMinutes) {
-      earliestMinutes = minutes;
-      earliestId = chain.id;
-    }
-  }
-  return currentId ?? earliestId;
-}
-
-// Row + Segment types now live in ./plan/types. buildSegments turns a plan's
-// habits into the ordered segments a time block renders (active rows, collapsed
-// "done" runs, and in-place routine blocks).
-function buildSegments(habits: Habit[], asChain: boolean): Segment[] {
-  // 1) Collapse into ordered "units": consecutive habits sharing a routine
-  //    become one routine unit; every other habit is its own unit.
-  type Unit =
-    | { type: "habit"; habit: Habit }
-    | { type: "routine"; routineId: number; name: string; habits: Habit[] };
-  const units: Unit[] = [];
-  for (const habit of habits) {
-    const last = units[units.length - 1];
-    if (habit.routine != null) {
-      if (last && last.type === "routine" && last.routineId === habit.routine) {
-        last.habits.push(habit);
-      } else {
-        units.push({
-          type: "routine",
-          routineId: habit.routine,
-          name: habit.routine_name ?? "Routine",
-          habits: [habit],
-        });
-      }
-    } else {
-      units.push({ type: "habit", habit });
-    }
-  }
-
-  // 2) Step numbers come from the TIME BLOCK itself: every timed block is one
-  //    chain, so its units are steps 1..N in order (a routine counts as one
-  //    step). A block with a single unit is a "chain of one" — shown plain, no
-  //    number. "Anytime" isn't a time, so it's never a chain (asChain false) and
-  //    its habits stay loose.
-  const numbered = asChain && units.length >= 2;
-  const stepNumbers = units.map((_, i) => (numbered ? i + 1 : null));
-
-  // 3) Emit segments in order, grouping consecutive completed single habits into
-  //    one "done" chip. Routine units never collapse.
-  const segments: Segment[] = [];
-  let run: Habit[] = [];
-  const flushRun = () => {
-    if (run.length > 0) {
-      segments.push({ kind: "done", key: `done-${run[0].id}`, habits: run });
-      run = [];
-    }
-  };
-
-  units.forEach((u, i) => {
-    const next = units[i + 1];
-    // Connect down to the next step in the block, unless that step is a collapsed
-    // done habit (so the connector line never dangles into the done tray).
-    const connectBelow =
-      numbered &&
-      next != null &&
-      // A tiered done card isn't collapsed (it stays a visible step), so only a
-      // COLLAPSED (untiered) done habit should break the connector line.
-      !(next.type === "habit" && isDone(next.habit) && isUntiered(next.habit));
-
-    if (u.type === "routine") {
-      flushRun();
-      segments.push({
-        kind: "routine",
-        key: `routine-${u.routineId}-${u.habits[0].id}`,
-        routineId: u.routineId,
-        name: u.name,
-        stepNumber: stepNumbers[i],
-        connectBelow,
-        habits: u.habits,
-      });
-      return;
-    }
-
-    // Only plain (untiered) completions collapse into the "✓ N done" tray. A
-    // tiered slot stays a full card when done, so it still shows its version value
-    // (e.g. "· 5am") and its check uncompletes THAT version — the tray can't carry
-    // a tier, which made completed tiers flip between two cards confusingly.
-    if (isDone(u.habit) && isUntiered(u.habit)) {
-      run.push(u.habit);
-      return;
-    }
-    flushRun();
-    segments.push({
-      kind: "active",
-      row: { habit: u.habit, stepNumber: stepNumbers[i], connectBelow },
-    });
-  });
-  flushRun();
-
-  return segments;
-}
-
-// Return a NEW plans array with one habit's status set. With a `tier` it sets
-// that ONE version's status (and, on a completion, cascades DOWN to mark the
-// lower rungs done); without one it sets the whole-habit status. Pure +
-// immutable, so React reliably re-renders.
-function applyStatus(
-  chains: Chain[],
-  habitId: number,
-  status: HabitStatus,
-  tier?: number,
-): Chain[] {
-  return chains.map((chain) => ({
-    ...chain,
-    habits: chain.habits.map((habit) => {
-      if (habit.id !== habitId) return habit;
-      if (tier == null) {
-        return { ...habit, status, done_today: status === "COMPLETED" };
-      }
-      // Per-version: update this rung. A completion cascades down (a higher win
-      // marks the lower rungs done); skip/missed touch only this rung. An undo's
-      // full de-cascade is reconciled by a refetch in setHabitStatus.
-      const tiers = (habit.tiers ?? []).map((t) => {
-        if (t.level === tier)
-          return { ...t, status, done: status === "COMPLETED" };
-        if (status === "COMPLETED" && t.level < tier)
-          return { ...t, status: "COMPLETED" as ReadStatus, done: true };
-        return t;
-      });
-      return { ...habit, tiers };
-    }),
-  }));
-}
-
-// Return a NEW plans array with one plan's habits set to `orderedHabits`,
-// renumbered 1..N. Pure + immutable, like applyStatus above.
-function applyPlanOrder(
-  chains: Chain[],
-  chainId: number,
-  orderedHabits: Habit[],
-): Chain[] {
-  return chains.map((chain) =>
-    chain.id === chainId
-      ? {
-          ...chain,
-          habits: orderedHabits.map((habit, i) => ({ ...habit, order: i + 1 })),
-        }
-      : chain,
-  );
-}
+import { forwardItemForMove, forwardItemForPlan } from "./plan/forward";
+import {
+  startOfDay,
+  toYMD,
+  addDays,
+  isSameDay,
+  dayLabel,
+  formatTime,
+  timeToMinutes,
+  minutesToHHMM,
+} from "./plan/dates";
+import { currentBlockId, buildSegments, applyPlanOrder } from "./plan/segments";
 
 // Which single habit moved in a within-chain reorder (fix #3). A single drag
 // reorder relocates exactly one row; that row is the one whose removal from both
@@ -4329,6 +4120,7 @@ function PlanPage() {
             setViewedDate(startOfDay(new Date()));
           }}
         />
+
         {/* Shortcut to the recurring "everyday routine" editor — the default
             schedule that plays every day, separate from this day-by-day view. */}
         <Link
@@ -4337,16 +4129,7 @@ function PlanPage() {
         >
           Everyday routine ›
         </Link>
-        {/* "Apply to future days" — placement scope. Only on today (forward edits
-            anchor to today), off by default. When ON it's unmistakable (a filled
-            bar + an explicit caption) so she always knows she's editing the
-            recurring routine, not just recording today. */}
-        {isViewingToday && (
-          <ApplyForwardToggle
-            on={applyToFuture}
-            onToggle={() => setApplyToFuture((v) => !v)}
-          />
-        )}
+
         {/* Day-level controls: the tier picker, the main-only filter, and
             the rare actions (new routine / skip day / reset), grouped into one
             compact bar. See ./plan/PlanToolbar. */}

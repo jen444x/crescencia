@@ -42,3 +42,28 @@ export function dayLabel(date: Date): string {
     day: "numeric",
   });
 }
+
+// "08:00:00" -> "8:00 AM"; null/empty -> "Anytime"
+export function formatTime(time: string | null) {
+  if (!time) return "Anytime";
+  const [hourStr, minute] = time.split(":");
+  const hour = parseInt(hourStr, 10);
+  const period = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${hour12}:${minute} ${period}`;
+}
+
+// "08:30:00" -> 510 (minutes since midnight). Used to find which time block
+// is "now" so we can open the page there.
+export function timeToMinutes(time: string): number {
+  const [hourStr, minuteStr] = time.split(":");
+  return parseInt(hourStr, 10) * 60 + parseInt(minuteStr, 10);
+}
+
+// 510 -> "08:30". The inverse of timeToMinutes — the absolute time we send to
+// /plans/retime/ when a chain's time header is dragged.
+export function minutesToHHMM(total: number): string {
+  const hour = Math.floor(total / 60);
+  const minute = total % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
