@@ -215,11 +215,11 @@ function HabitCard({
       }}
       className={`group flex select-none flex-col rounded-xl px-4 py-2 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
         done
-          ? "bg-calm-50"
+          ? "bg-sage-50"
           : skipped
             ? "bg-stone-50"
             : missed
-              ? "bg-rose-50"
+              ? "bg-clay-100"
               : "bg-white"
       }`}
     >
@@ -232,19 +232,19 @@ function HabitCard({
           <h3
             className={`break-words font-medium ${
               done
-                ? "text-calm-400 line-through"
+                ? "text-sage-400 line-through"
                 : skipped
                   ? "text-stone-400"
                   : missed
-                    ? "text-rose-400"
-                    : "text-calm-900"
+                    ? "text-clay-400"
+                    : "text-sage-900"
             }`}
           >
             {habit.name}
             {tierValue && (
               <span
                 className={`font-normal ${
-                  done ? "text-calm-300" : "text-stone-400"
+                  done ? "text-sage-300" : "text-stone-400"
                 }`}
               >
                 {" · "}
@@ -274,12 +274,12 @@ function HabitCard({
           }}
           className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
             done
-              ? "border-calm-600 bg-calm-600 text-white"
+              ? "border-sage-600 bg-sage-600 text-white"
               : skipped
                 ? "border-stone-400 bg-stone-400 text-white"
                 : missed
-                  ? "border-rose-400 bg-rose-400 text-white"
-                  : "border-calm-300 text-transparent hover:border-calm-500"
+                  ? "border-clay-400 bg-clay-400 text-white"
+                  : "border-sage-300 text-transparent hover:border-sage-500"
           }`}
         >
           {skipped ? <DashIcon /> : missed ? <XIcon /> : <CheckIcon />}
@@ -364,15 +364,15 @@ function PlanStatusSheet({
       action: "COMPLETE",
       status: "COMPLETED",
       label: "Complete",
-      className: "bg-calm-600 text-white hover:bg-calm-700",
-      ring: "ring-calm-700",
+      className: "bg-sage-600 text-white hover:bg-sage-700",
+      ring: "ring-sage-700",
     },
     {
       action: "MISS",
       status: "MISSED",
       label: "Miss",
-      className: "bg-rose-50 text-rose-600 hover:bg-rose-100",
-      ring: "ring-rose-400",
+      className: "bg-clay-100 text-clay-600 hover:bg-clay-200",
+      ring: "ring-clay-400",
     },
   ];
 
@@ -382,7 +382,7 @@ function PlanStatusSheet({
       className="fixed inset-0 z-50 flex flex-col items-center justify-end gap-2 p-3 sm:justify-center"
     >
       <div
-        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        className="animate-backdrop-in absolute inset-0 bg-sage-900/40"
         onClick={onClose}
         aria-hidden
       />
@@ -396,7 +396,7 @@ function PlanStatusSheet({
       >
         {/* Grab-handle pill — reads as a bottom sheet on the phone. */}
         <div
-          className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-calm-200"
+          className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-sage-200"
           aria-hidden
         />
 
@@ -410,8 +410,8 @@ function PlanStatusSheet({
               aria-label={hasNotes ? "Edit notes" : "Add note"}
               className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
                 hasNotes
-                  ? "bg-calm-50 text-calm-600 hover:bg-calm-100"
-                  : "text-calm-400 hover:bg-calm-50 hover:text-calm-600"
+                  ? "bg-sage-50 text-sage-600 hover:bg-sage-100"
+                  : "text-sage-400 hover:bg-sage-50 hover:text-sage-600"
               }`}
             >
               <NoteIcon />
@@ -422,7 +422,7 @@ function PlanStatusSheet({
             onClick={onDetails}
             className="group -mt-1 flex w-full items-center justify-center gap-1 px-4"
           >
-            <span className="min-w-0 truncate text-lg font-semibold text-calm-900 group-hover:text-calm-700">
+            <span className="min-w-0 truncate text-lg font-semibold text-sage-900 group-hover:text-sage-700">
               {title}
             </span>
             <svg
@@ -431,7 +431,7 @@ function PlanStatusSheet({
               fill="none"
               stroke="currentColor"
               strokeWidth={2}
-              className="h-4 w-4 shrink-0 text-calm-400 group-hover:text-calm-600"
+              className="h-4 w-4 shrink-0 text-sage-400 group-hover:text-sage-600"
             >
               <path
                 strokeLinecap="round"
@@ -463,7 +463,7 @@ function PlanStatusSheet({
           <button
             type="button"
             onClick={() => onPick("CLEAR")}
-            className="mt-2 w-full rounded-xl py-2.5 text-sm font-medium text-calm-500 transition-colors hover:bg-calm-50"
+            className="mt-2 w-full rounded-xl py-2.5 text-sm font-medium text-sage-500 transition-colors hover:bg-sage-50"
           >
             Clear
           </button>
@@ -512,10 +512,10 @@ function RowLayout({
     <div ref={nodeRef} style={style} className="flex gap-3">
       {stepNumber != null && (
         <div className="flex flex-col items-center">
-          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-calm-300 bg-calm-50 text-[10px] font-medium text-calm-500">
+          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-sage-300 bg-sage-50 text-[10px] font-medium text-sage-500">
             {stepNumber}
           </span>
-          {connectBelow && <span className="w-px grow bg-calm-200" />}
+          {connectBelow && <span className="w-px grow bg-sage-200" />}
         </div>
       )}
       {/* min-w-0 lets this column shrink below the note's width so the note can
@@ -584,7 +584,7 @@ function SortableRow({
       // -m-2 + p-2 doubles the tap target (16px -> 32px) without shifting the
       // layout. No `touch-none` here: a quick swipe on the grip should still
       // scroll the page; only a held press (see TouchSensor delay) starts a drag.
-      className="-m-2 shrink-0 cursor-grab select-none p-2 text-calm-300 hover:text-calm-500 active:cursor-grabbing"
+      className="-m-2 shrink-0 cursor-grab select-none p-2 text-sage-300 hover:text-sage-500 active:cursor-grabbing"
     >
       <GripIcon />
     </button>
@@ -634,7 +634,7 @@ function CompletedRow({
       }}
       className="flex cursor-pointer items-center gap-3 rounded-lg px-4 py-2 hover:bg-white"
     >
-      <span className="min-w-0 flex-1 truncate text-sm text-calm-400 line-through">
+      <span className="min-w-0 flex-1 truncate text-sm text-sage-400 line-through">
         {habit.name}
       </span>
       <button
@@ -646,7 +646,7 @@ function CompletedRow({
           e.stopPropagation();
           applyStatusAction(habit, tierToSend, "CLEAR", true, onStatus);
         }}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-calm-500 bg-calm-500 text-white transition-colors hover:bg-calm-600"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-sage-500 bg-sage-500 text-white transition-colors hover:bg-sage-600"
       >
         <CheckIcon />
       </button>
@@ -696,10 +696,10 @@ function CompletedTray({
         aria-expanded={open}
         // Full-width so a tap anywhere along the row toggles it, not just on the
         // "N done" text.
-        className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-calm-500 transition-colors hover:bg-calm-100 hover:text-calm-700"
+        className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-sage-500 transition-colors hover:bg-sage-100 hover:text-sage-700"
       >
         <ChevronIcon open={open} />
-        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-calm-500 text-white">
+        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-sage-500 text-white">
           <svg
             xmlns="http://www.w3.org/2000/svg"
             className="h-2.5 w-2.5"
@@ -779,10 +779,10 @@ function RoutineBlock({
           routine isn't in a chain, and the block spans the full width. */}
       {stepNumber != null && (
         <div className="flex flex-col items-center">
-          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-calm-300 bg-calm-50 text-[10px] font-medium text-calm-500">
+          <span className="z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-sage-300 bg-sage-50 text-[10px] font-medium text-sage-500">
             {stepNumber}
           </span>
-          {connectBelow && <span className="w-px grow bg-calm-200" />}
+          {connectBelow && <span className="w-px grow bg-sage-200" />}
         </div>
       )}
       <div className="min-w-0 flex-1">
@@ -791,7 +791,7 @@ function RoutineBlock({
             members; the pencil opens the manage sheet. */}
         <div
           className={`flex items-center gap-3 rounded-xl px-4 py-2 shadow-sm transition-shadow hover:shadow-md ${
-            allDone ? "bg-calm-50" : "bg-white"
+            allDone ? "bg-sage-50" : "bg-white"
           }`}
         >
           <button
@@ -800,13 +800,13 @@ function RoutineBlock({
             aria-expanded={open}
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
-            <span className="shrink-0 text-calm-400">
+            <span className="shrink-0 text-sage-400">
               <ChevronIcon open={open} />
             </span>
             <span className="min-w-0">
               <span
                 className={`block break-words font-medium ${
-                  allDone ? "text-calm-400 line-through" : "text-calm-900"
+                  allDone ? "text-sage-400 line-through" : "text-sage-900"
                 }`}
               >
                 {name}
@@ -822,7 +822,7 @@ function RoutineBlock({
             type="button"
             aria-label={`Edit ${name}`}
             onClick={onEdit}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-calm-300 transition-colors hover:bg-calm-50 hover:text-calm-500"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-sage-300 transition-colors hover:bg-sage-50 hover:text-sage-500"
           >
             <PencilIcon />
           </button>
@@ -838,8 +838,8 @@ function RoutineBlock({
             }
             className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
               allDone
-                ? "border-calm-600 bg-calm-600 text-white"
-                : "border-calm-300 text-transparent hover:border-calm-500"
+                ? "border-sage-600 bg-sage-600 text-white"
+                : "border-sage-300 text-transparent hover:border-sage-500"
             }`}
           >
             <CheckIcon />
@@ -1012,7 +1012,7 @@ function PlanBoard({
         {segments.length === 0 && (
           // A freshly-added (empty) block: a tall dashed target so it's easy to
           // drop a habit onto, with a hint of what to do.
-          <li className="rounded-xl border border-dashed border-calm-200 px-3 py-5 text-center text-xs text-calm-400">
+          <li className="rounded-xl border border-dashed border-sage-200 px-3 py-5 text-center text-xs text-sage-400">
             Drag a habit here
           </li>
         )}
@@ -1085,14 +1085,14 @@ function ShiftControl({
         onClick={() => setOpen((o) => !o)}
         aria-label="Running late — shift this chain and everything after it"
         aria-expanded={open}
-        className="flex h-6 w-6 items-center justify-center rounded-full text-calm-500 transition-colors hover:bg-calm-100 hover:text-calm-700"
+        className="flex h-6 w-6 items-center justify-center rounded-full text-sage-500 transition-colors hover:bg-sage-100 hover:text-sage-700"
       >
         <ClockIcon />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-7 z-50 w-60 rounded-xl border border-calm-200 bg-white p-3 text-left shadow-lg">
-          <p className="text-xs font-semibold text-calm-700">Running late?</p>
+        <div className="absolute right-0 top-7 z-50 w-60 rounded-xl border border-sage-200 bg-white p-3 text-left shadow-lg">
+          <p className="text-xs font-semibold text-sage-700">Running late?</p>
           <p className="mb-2 text-[11px] leading-snug text-stone-400">
             Moves this chain and everything after it — today only.
           </p>
@@ -1103,7 +1103,7 @@ function ShiftControl({
                 key={m}
                 type="button"
                 onClick={() => apply(m)}
-                className="flex-1 rounded-lg bg-calm-100 py-1.5 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-200"
+                className="flex-1 rounded-lg bg-sage-100 py-1.5 text-xs font-medium text-sage-700 transition-colors hover:bg-sage-200"
               >
                 +{m}
               </button>
@@ -1119,20 +1119,20 @@ function ShiftControl({
                 setCustom(Math.max(1, parseInt(e.target.value, 10) || 0))
               }
               aria-label="Custom minutes"
-              className="w-12 rounded-lg border border-calm-200 px-2 py-1 text-xs text-calm-700"
+              className="w-12 rounded-lg border border-sage-200 px-2 py-1 text-xs text-sage-700"
             />
             <span className="text-[11px] text-stone-400">min</span>
             <button
               type="button"
               onClick={() => apply(-custom)}
-              className="flex-1 rounded-lg border border-calm-200 py-1 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+              className="flex-1 rounded-lg border border-sage-200 py-1 text-xs font-medium text-sage-600 transition-colors hover:bg-sage-50"
             >
               Earlier
             </button>
             <button
               type="button"
               onClick={() => apply(custom)}
-              className="flex-1 rounded-lg border border-calm-200 py-1 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+              className="flex-1 rounded-lg border border-sage-200 py-1 text-xs font-medium text-sage-600 transition-colors hover:bg-sage-50"
             >
               Later
             </button>
@@ -1215,10 +1215,10 @@ function RetimeRuler({
   return createPortal(
     <div className="pointer-events-none fixed inset-0 z-50">
       {/* Dim the list so the ruler is the focus; both vanish on drop. */}
-      <div className="absolute inset-0 bg-calm-900/30" />
+      <div className="absolute inset-0 bg-sage-900/30" />
 
       <div className="relative mx-auto h-full max-w-md overflow-hidden bg-white/60">
-        <p className="absolute inset-x-0 top-0 z-10 bg-white/70 py-2 text-center text-[11px] font-medium uppercase tracking-wide text-calm-500">
+        <p className="absolute inset-x-0 top-0 z-10 bg-white/70 py-2 text-center text-[11px] font-medium uppercase tracking-wide text-sage-500">
           Drag to a time · release to set · today only
         </p>
 
@@ -1232,10 +1232,10 @@ function RetimeRuler({
               className="absolute inset-x-0 flex -translate-y-1/2 items-center gap-2 px-4"
               style={{ top: y }}
             >
-              <span className="w-12 shrink-0 text-right text-[10px] tabular-nums text-calm-400">
+              <span className="w-12 shrink-0 text-right text-[10px] tabular-nums text-sage-400">
                 {formatTime(minutesToHHMM(h * 60))}
               </span>
-              <span className="h-px flex-1 bg-calm-200" />
+              <span className="h-px flex-1 bg-sage-200" />
             </div>
           );
         })}
@@ -1250,8 +1250,8 @@ function RetimeRuler({
               className="absolute inset-x-0 flex -translate-y-1/2 items-center px-4"
               style={{ top: y }}
             >
-              <span className="ml-14 flex max-w-[70%] items-center gap-1.5 truncate rounded-lg bg-white px-2 py-1 text-[11px] text-calm-500 shadow-sm ring-1 ring-calm-200">
-                <span className="shrink-0 tabular-nums text-calm-400">
+              <span className="ml-14 flex max-w-[70%] items-center gap-1.5 truncate rounded-lg bg-white px-2 py-1 text-[11px] text-sage-500 shadow-sm ring-1 ring-sage-200">
+                <span className="shrink-0 tabular-nums text-sage-400">
                   {formatTime(minutesToHHMM(b.min))}
                 </span>
                 <span className="truncate">{b.name}</span>
@@ -1266,7 +1266,7 @@ function RetimeRuler({
             className="absolute inset-x-0 -translate-y-1/2 px-4"
             style={{ top: yForMin(startMin) }}
           >
-            <div className="ml-14 border-t border-dashed border-calm-300" />
+            <div className="ml-14 border-t border-dashed border-sage-300" />
           </div>
         )}
 
@@ -1275,11 +1275,11 @@ function RetimeRuler({
           className="absolute inset-x-0 -translate-y-1/2 px-4"
           style={{ top: yForMin(previewMin) }}
         >
-          <div className="ml-12 flex items-center gap-2 rounded-xl bg-calm-600 px-3 py-2 text-white shadow-lg ring-2 ring-white">
+          <div className="ml-12 flex items-center gap-2 rounded-xl bg-sage-600 px-3 py-2 text-white shadow-lg ring-2 ring-white">
             <span className="text-sm font-semibold tabular-nums">
               {formatTime(minutesToHHMM(previewMin))}
             </span>
-            <span className="min-w-0 truncate text-xs text-calm-100">
+            <span className="min-w-0 truncate text-xs text-sage-100">
               {blockLabel}
             </span>
           </div>
@@ -1346,7 +1346,7 @@ function ChainNameControl({
         placeholder="Name this chain"
         maxLength={100}
         aria-label="Chain name"
-        className="min-w-0 flex-1 rounded-lg border border-calm-200 bg-white px-2 py-0.5 text-xs font-medium text-calm-900 focus:border-calm-500 focus:outline-none"
+        className="min-w-0 flex-1 rounded-lg border border-sage-200 bg-white px-2 py-0.5 text-xs font-medium text-sage-900 focus:border-sage-500 focus:outline-none"
       />
     );
   }
@@ -1358,10 +1358,10 @@ function ChainNameControl({
       onClick={open}
       title="Name this chain"
       aria-label={name ? `Rename chain "${name}"` : "Name this chain"}
-      className="group inline-flex min-w-0 items-center gap-1 text-xs font-medium text-calm-600 transition-colors hover:text-calm-800"
+      className="group inline-flex min-w-0 items-center gap-1 text-xs font-medium text-sage-600 transition-colors hover:text-sage-800"
     >
       <span className="truncate">{label}</span>
-      <span className="shrink-0 text-calm-300 transition-colors group-hover:text-calm-500">
+      <span className="shrink-0 text-sage-300 transition-colors group-hover:text-sage-500">
         <PencilIcon />
       </span>
     </button>
@@ -1524,7 +1524,7 @@ function FloatingControls({
           type="button"
           onClick={onGoToNow}
           aria-label="Jump to now"
-          className="flex h-10 items-center gap-1.5 rounded-full border border-calm-200 bg-white pl-2.5 pr-3 text-xs font-semibold text-calm-600 shadow-lg transition-colors hover:bg-calm-50"
+          className="flex h-10 items-center gap-1.5 rounded-full border border-sage-200 bg-white pl-2.5 pr-3 text-xs font-semibold text-sage-600 shadow-lg transition-colors hover:bg-sage-50"
         >
           <ClockIcon />
           Now
@@ -1535,7 +1535,7 @@ function FloatingControls({
           type="button"
           onClick={onGoToTop}
           aria-label="Scroll to top"
-          className="flex h-10 w-10 items-center justify-center rounded-full border border-calm-200 bg-white text-calm-600 shadow-lg transition-colors hover:bg-calm-50"
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-sage-200 bg-white text-sage-600 shadow-lg transition-colors hover:bg-sage-50"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -1682,7 +1682,7 @@ function NoteSheet({
       }}
     >
       <div
-        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        className="animate-backdrop-in absolute inset-0 bg-sage-900/40"
         onClick={onClose}
         aria-hidden
       />
@@ -1693,9 +1693,9 @@ function NoteSheet({
         className="animate-sheet-in relative max-h-full w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 pb-8 shadow-xl sm:rounded-3xl"
       >
         {/* Grabber — a small affordance that this sheet came up from the bottom. */}
-        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-calm-200 sm:hidden" />
-        <h2 className="font-heading text-2xl text-calm-900">{habit.name}</h2>
-        <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wide text-calm-500">
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-sage-200 sm:hidden" />
+        <h2 className="font-heading text-2xl text-sage-900">{habit.name}</h2>
+        <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wide text-sage-500">
           Notes · {dateLabel}
         </p>
 
@@ -1712,17 +1712,17 @@ function NoteSheet({
                 return (
                   <li
                     key={n.id}
-                    className="rounded-xl border border-calm-200 bg-white p-3"
+                    className="rounded-xl border border-sage-200 bg-white p-3"
                   >
                     <textarea
                       value={editText}
                       onChange={(e) => setEditText(e.target.value)}
                       rows={3}
                       autoFocus
-                      className="w-full resize-none rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none"
+                      className="w-full resize-none rounded-lg border border-sage-200 bg-white px-3 py-2 text-sm text-sage-900 focus:border-sage-500 focus:outline-none"
                     />
                     {n.shared && (
-                      <p className="mt-2 text-[11px] text-calm-500">
+                      <p className="mt-2 text-[11px] text-sage-500">
                         Shared with {others} other habit
                         {others === 1 ? "" : "s"} — save for…
                       </p>
@@ -1731,7 +1731,7 @@ function NoteSheet({
                       <button
                         type="button"
                         onClick={() => setEditingId(null)}
-                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-sage-600 transition-colors hover:bg-sage-50"
                       >
                         Cancel
                       </button>
@@ -1741,7 +1741,7 @@ function NoteSheet({
                             type="button"
                             onClick={() => saveEdit(n.id, "one")}
                             disabled={editText.trim() === "" || editSaving}
-                            className="rounded-lg border border-calm-300 px-4 py-1.5 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-50 disabled:opacity-50"
+                            className="rounded-lg border border-sage-300 px-4 py-1.5 text-xs font-medium text-sage-700 transition-colors hover:bg-sage-50 disabled:opacity-50"
                           >
                             Just this habit
                           </button>
@@ -1749,7 +1749,7 @@ function NoteSheet({
                             type="button"
                             onClick={() => saveEdit(n.id, "all")}
                             disabled={editText.trim() === "" || editSaving}
-                            className="rounded-lg bg-calm-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+                            className="rounded-lg bg-sage-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-sage-700 disabled:opacity-50"
                           >
                             All {n.habits.length} habits
                           </button>
@@ -1759,7 +1759,7 @@ function NoteSheet({
                           type="button"
                           onClick={() => saveEdit(n.id, "one")}
                           disabled={editText.trim() === "" || editSaving}
-                          className="rounded-lg bg-calm-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+                          className="rounded-lg bg-sage-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-sage-700 disabled:opacity-50"
                         >
                           Save
                         </button>
@@ -1774,16 +1774,16 @@ function NoteSheet({
                 return (
                   <li
                     key={n.id}
-                    className="rounded-xl border border-rose-200 bg-rose-50 p-3"
+                    className="rounded-xl border border-clay-200 bg-clay-100 p-3"
                   >
-                    <p className="text-xs text-calm-700">
+                    <p className="text-xs text-sage-700">
                       On {n.habits.length} habits — remove this note…
                     </p>
                     <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
                       <button
                         type="button"
                         onClick={() => setConfirmDeleteId(null)}
-                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-sage-600 transition-colors hover:bg-sage-50"
                       >
                         Cancel
                       </button>
@@ -1793,7 +1793,7 @@ function NoteSheet({
                           onDelete(n.id, "one");
                           setConfirmDeleteId(null);
                         }}
-                        className="rounded-lg border border-calm-300 px-4 py-1.5 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-50"
+                        className="rounded-lg border border-sage-300 px-4 py-1.5 text-xs font-medium text-sage-700 transition-colors hover:bg-sage-50"
                       >
                         Just this habit
                       </button>
@@ -1803,7 +1803,7 @@ function NoteSheet({
                           onDelete(n.id, "all");
                           setConfirmDeleteId(null);
                         }}
-                        className="rounded-lg bg-rose-500 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600"
+                        className="rounded-lg bg-clay-500 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-clay-600"
                       >
                         All {n.habits.length} habits
                       </button>
@@ -1816,17 +1816,17 @@ function NoteSheet({
               return (
                 <li
                   key={n.id}
-                  className="flex items-start gap-2 rounded-xl border border-calm-100 bg-calm-50 px-3 py-2"
+                  className="flex items-start gap-2 rounded-xl border border-sage-100 bg-sage-50 px-3 py-2"
                 >
                   {n.shared && (
                     <span
-                      className="mt-0.5 text-calm-400"
+                      className="mt-0.5 text-sage-400"
                       title={`Shared across ${n.habits.length} habits`}
                     >
                       <SharedNoteIcon />
                     </span>
                   )}
-                  <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm text-calm-800">
+                  <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm text-sage-800">
                     {n.body}
                   </p>
                   <button
@@ -1835,14 +1835,14 @@ function NoteSheet({
                       setEditingId(n.id);
                       setEditText(n.body);
                     }}
-                    className="shrink-0 text-xs font-medium text-calm-500 transition-colors hover:text-calm-700"
+                    className="shrink-0 text-xs font-medium text-sage-500 transition-colors hover:text-sage-700"
                   >
                     Edit
                   </button>
                   <button
                     type="button"
                     onClick={() => requestDelete(n)}
-                    className="shrink-0 text-xs font-medium text-rose-500 transition-colors hover:text-rose-600"
+                    className="shrink-0 text-xs font-medium text-clay-500 transition-colors hover:text-clay-600"
                   >
                     Delete
                   </button>
@@ -1851,12 +1851,12 @@ function NoteSheet({
             })}
           </ul>
         ) : (
-          <p className="mt-4 text-sm text-calm-400">
+          <p className="mt-4 text-sm text-sage-400">
             No notes yet for this day.
           </p>
         )}
 
-        <label className="mt-5 block text-[11px] font-medium uppercase tracking-wide text-calm-500">
+        <label className="mt-5 block text-[11px] font-medium uppercase tracking-wide text-sage-500">
           Add a note
         </label>
         <textarea
@@ -1865,7 +1865,7 @@ function NoteSheet({
           onChange={(e) => setText(e.target.value)}
           rows={3}
           placeholder="How did it go? Why you skipped, how it felt…"
-          className="mt-1.5 w-full resize-none rounded-xl border border-calm-200 bg-white px-4 py-3 text-sm text-calm-900 placeholder:text-calm-400 focus:border-calm-500 focus:outline-none"
+          className="mt-1.5 w-full resize-none rounded-xl border border-sage-200 bg-white px-4 py-3 text-sm text-sage-900 placeholder:text-sage-400 focus:border-sage-500 focus:outline-none"
         />
 
         {/* Optionally attach the new note to other habits too (write a reflection
@@ -1873,7 +1873,7 @@ function NoteSheet({
             included; these are the extras. */}
         {otherHabits.length > 0 && (
           <div className="mt-3">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-calm-500">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-sage-500">
               Also add to
             </p>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -1891,8 +1891,8 @@ function NoteSheet({
                     }
                     className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                       on
-                        ? "border-calm-500 bg-calm-100 text-calm-700"
-                        : "border-calm-200 text-calm-500 hover:bg-calm-50"
+                        ? "border-sage-500 bg-sage-100 text-sage-700"
+                        : "border-sage-200 text-sage-500 hover:bg-sage-50"
                     }`}
                   >
                     {h.name}
@@ -1907,7 +1907,7 @@ function NoteSheet({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl px-4 py-2.5 text-sm font-medium text-calm-600 transition-colors hover:bg-calm-50"
+            className="rounded-xl px-4 py-2.5 text-sm font-medium text-sage-600 transition-colors hover:bg-sage-50"
           >
             Done
           </button>
@@ -1915,7 +1915,7 @@ function NoteSheet({
             type="button"
             onClick={add}
             disabled={text.trim() === "" || saving}
-            className="rounded-xl bg-calm-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+            className="rounded-xl bg-sage-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sage-700 disabled:opacity-50"
           >
             Add
           </button>
@@ -2062,7 +2062,7 @@ function RoutineSheet({
       }}
     >
       <div
-        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        className="animate-backdrop-in absolute inset-0 bg-sage-900/40"
         onClick={onClose}
         aria-hidden
       />
@@ -2072,15 +2072,15 @@ function RoutineSheet({
         aria-label={routine ? `Edit ${routine.name}` : "New routine"}
         className="animate-sheet-in relative max-h-full w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 pb-8 shadow-xl sm:rounded-3xl"
       >
-        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-calm-200 sm:hidden" />
-        <h2 className="font-heading text-2xl text-calm-900">
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-sage-200 sm:hidden" />
+        <h2 className="font-heading text-2xl text-sage-900">
           {routine ? "Edit routine" : "New routine"}
         </h2>
-        <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wide text-calm-500">
+        <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wide text-sage-500">
           A group of habits, done in any order
         </p>
 
-        <label className="mt-4 block text-xs font-medium text-calm-600">
+        <label className="mt-4 block text-xs font-medium text-sage-600">
           Name
         </label>
         <input
@@ -2089,10 +2089,10 @@ function RoutineSheet({
           onChange={(e) => setName(e.target.value)}
           placeholder="Morning routine"
           maxLength={100}
-          className="mt-1 w-full rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none"
+          className="mt-1 w-full rounded-lg border border-sage-200 bg-white px-3 py-2 text-sm text-sage-900 focus:border-sage-500 focus:outline-none"
         />
 
-        <p className="mt-4 text-xs font-medium text-calm-600">
+        <p className="mt-4 text-xs font-medium text-sage-600">
           Habits{selected.size > 0 ? ` · ${selected.size} selected` : ""}
         </p>
         {choices.length > 0 ? (
@@ -2107,14 +2107,14 @@ function RoutineSheet({
                     aria-pressed={on}
                     className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
                       on
-                        ? "border-calm-300 bg-calm-50 text-calm-900"
+                        ? "border-sage-300 bg-sage-50 text-sage-900"
                         : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"
                     }`}
                   >
                     <span
                       className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 ${
                         on
-                          ? "border-calm-600 bg-calm-600 text-white"
+                          ? "border-sage-600 bg-sage-600 text-white"
                           : "border-stone-300 text-transparent"
                       }`}
                     >
@@ -2138,10 +2138,10 @@ function RoutineSheet({
             there's somewhere else to move it. */}
         {routine && chains.length > 1 && (
           <div className="mt-5">
-            <label className="block text-xs font-medium text-calm-600">
+            <label className="block text-xs font-medium text-sage-600">
               Chain
             </label>
-            <p className="mt-0.5 text-[11px] text-calm-400">
+            <p className="mt-0.5 text-[11px] text-sage-400">
               Move the whole routine to another time block — applied on Save,
               every day from today.
             </p>
@@ -2149,7 +2149,7 @@ function RoutineSheet({
               value={chainId ?? ""}
               disabled={saving}
               onChange={(e) => setChainId(Number(e.target.value))}
-              className="mt-1 w-full rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none disabled:opacity-50"
+              className="mt-1 w-full rounded-lg border border-sage-200 bg-white px-3 py-2 text-sm text-sage-900 focus:border-sage-500 focus:outline-none disabled:opacity-50"
             >
               {chains.map((c) => (
                 <option key={c.id} value={c.id}>
@@ -2169,7 +2169,7 @@ function RoutineSheet({
               <button
                 type="button"
                 onClick={() => onDelete(routine.id)}
-                className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-rose-700"
+                className="rounded-lg bg-clay-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-clay-700"
               >
                 Tap to confirm
               </button>
@@ -2177,7 +2177,7 @@ function RoutineSheet({
               <button
                 type="button"
                 onClick={() => setConfirmDelete(true)}
-                className="rounded-lg px-3 py-2 text-xs font-medium text-rose-500 transition-colors hover:bg-rose-50"
+                className="rounded-lg px-3 py-2 text-xs font-medium text-clay-500 transition-colors hover:bg-clay-100"
               >
                 Delete
               </button>
@@ -2190,7 +2190,7 @@ function RoutineSheet({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg px-3 py-2 text-sm font-medium text-calm-600 transition-colors hover:bg-calm-50"
+              className="rounded-lg px-3 py-2 text-sm font-medium text-sage-600 transition-colors hover:bg-sage-50"
             >
               Cancel
             </button>
@@ -2198,7 +2198,7 @@ function RoutineSheet({
               type="button"
               onClick={save}
               disabled={name.trim() === "" || saving}
-              className="rounded-lg bg-calm-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+              className="rounded-lg bg-sage-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-sage-700 disabled:opacity-50"
             >
               {routine ? "Save" : "Create"}
             </button>
@@ -3834,23 +3834,23 @@ function PlanPage() {
                                 ? `Expand ${formatTime(chain.time)}`
                                 : `Collapse ${formatTime(chain.time)}`
                             }
-                            className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
+                            className="shrink-0 text-sage-400 transition-colors hover:text-sage-600"
                           >
                             <ChevronIcon open={!collapsed} />
                           </button>
                           {/* Time label + a drag hint; the whole strip is grabbable. */}
                           <span
                             className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
-                              isNow ? "text-calm-700" : "text-calm-600"
+                              isNow ? "text-sage-700" : "text-sage-600"
                             }`}
                           >
                             {formatTime(chain.time)}
                             {collapsed ? (
-                              <span className="normal-case tracking-normal text-calm-400">
+                              <span className="normal-case tracking-normal text-sage-400">
                                 · {handled}/{total} done
                               </span>
                             ) : (
-                              <span className="text-calm-300">
+                              <span className="text-sage-300">
                                 <RetimeHandleIcon />
                               </span>
                             )}
@@ -3870,11 +3870,11 @@ function PlanPage() {
                             />
                           )}
                           {isNow && (
-                            <span className="rounded-full bg-calm-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                            <span className="rounded-full bg-honey-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
                               Now
                             </span>
                           )}
-                          <div className="flex-1 h-px bg-calm-200" />
+                          <div className="flex-1 h-px bg-sage-200" />
                           {/* "Running late" shift stays tappable — opt it out of the
                           block's retime drag. */}
                           <div data-no-retime>
@@ -3917,19 +3917,19 @@ function PlanPage() {
                               ? `Expand ${formatTime(chain.time)}`
                               : `Collapse ${formatTime(chain.time)}`
                           }
-                          className="shrink-0 text-calm-400 transition-colors hover:text-calm-600"
+                          className="shrink-0 text-sage-400 transition-colors hover:text-sage-600"
                         >
                           <ChevronIcon open={!collapsed} />
                         </button>
-                        <span className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-calm-600">
+                        <span className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-sage-600">
                           {formatTime(chain.time)}
                           {collapsed && (
-                            <span className="normal-case tracking-normal text-calm-400">
+                            <span className="normal-case tracking-normal text-sage-400">
                               · {handled}/{total} done
                             </span>
                           )}
                         </span>
-                        <div className="flex-1 h-px bg-calm-200" />
+                        <div className="flex-1 h-px bg-sage-200" />
                       </div>
                       {!collapsed && (
                         <>
@@ -3961,7 +3961,7 @@ function PlanPage() {
             {stretchSlots.length > 0 && (
               <section className="pt-1">
                 <div className="mb-2 flex items-baseline gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-lavender-500">
                     Stretch
                   </span>
                   <span className="text-[11px] text-stone-300">
@@ -3988,8 +3988,8 @@ function PlanPage() {
             visible as it crosses between blocks. */}
           <DragOverlay>
             {draggingHabit ? (
-              <div className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm text-stone-800 shadow-lg ring-1 ring-calm-200">
-                <span className="text-calm-400">
+              <div className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm text-stone-800 shadow-lg ring-1 ring-sage-200">
+                <span className="text-sage-400">
                   <GripIcon />
                 </span>
                 {draggingHabit.name}
@@ -4007,7 +4007,7 @@ function PlanPage() {
                 type="time"
                 value={newTime}
                 onChange={(e) => setNewTime(e.target.value)}
-                className="rounded-lg border border-calm-200 px-2 py-1.5 text-sm text-stone-800"
+                className="rounded-lg border border-sage-200 px-2 py-1.5 text-sm text-stone-800"
               />
               <button
                 type="button"
@@ -4017,7 +4017,7 @@ function PlanPage() {
                   setNewTime("");
                 }}
                 disabled={!newTime}
-                className="rounded-lg bg-calm-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
+                className="rounded-lg bg-sage-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
               >
                 Add
               </button>
@@ -4027,7 +4027,7 @@ function PlanPage() {
                   setAddingTime(false);
                   setNewTime("");
                 }}
-                className="rounded-lg px-2 py-1.5 text-sm text-calm-500"
+                className="rounded-lg px-2 py-1.5 text-sm text-sage-500"
               >
                 Cancel
               </button>
@@ -4036,7 +4036,7 @@ function PlanPage() {
             <button
               type="button"
               onClick={() => setAddingTime(true)}
-              className="w-full rounded-xl border border-dashed border-calm-300 px-3 py-2.5 text-sm font-medium text-calm-500 transition-colors hover:border-calm-400 hover:text-calm-700"
+              className="w-full rounded-xl border border-dashed border-sage-300 px-3 py-2.5 text-sm font-medium text-sage-500 transition-colors hover:border-sage-400 hover:text-sage-700"
             >
               ＋ Add time
             </button>
@@ -4071,7 +4071,7 @@ function PlanPage() {
             schedule that plays every day, separate from this day-by-day view. */}
         <Link
           to="/routine"
-          className="mb-3 flex items-center justify-center gap-1 rounded-xl border border-calm-200 py-2 text-sm font-medium text-calm-600 transition-colors hover:border-calm-400"
+          className="mb-3 flex items-center justify-center gap-1 rounded-xl border border-sage-200 py-2 text-sm font-medium text-sage-600 transition-colors hover:border-sage-400"
         >
           Everyday routine ›
         </Link>

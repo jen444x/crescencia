@@ -4,7 +4,7 @@ import BottomNav from "./BottomNav";
 function Layout() {
   return (
     <>
-      <div className="min-h-screen bg-calm-50 px-6 pt-8 pb-32">
+      <div className="min-h-screen bg-warm-50 px-6 pt-8 pb-32">
         {/* padding-bottom for nav height */}
         <Outlet />
       </div>

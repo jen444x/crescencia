@@ -1,9 +1,12 @@
 import { NavLink } from "react-router-dom";
 
-// Shared style for the nav tabs (highlighted when active).
+// Shared style for the nav tabs. The active tab sits in a soft sage pill; the
+// rest stay quiet warm gray — a calm bar, not a banner.
 const tabClass = ({ isActive }: { isActive: boolean }) =>
   `flex flex-1 flex-col items-center gap-1 py-2 rounded-xl transition-all ${
-    isActive ? "bg-white/20 text-white" : "text-white/60 hover:text-white/80"
+    isActive
+      ? "bg-sage-100 text-sage-800"
+      : "text-stone-400 hover:text-stone-600"
   }`;
 
 // The four destinations: daily Plan, Aspirations, Habits, and Journal. Adding a
@@ -13,7 +16,7 @@ function BottomNav() {
   return (
     // z-40 keeps the bar above page content (chain step badges are z-10, so
     // without this they show through when rows scroll behind the bar).
-    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-gradient-to-r from-calm-600 to-calm-500 px-6 pt-3 pb-6 shadow-lg">
+    <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-stone-200/70 bg-white/95 px-6 pt-2 pb-6 backdrop-blur">
       <div className="mx-auto flex max-w-md items-center gap-2">
         <NavLink to="/plan/" className={tabClass}>
           <svg

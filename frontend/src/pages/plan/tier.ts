@@ -1,9 +1,11 @@
 import type { Habit, SlotPlacement, ReadStatus } from "./types";
 
-// The day-tier levels. Roots = the hard/minimum day; Growth = the everyday bar.
-// Levels match the backend's tier levels.
+// The day-tier levels. Roots = the hard/minimum day (non-negotiables only);
+// Growth = the everyday bar; Flourish = a best day — room to do more.
+// Levels match the backend's tier levels (TierChoices).
 export const ROOTS_LEVEL = 1;
 export const GROWTH_LEVEL = 2;
+export const FLOURISH_LEVEL = 3;
 
 // The selectable day-tiers, in display order. The toolbar's tier picker maps over
 // THIS list instead of hardcoding buttons, so adding a future tier is a one-line
@@ -11,6 +13,7 @@ export const GROWTH_LEVEL = 2;
 export const DAY_TIERS: { level: number; name: string }[] = [
   { level: ROOTS_LEVEL, name: "Roots" },
   { level: GROWTH_LEVEL, name: "Growth" },
+  { level: FLOURISH_LEVEL, name: "Flourish" },
 ];
 
 // True when a row carries no tiers at all — a plain habit that renders and

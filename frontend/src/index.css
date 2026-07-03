@@ -2,6 +2,9 @@
 @import "tailwindcss";
 
 @theme {
+  /* Legacy ramp — still used by pages that haven't moved to the new system
+     yet. New code uses sage/lavender/honey/clay below. Remove once the
+     rollout beyond the Plan page is done. */
   --color-calm-900: #1b2e2a;
   --color-calm-700: #2d4a44;
   --color-calm-600: #5a8f7b;
@@ -10,6 +13,52 @@
   --color-calm-300: #d2e8e0;
   --color-calm-200: #e5f0ec;
   --color-calm-50: #f4f8f6;
+
+  /* — Crescencia design system —
+     The palette tells the plant story: sage = leaves (growth, the everyday),
+     lavender = the bloom (Flourish, moments that matter), honey = sunlight
+     (celebration, tiny doses only), clay = dry soil (missed — gentle, warm,
+     recoverable; never alarm-red). Warm stone neutrals come from Tailwind. */
+  --color-sage-50: #f5f7f2;
+  --color-sage-100: #e9efe3;
+  --color-sage-200: #d5e0cb;
+  --color-sage-300: #b7c9a8;
+  --color-sage-400: #94ac81;
+  --color-sage-500: #758f61;
+  --color-sage-600: #5c7349;
+  --color-sage-700: #495c3b;
+  --color-sage-800: #3a4930;
+  --color-sage-900: #2c3826;
+
+  --color-lavender-50: #f8f6fb;
+  --color-lavender-100: #efeaf7;
+  --color-lavender-200: #e0d7ee;
+  --color-lavender-300: #c8b8e0;
+  --color-lavender-400: #ab93cc;
+  --color-lavender-500: #8f74b5;
+  --color-lavender-600: #775d9c;
+  --color-lavender-700: #614b80;
+  --color-lavender-800: #4e3d67;
+  --color-lavender-900: #3a2e4d;
+
+  --color-honey-50: #fdf9ef;
+  --color-honey-100: #f9f0d8;
+  --color-honey-200: #f1e0ac;
+  --color-honey-300: #e6c97d;
+  --color-honey-400: #d9b055;
+  --color-honey-500: #c39a3e;
+  --color-honey-600: #a37e2e;
+  --color-honey-700: #826427;
+
+  --color-clay-100: #f7e9e3;
+  --color-clay-200: #eed3c8;
+  --color-clay-300: #dfb3a1;
+  --color-clay-400: #cb8d74;
+  --color-clay-500: #b26e53;
+  --color-clay-600: #955842;
+  --color-clay-700: #784736;
+
+  --color-warm-50: #fbfaf7;
   --color-warm-100: #f9f6f2;
   --font-family-heading: "Cormorant Garamond", serif;
   --font-family-body: "Inter", system-ui, sans-serif;

@@ -98,19 +98,27 @@ export default function PlanToolbar({
   };
 
   const itemClass =
-    "flex w-full items-center px-3 py-2 text-left text-sm text-calm-700 transition-colors hover:bg-calm-50";
+    "flex w-full items-center px-3 py-2 text-left text-sm text-sage-700 transition-colors hover:bg-sage-50";
 
   return (
     <div className="-mt-1 mb-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-2">
-        {/* Day-tier: Roots = the hard/minimum day, Growth = the everyday bar. Sets
-            which rung every tiered habit shows + logs at. A dropdown (not a 2-way
-            toggle) so more tiers can be added later via DAY_TIERS. */}
+        {/* Day-tier: Roots = the hard/minimum day, Growth = the everyday bar,
+            Flourish = a best day. Sets which rung every tiered habit shows + logs
+            at. The chip wears its tier's color — earthy stone for Roots, sage for
+            Growth, lavender (the bloom) for Flourish — so the day's level reads at
+            a glance. A dropdown (not a toggle) so DAY_TIERS can keep growing. */}
         <select
           value={dayTier}
           onChange={(e) => onTierChange(Number(e.target.value))}
           aria-label="Day tier"
-          className="cursor-pointer rounded-full border border-calm-200 bg-white px-3 py-1 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-50 focus:border-calm-500 focus:outline-none"
+          className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none ${
+            dayTier === 1
+              ? "border-stone-300 bg-stone-100 text-stone-700"
+              : dayTier >= 3
+                ? "border-lavender-300 bg-lavender-100 text-lavender-800"
+                : "border-sage-300 bg-sage-100 text-sage-800"
+          }`}
         >
           {DAY_TIERS.map((t) => (
             <option key={t.level} value={t.level}>
@@ -130,8 +138,8 @@ export default function PlanToolbar({
           title="Main only"
           className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
             mainOnly
-              ? "bg-amber-100 text-amber-600"
-              : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
+              ? "bg-honey-100 text-honey-600"
+              : "text-sage-300 hover:bg-sage-50 hover:text-sage-500"
           }`}
         >
           <StarIcon />
@@ -146,14 +154,14 @@ export default function PlanToolbar({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-label="More actions"
-          className="flex h-8 w-8 items-center justify-center rounded-full text-calm-400 transition-colors hover:bg-calm-50 hover:text-calm-600"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-sage-400 transition-colors hover:bg-sage-50 hover:text-sage-600"
         >
           <EllipsisIcon />
         </button>
         {menuOpen && (
           <div
             role="menu"
-            className="absolute right-0 z-30 mt-1 w-44 overflow-hidden rounded-xl border border-calm-100 bg-white py-1 shadow-lg"
+            className="absolute right-0 z-30 mt-1 w-44 overflow-hidden rounded-xl border border-sage-100 bg-white py-1 shadow-lg"
           >
             <button
               type="button"
@@ -188,7 +196,7 @@ export default function PlanToolbar({
                 type="button"
                 role="menuitem"
                 onClick={() => act(onSkipDay)}
-                className="flex w-full items-center px-3 py-2 text-left text-sm text-rose-500 transition-colors hover:bg-rose-50"
+                className="flex w-full items-center px-3 py-2 text-left text-sm text-clay-500 transition-colors hover:bg-clay-100"
               >
                 Skip day
               </button>
