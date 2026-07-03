@@ -100,7 +100,7 @@ function ToastView({
       className="fixed bottom-28 left-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2"
     >
       <div
-        className={`animate-toast-in flex items-center gap-3 rounded-xl px-4 py-3 text-sm shadow-lg ${VARIANT_STYLES[toast.variant]}`}
+        className={`animate-toast-in flex items-center gap-3 rounded-full px-5 py-3 text-sm shadow-lg ${VARIANT_STYLES[toast.variant]}`}
       >
         <span className="flex-1">{toast.message}</span>
 

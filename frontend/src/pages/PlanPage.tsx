@@ -273,7 +273,7 @@ function HabitCard({
               onStatus,
             );
           }}
-          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition active:scale-90 ${
             done
               ? "border-calm-600 bg-calm-600 text-white"
               : skipped
@@ -383,7 +383,7 @@ function PlanStatusSheet({
       className="fixed inset-0 z-50 flex flex-col items-center justify-end gap-2 p-3 sm:justify-center"
     >
       <div
-        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        className="animate-backdrop-in absolute inset-0 bg-ink/40 backdrop-blur-[2px]"
         onClick={onClose}
         aria-hidden
       />
@@ -393,11 +393,11 @@ function PlanStatusSheet({
         role="dialog"
         aria-modal="true"
         aria-label={`Actions for ${title}`}
-        className="animate-sheet-in relative w-full max-w-sm rounded-3xl bg-white p-4 shadow-xl"
+        className="animate-sheet-in relative w-full max-w-sm rounded-3xl border border-mist bg-white p-4 shadow-[0_18px_44px_rgba(27,46,42,0.18)]"
       >
         {/* Grab-handle pill — reads as a bottom sheet on the phone. */}
         <div
-          className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-calm-200"
+          className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-mist"
           aria-hidden
         />
 
@@ -450,7 +450,7 @@ function PlanStatusSheet({
               key={o.action}
               type="button"
               onClick={() => onPick(o.action)}
-              className={`flex flex-1 items-center justify-center rounded-xl py-3.5 text-sm font-medium transition-colors ${
+              className={`flex flex-1 items-center justify-center rounded-2xl py-3.5 text-sm font-semibold transition active:scale-[0.97] ${
                 o.className
               } ${current === o.status ? `ring-2 ring-offset-2 ring-offset-white ${o.ring}` : ""}`}
             >
@@ -475,7 +475,7 @@ function PlanStatusSheet({
       <button
         type="button"
         onClick={onClose}
-        className="relative w-full max-w-sm rounded-2xl bg-white py-3.5 text-sm font-semibold text-stone-500 shadow-xl transition-colors hover:text-stone-700"
+        className="relative w-full max-w-sm rounded-2xl border border-mist bg-white py-3.5 text-sm font-semibold text-stone-500 shadow-[0_18px_44px_rgba(27,46,42,0.18)] transition hover:text-stone-700 active:scale-[0.98]"
       >
         Cancel
       </button>
@@ -570,7 +570,8 @@ function SortableRow({
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : 1,
+    opacity: isDragging ? 0.85 : 1,
+    zIndex: isDragging ? 30 : undefined,
   };
 
   const handle = (
@@ -837,7 +838,7 @@ function RoutineBlock({
             onClick={() =>
               onRoutineLog(routineId, allDone ? "PENDING" : "COMPLETED")
             }
-            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors ${
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition active:scale-90 ${
               allDone
                 ? "border-calm-600 bg-calm-600 text-white"
                 : "border-calm-300 text-transparent hover:border-calm-500"
@@ -1683,7 +1684,7 @@ function NoteSheet({
       }}
     >
       <div
-        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        className="animate-backdrop-in absolute inset-0 bg-ink/40 backdrop-blur-[2px]"
         onClick={onClose}
         aria-hidden
       />
@@ -1691,10 +1692,10 @@ function NoteSheet({
         role="dialog"
         aria-modal="true"
         aria-label={`Notes for ${habit.name}`}
-        className="animate-sheet-in relative max-h-full w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 pb-8 shadow-xl sm:rounded-3xl"
+        className="animate-sheet-in relative max-h-full w-full max-w-md overflow-y-auto rounded-t-3xl border border-mist bg-white p-6 pb-8 shadow-[0_18px_44px_rgba(27,46,42,0.18)] sm:rounded-3xl"
       >
         {/* Grabber — a small affordance that this sheet came up from the bottom. */}
-        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-calm-200 sm:hidden" />
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-mist sm:hidden" />
         <h2 className="font-heading text-2xl text-calm-900">{habit.name}</h2>
         <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wide text-calm-500">
           Notes · {dateLabel}
@@ -1720,7 +1721,7 @@ function NoteSheet({
                       onChange={(e) => setEditText(e.target.value)}
                       rows={3}
                       autoFocus
-                      className="w-full resize-none rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none"
+                      className="w-full resize-none rounded-lg border border-mist bg-whisper px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none"
                     />
                     {n.shared && (
                       <p className="mt-2 text-[11px] text-calm-500">
@@ -1866,7 +1867,7 @@ function NoteSheet({
           onChange={(e) => setText(e.target.value)}
           rows={3}
           placeholder="How did it go? Why you skipped, how it felt…"
-          className="mt-1.5 w-full resize-none rounded-xl border border-calm-200 bg-white px-4 py-3 text-sm text-calm-900 placeholder:text-calm-400 focus:border-calm-500 focus:outline-none"
+          className="mt-1.5 w-full resize-none rounded-xl border border-mist bg-whisper px-4 py-3 text-sm text-calm-900 placeholder:text-calm-400 focus:border-calm-500 focus:outline-none"
         />
 
         {/* Optionally attach the new note to other habits too (write a reflection
@@ -2063,7 +2064,7 @@ function RoutineSheet({
       }}
     >
       <div
-        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        className="animate-backdrop-in absolute inset-0 bg-ink/40 backdrop-blur-[2px]"
         onClick={onClose}
         aria-hidden
       />
@@ -2071,9 +2072,9 @@ function RoutineSheet({
         role="dialog"
         aria-modal="true"
         aria-label={routine ? `Edit ${routine.name}` : "New routine"}
-        className="animate-sheet-in relative max-h-full w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 pb-8 shadow-xl sm:rounded-3xl"
+        className="animate-sheet-in relative max-h-full w-full max-w-md overflow-y-auto rounded-t-3xl border border-mist bg-white p-6 pb-8 shadow-[0_18px_44px_rgba(27,46,42,0.18)] sm:rounded-3xl"
       >
-        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-calm-200 sm:hidden" />
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-mist sm:hidden" />
         <h2 className="font-heading text-2xl text-calm-900">
           {routine ? "Edit routine" : "New routine"}
         </h2>
@@ -2090,7 +2091,7 @@ function RoutineSheet({
           onChange={(e) => setName(e.target.value)}
           placeholder="Morning routine"
           maxLength={100}
-          className="mt-1 w-full rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none"
+          className="mt-1 w-full rounded-lg border border-mist bg-whisper px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none"
         />
 
         <p className="mt-4 text-xs font-medium text-calm-600">
@@ -2108,8 +2109,8 @@ function RoutineSheet({
                     aria-pressed={on}
                     className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
                       on
-                        ? "border-calm-300 bg-calm-50 text-calm-900"
-                        : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"
+                        ? "border-mist bg-whisper text-calm-900"
+                        : "border-mist bg-white text-stone-600 hover:bg-whisper"
                     }`}
                   >
                     <span
@@ -2150,7 +2151,7 @@ function RoutineSheet({
               value={chainId ?? ""}
               disabled={saving}
               onChange={(e) => setChainId(Number(e.target.value))}
-              className="mt-1 w-full rounded-lg border border-calm-200 bg-white px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none disabled:opacity-50"
+              className="mt-1 w-full rounded-lg border border-mist bg-whisper px-3 py-2 text-sm text-calm-900 focus:border-calm-500 focus:outline-none disabled:opacity-50"
             >
               {chains.map((c) => (
                 <option key={c.id} value={c.id}>

@@ -243,7 +243,7 @@ function HabitTierRow({
             ? onLog(habit.id, "PENDING", level ?? undefined)
             : onLog(habit.id, "COMPLETED", level ?? undefined)
         }
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition active:scale-90 ${
           done
             ? "border-calm-600 bg-calm-600 text-white"
             : skipped
@@ -396,7 +396,7 @@ function HabitStatusSheet({
       className="fixed inset-0 z-50 flex flex-col items-center justify-end gap-2 p-3 sm:justify-center"
     >
       <div
-        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        className="animate-backdrop-in absolute inset-0 bg-ink/40 backdrop-blur-[2px]"
         onClick={onClose}
         aria-hidden
       />
@@ -406,11 +406,11 @@ function HabitStatusSheet({
         role="dialog"
         aria-modal="true"
         aria-label={`Set status for ${habit.name}`}
-        className="animate-sheet-in relative w-full max-w-sm rounded-3xl bg-white p-4 shadow-xl"
+        className="animate-sheet-in relative w-full max-w-sm rounded-3xl border border-mist bg-white p-4 shadow-[0_18px_44px_rgba(27,46,42,0.18)]"
       >
         {/* Grab-handle pill — reads as a bottom sheet on the phone. */}
         <div
-          className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-calm-200"
+          className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-mist"
           aria-hidden
         />
 
@@ -442,7 +442,7 @@ function HabitStatusSheet({
               key={o.status}
               type="button"
               onClick={() => onPick(o.status)}
-              className={`flex flex-1 items-center justify-center rounded-xl py-3.5 text-sm font-medium transition-colors ${
+              className={`flex flex-1 items-center justify-center rounded-2xl py-3.5 text-sm font-semibold transition active:scale-[0.97] ${
                 o.className
               } ${current === o.status ? `ring-2 ring-offset-2 ring-offset-white ${o.ring}` : ""}`}
             >
@@ -503,7 +503,7 @@ function HabitStatusSheet({
       <button
         type="button"
         onClick={onClose}
-        className="relative w-full max-w-sm rounded-2xl bg-white py-3.5 text-sm font-semibold text-stone-500 shadow-xl transition-colors hover:text-stone-700"
+        className="relative w-full max-w-sm rounded-2xl border border-mist bg-white py-3.5 text-sm font-semibold text-stone-500 shadow-[0_18px_44px_rgba(27,46,42,0.18)] transition hover:text-stone-700 active:scale-[0.98]"
       >
         Cancel
       </button>
@@ -595,7 +595,8 @@ function SortableHabitCard({
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : 1,
+    opacity: isDragging ? 0.85 : 1,
+    zIndex: isDragging ? 30 : undefined,
   };
   const handle = (
     <button

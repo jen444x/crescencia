@@ -38,7 +38,7 @@ function ConfirmDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
       {/* Backdrop — tap to cancel. */}
       <div
-        className="animate-backdrop-in absolute inset-0 bg-calm-900/40"
+        className="animate-backdrop-in absolute inset-0 bg-ink/40 backdrop-blur-[2px]"
         onClick={onCancel}
         aria-hidden
       />
@@ -47,7 +47,7 @@ function ConfirmDialog({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="animate-sheet-in relative w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
+        className="animate-sheet-in relative w-full max-w-sm rounded-2xl border border-mist bg-white p-6 shadow-[0_18px_44px_rgba(27,46,42,0.18)]"
       >
         <h2 className="font-heading text-2xl text-calm-900">{title}</h2>
         {message && <p className="mt-2 text-sm text-stone-500">{message}</p>}
@@ -56,14 +56,14 @@ function ConfirmDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="flex-1 rounded-xl border border-calm-200 py-3 text-sm font-medium text-calm-700 transition-colors hover:bg-calm-50"
+            className="flex-1 rounded-full border border-mist py-3 text-sm font-medium text-calm-700 transition hover:bg-whisper active:scale-[0.97]"
           >
             {cancelLabel}
           </button>
           <button
             type="button"
             onClick={onConfirm}
-            className={`flex-1 rounded-xl py-3 text-sm font-medium text-white transition-colors ${
+            className={`flex-1 rounded-full py-3 text-sm font-semibold text-white transition active:scale-[0.97] ${
               destructive
                 ? "bg-rose-500 hover:bg-rose-600"
                 : "bg-calm-600 hover:bg-calm-700"

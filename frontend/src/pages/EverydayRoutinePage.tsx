@@ -102,7 +102,8 @@ function SortableHabit({ h }: { h: RoutineHabit }) {
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
-        opacity: isDragging ? 0.4 : 1,
+        opacity: isDragging ? 0.85 : 1,
+        zIndex: isDragging ? 30 : undefined,
       }}
       {...attributes}
       {...listeners}
