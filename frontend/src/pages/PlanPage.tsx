@@ -1039,60 +1039,6 @@ function PlanBoard({
   );
 }
 
-// The "Apply to future days" switch, sitting just under the date header. OFF is
-// the quiet default (recording today); ON flips it into an unmistakable filled
-// state with an explicit caption, so the mode she's in is never ambiguous — both
-// placement edits (where a habit sits) AND a chain's retime (when it runs) then
-// write the recurring routine from today forward instead of just today's layer.
-function ApplyForwardToggle({
-  on,
-  onToggle,
-}: {
-  on: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <div
-      className={`mb-4 flex items-center justify-between gap-3 rounded-xl border px-3 py-2 transition-colors ${
-        on ? "border-emerald-300 bg-emerald-50" : "border-calm-200 bg-white"
-      }`}
-    >
-      <div className="flex flex-col">
-        <span
-          className={`text-sm font-medium ${
-            on ? "text-emerald-800" : "text-calm-700"
-          }`}
-        >
-          Apply to future days
-        </span>
-        <span
-          className={`text-[11px] ${on ? "text-emerald-600" : "text-calm-400"}`}
-        >
-          {on
-            ? "Editing your routine — every day from today"
-            : "Off — changes affect just today"}
-        </span>
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={on}
-        aria-label="Apply placement changes to future days"
-        onClick={onToggle}
-        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-          on ? "bg-emerald-500" : "bg-calm-300"
-        }`}
-      >
-        <span
-          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-            on ? "translate-x-[22px]" : "translate-x-0.5"
-          }`}
-        />
-      </button>
-    </div>
-  );
-}
-
 // The ⏱ "running late" control on a time block. Pushing this chain later moves
 // it AND everything after it that day (the backend cascades + clamps); it's a
 // per-day override, so the recurring routine is untouched. Deliberately separate
