@@ -2694,5 +2694,10 @@ class AspirationListTests(TestCase):
 
         resp = self.client.get(reverse("habits:aspirations"))
         self.assertEqual(resp.status_code, 200)
-        row = next(a for a in json.loads(resp.content) if a["id"] == asp.id)
+        body = json.loads(resp.content)
+        # The strip's dates ride along so the client can label columns without
+        # guessing "today" from its own (possibly different) timezone.
+        self.assertEqual(len(body["window"]), 7)
+        self.assertEqual(body["window"][-1], timezone.localdate().isoformat())
+        row = next(a for a in body["aspirations"] if a["id"] == asp.id)
         self.assertEqual([h["id"] for h in row["habits"]], [habit.id])

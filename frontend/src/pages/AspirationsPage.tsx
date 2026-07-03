@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import Header from "../components/layout/Header";
+import { CARD, HEADER_ACTION } from "../components/ui";
 
 type DayCell = { done: boolean; existed: boolean };
 type VersionWeek = {
@@ -17,22 +18,48 @@ type HabitWeek = {
 };
 type Aspiration = { id: number; name: string; habits: HabitWeek[] };
 
-// 7-day completion strip: filled = done, hollow = not done, grey = the habit
-// didn't exist that day yet (so it couldn't have been done).
+// 7-day completion strip: filled = done, hollow = not done, whisper = the habit
+// didn't exist that day yet (so it couldn't have been done). Drawn on the same
+// 7-column grid as DowRow so each dot sits under its weekday letter.
 function WeekRow({ days }: { days: DayCell[] }) {
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="grid grid-cols-[repeat(7,15px)] gap-[7px]">
       {days.map((d, i) => (
         <span
           key={i}
-          className={`h-3 w-3 rounded-full ${
+          className={`h-[15px] w-[15px] rounded-full ${
             !d.existed
-              ? "bg-stone-100"
+              ? "bg-whisper"
               : d.done
                 ? "bg-calm-600"
-                : "border border-calm-300"
+                : "border-[1.5px] border-mist"
           }`}
         />
+      ))}
+    </div>
+  );
+}
+
+// Weekday letters over the dot strips, one row per card. The letters come from
+// the SERVER's window dates (a rolling 7 days ending on the server's today),
+// not the browser clock — a viewer in another timezone can be on a different
+// calendar day than the backend, and deriving letters locally would label
+// every dot one column off. Parsed by hand: `new Date("YYYY-MM-DD")` is UTC
+// midnight and can shift the weekday locally.
+function DowRow({ window: days }: { window: string[] }) {
+  const letters = days.map((ymd) => {
+    const [y, m, d] = ymd.split("-").map(Number);
+    return "SMTWTFS"[new Date(y, m - 1, d).getDay()];
+  });
+  return (
+    <div className="mb-1.5 grid grid-cols-[repeat(7,15px)] gap-[7px]">
+      {letters.map((letter, i) => (
+        <span
+          key={i}
+          className="text-center text-[9px] font-semibold text-stone-400"
+        >
+          {letter}
+        </span>
       ))}
     </div>
   );
@@ -62,6 +89,9 @@ function Chevron({ open }: { open: boolean }) {
 
 function AspirationsPage() {
   const [aspirations, setAspirations] = useState<Aspiration[]>([]);
+  // The strip's dates ("YYYY-MM-DD", oldest first, last = the server's today),
+  // straight from the response — the weekday letters are derived from these.
+  const [windowDays, setWindowDays] = useState<string[]>([]);
   // Which aspirations are expanded. Seeded to "all open" on load.
   const [openIds, setOpenIds] = useState<Set<number>>(new Set());
   const [error, setError] = useState("");
@@ -78,8 +108,11 @@ function AspirationsPage() {
           setError(data.error ?? "Could not load aspirations.");
           return;
         }
-        setAspirations(data);
-        setOpenIds(new Set(data.map((a: Aspiration) => a.id))); // default: open
+        setAspirations(data.aspirations);
+        setWindowDays(data.window);
+        setOpenIds(
+          new Set(data.aspirations.map((a: Aspiration) => a.id)), // default: open
+        );
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "An unknown error occurred",
@@ -109,15 +142,19 @@ function AspirationsPage() {
 
   return (
     <>
-      <Header title="Aspirations" body="" />
+      <Header
+        title="Aspirations"
+        eyebrow="Where you're headed"
+        action={
+          <button
+            onClick={() => navigate("/aspirations/new")}
+            className={HEADER_ACTION}
+          >
+            + New
+          </button>
+        }
+      />
       <div className="max-w-md mx-auto">
-        <button
-          onClick={() => navigate("/aspirations/new")}
-          className="w-full mb-4 bg-calm-600 text-white py-3 rounded-xl font-medium hover:bg-calm-700 transition-colors"
-        >
-          + New aspiration
-        </button>
-
         {isLoading && (
           <p className="text-center text-calm-500 text-sm">
             Loading aspirations...
@@ -126,8 +163,8 @@ function AspirationsPage() {
         {error && <p className="text-red-500 text-sm text-center">{error}</p>}
 
         {!isLoading && !error && aspirations.length === 0 && (
-          <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
-            <h3 className="font-heading text-xl text-stone-900 mb-2">
+          <div className={`p-10 text-center ${CARD}`}>
+            <h3 className="font-heading text-xl text-ink mb-2">
               No aspirations yet
             </h3>
             <p className="text-stone-400 text-sm">
@@ -140,7 +177,7 @@ function AspirationsPage() {
           <div className="flex justify-end mb-3">
             <button
               onClick={toggleAll}
-              className="text-xs font-medium text-calm-600 hover:text-calm-700"
+              className="text-xs font-semibold text-calm-600 hover:text-calm-700"
             >
               {allOpen ? "Collapse all" : "Expand all"}
             </button>
@@ -151,18 +188,18 @@ function AspirationsPage() {
           {aspirations.map((a) => {
             const open = openIds.has(a.id);
             return (
-              <li
-                key={a.id}
-                className="bg-white rounded-xl shadow-sm overflow-hidden"
-              >
+              <li key={a.id} className={`overflow-hidden ${CARD}`}>
                 <button
                   onClick={() => toggleOne(a.id)}
                   aria-expanded={open}
                   className="flex w-full items-center gap-2 p-4 text-left"
                 >
                   <Chevron open={open} />
-                  <h3 className="flex-1 font-medium text-stone-900">{a.name}</h3>
-                  <span className="text-xs text-calm-400">
+                  {/* Serif — an aspiration is an intention, not a list item. */}
+                  <h3 className="min-w-0 flex-1 font-heading text-xl leading-snug text-ink">
+                    {a.name}
+                  </h3>
+                  <span className="shrink-0 rounded-full bg-petal px-2.5 py-0.5 text-[11px] font-semibold text-calm-700">
                     {a.habits.length} habit{a.habits.length === 1 ? "" : "s"}
                   </span>
                 </button>
@@ -172,42 +209,45 @@ function AspirationsPage() {
                     {a.habits.length === 0 ? (
                       <p className="text-stone-400 text-sm">No habits yet.</p>
                     ) : (
-                      a.habits.map((h) =>
-                        h.tiers.length > 0 ? (
-                          <div key={h.id}>
-                            <p className="mb-2 text-sm text-calm-900">
-                              {h.name}
-                            </p>
-                            <div className="space-y-2">
-                              {h.tiers.map((t) => (
-                                <div key={t.level}>
-                                  <p className="mb-1 text-xs font-medium text-calm-600">
-                                    {t.name}
-                                    {t.value && (
-                                      <span className="text-calm-400">
-                                        {" · "}
-                                        {t.value}
-                                      </span>
-                                    )}
-                                  </p>
-                                  <WeekRow days={t.days} />
-                                </div>
-                              ))}
+                      <>
+                        <DowRow window={windowDays} />
+                        {a.habits.map((h) =>
+                          h.tiers.length > 0 ? (
+                            <div key={h.id}>
+                              <p className="mb-2 text-[13px] font-medium text-ink">
+                                {h.name}
+                              </p>
+                              <div className="space-y-2">
+                                {h.tiers.map((t) => (
+                                  <div key={t.level}>
+                                    <p className="mb-1 text-[11px] font-medium text-calm-600">
+                                      {t.name}
+                                      {t.value && (
+                                        <span className="text-stone-400">
+                                          {" · "}
+                                          {t.value}
+                                        </span>
+                                      )}
+                                    </p>
+                                    <WeekRow days={t.days} />
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                          </div>
-                        ) : (
-                          <div key={h.id}>
-                            <p className="mb-1.5 text-sm text-calm-900">
-                              {h.name}
-                            </p>
-                            <WeekRow days={h.days} />
-                          </div>
-                        ),
-                      )
+                          ) : (
+                            <div key={h.id}>
+                              <p className="mb-1.5 text-[13px] font-medium text-ink">
+                                {h.name}
+                              </p>
+                              <WeekRow days={h.days} />
+                            </div>
+                          ),
+                        )}
+                      </>
                     )}
                     <Link
                       to={`/aspirations/${a.id}`}
-                      className="inline-block text-xs font-medium text-calm-600 hover:text-calm-700"
+                      className="inline-block text-xs font-semibold text-calm-600 hover:text-calm-700"
                     >
                       Details ›
                     </Link>

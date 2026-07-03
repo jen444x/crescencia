@@ -1,4 +1,6 @@
 import { useState, useEffect, type ReactNode } from "react";
+import Header from "../components/layout/Header";
+import { CARD } from "../components/ui";
 import { useToast } from "../components/Toast";
 import ConfirmDialog from "../components/ConfirmDialog";
 
@@ -82,13 +84,15 @@ function DateNav({
   onToday: () => void;
 }) {
   const viewingToday = isSameDay(date, new Date());
+  const arrowClass =
+    "flex h-9 w-9 items-center justify-center rounded-full border border-mist bg-white text-calm-600 transition-colors hover:bg-whisper";
   return (
-    <div className="mb-6 flex items-center justify-between">
+    <div className="mb-5 flex items-center justify-between">
       <button
         type="button"
         onClick={onPrev}
         aria-label="Previous day"
-        className="flex h-9 w-9 items-center justify-center rounded-full text-calm-600 transition-colors hover:bg-calm-100"
+        className={arrowClass}
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -107,14 +111,22 @@ function DateNav({
       </button>
 
       <div className="flex flex-col items-center">
-        <span className="font-heading text-2xl leading-tight text-calm-900">
+        <span className="font-heading text-2xl leading-tight text-ink">
           {dayLabel(date)}
         </span>
-        {!viewingToday && (
+        {/* Today shows its date; any other day offers the way back. */}
+        {viewingToday ? (
+          <span className="text-[11px] font-semibold uppercase tracking-[0.13em] text-calm-600">
+            {date.toLocaleDateString(undefined, {
+              month: "long",
+              day: "numeric",
+            })}
+          </span>
+        ) : (
           <button
             type="button"
             onClick={onToday}
-            className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
+            className="text-[11px] font-semibold uppercase tracking-[0.13em] text-calm-600 transition-colors hover:text-calm-700"
           >
             Jump to today
           </button>
@@ -125,7 +137,7 @@ function DateNav({
         type="button"
         onClick={onNext}
         aria-label="Next day"
-        className="flex h-9 w-9 items-center justify-center rounded-full text-calm-600 transition-colors hover:bg-calm-100"
+        className={arrowClass}
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -172,13 +184,13 @@ function EntryCard({
 
   if (editing) {
     return (
-      <div className="rounded-2xl bg-white p-4 shadow-sm">
+      <div className={`p-4 ${CARD}`}>
         <textarea
           value={editText}
           onChange={(e) => setEditText(e.target.value)}
           rows={3}
           autoFocus
-          className="w-full resize-none rounded-xl border border-calm-200 bg-calm-50 px-3 py-2 text-sm text-stone-700 focus:border-calm-400 focus:outline-none"
+          className="w-full resize-none rounded-xl border border-mist bg-whisper px-3 py-2 text-sm text-stone-700 focus:border-calm-400 focus:outline-none"
         />
         <div className="mt-2 flex justify-end gap-2">
           <button
@@ -187,7 +199,7 @@ function EntryCard({
               setEditText(entry.body);
               setEditing(false);
             }}
-            className="rounded-xl border border-calm-200 px-3 py-1.5 text-sm font-medium text-calm-700 transition-colors hover:bg-calm-50"
+            className="rounded-full border border-mist px-4 py-1.5 text-sm font-medium text-calm-700 transition-colors hover:bg-whisper"
           >
             Cancel
           </button>
@@ -195,7 +207,7 @@ function EntryCard({
             type="button"
             onClick={save}
             disabled={!editText.trim() || editSaving}
-            className="rounded-xl bg-calm-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+            className="rounded-full bg-calm-600 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
           >
             {editSaving ? "Saving..." : "Save"}
           </button>
@@ -205,12 +217,15 @@ function EntryCard({
   }
 
   return (
-    <div className="rounded-2xl bg-white p-4 shadow-sm">
+    <div className={`p-4 ${CARD}`}>
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-calm-500">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-calm-600">
           {entryTime(entry.created_at)}
           {entry.updated_at !== entry.created_at && (
-            <span className="text-stone-400"> &middot; edited</span>
+            <span className="font-normal normal-case tracking-normal text-stone-400">
+              {" "}
+              &middot; edited
+            </span>
           )}
         </span>
         <div className="flex gap-3">
@@ -220,20 +235,20 @@ function EntryCard({
               setEditText(entry.body);
               setEditing(true);
             }}
-            className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
+            className="text-[11px] font-semibold uppercase tracking-[0.1em] text-stone-400 transition-colors hover:text-calm-700"
           >
             Edit
           </button>
           <button
             type="button"
             onClick={() => onRequestDelete(entry.id)}
-            className="text-[11px] font-medium uppercase tracking-wide text-stone-400 transition-colors hover:text-rose-500"
+            className="text-[11px] font-semibold uppercase tracking-[0.1em] text-stone-400 transition-colors hover:text-rose-500"
           >
             Delete
           </button>
         </div>
       </div>
-      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-stone-700">
+      <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed text-stone-700">
         {entry.body}
       </p>
     </div>
@@ -376,13 +391,8 @@ function JournalPage() {
     );
   } else if (entries.length === 0) {
     body = (
-      <div className="rounded-2xl bg-white p-10 text-center shadow-sm">
-        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-accent-100">
-          <span className="text-3xl">&#x1F4D6;</span>
-        </div>
-        <h3 className="mb-2 font-heading text-xl text-stone-900">
-          Nothing written
-        </h3>
+      <div className={`p-10 text-center ${CARD}`}>
+        <h3 className="mb-2 font-heading text-xl text-ink">Nothing written</h3>
         <p className="text-sm text-stone-400">
           How was this day? Jot down a thought.
         </p>
@@ -407,7 +417,10 @@ function JournalPage() {
 
   return (
     <div className="mx-auto max-w-md">
-      {/* The date selector doubles as the page header, same as the Plan page. */}
+      <Header
+        title="Journal"
+        eyebrow={viewedDate.toLocaleDateString(undefined, { weekday: "long" })}
+      />
       <DateNav
         date={viewedDate}
         onPrev={() => setViewedDate((d) => addDays(d, -1))}
@@ -418,7 +431,7 @@ function JournalPage() {
 
       {/* Composer — new entries append to the bottom of the timeline (newest
           last). Cmd/Ctrl+Enter saves; plain Enter makes a new line. */}
-      <div className="mt-4 rounded-2xl bg-white p-4 shadow-sm">
+      <div className={`mt-4 p-4 ${CARD}`}>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -434,14 +447,14 @@ function JournalPage() {
               ? "How was today?"
               : `Add a thought for ${dayLabel(viewedDate)}...`
           }
-          className="w-full resize-none rounded-xl border border-calm-200 bg-calm-50 px-3 py-2 text-sm text-stone-700 placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
+          className="w-full resize-none rounded-xl border border-mist bg-whisper px-3 py-2 text-sm text-stone-700 placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
         />
         <div className="mt-2 flex justify-end">
           <button
             type="button"
             onClick={createEntry}
             disabled={!text.trim() || saving}
-            className="rounded-xl bg-calm-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+            className="rounded-full bg-calm-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
           >
             {saving ? "Saving..." : "Add entry"}
           </button>

@@ -7,6 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import Header from "../components/layout/Header";
+import { CARD, SEG, segOption, HEADER_ACTION } from "../components/ui";
 import { useToast } from "../components/Toast";
 import { useNavigate } from "react-router-dom";
 import {
@@ -26,6 +27,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { DateNav } from "./plan/components/DateNav";
+import PlantWidget from "./plan/components/PlantWidget";
 import { startOfDay, toYMD, addDays, isSameDay } from "./plan/dates";
 
 // The statuses for a habit's day (matches the backend HabitLog). MISSED is now
@@ -74,18 +76,10 @@ type HabitRoutine = {
   scheduleIds: number[];
 };
 
-// Which tier sits on top. Both tiers always render; this only moves the picked
-// one to the front (ROOTS on top by default; pick GROWTH to flip the order).
+// Which tier row sits on top inside each habit's card (ROOTS first by default;
+// pick GROWTH to flip the order).
 type TierFocus = "ROOTS" | "GROWTH";
 
-const ROOTS = 1;
-const GROWTH = 2;
-
-// Tier section labels + colors, mirroring the old Habit-Tracker dashboard.
-const TIER_META: Record<number, { label: string; color: string }> = {
-  1: { label: "Roots", color: "text-amber-700" },
-  2: { label: "Growth", color: "text-green-600" },
-};
 
 function CheckIcon() {
   return (
@@ -167,56 +161,56 @@ function GripIcon() {
   );
 }
 
-// One row inside a tier section: the habit's name + this tier's target value +
-// a complete/undo control. Reads "done" from this tier's own per-version state
+// One row inside a habit's card: the habit's name + this tier's target value +
+// a complete/undo control. `level` null means the habit is untiered and the row
+// reads the whole-habit status. Tiered rows read their own per-version state
 // (the backend folds in the cascade, so completing Growth marks Roots done).
-// `handle` is the drag grip when the section is sortable (omitted otherwise).
 function HabitTierRow({
   habit,
   level,
   onLog,
-  handle,
 }: {
   habit: HabitRow;
-  level: number;
+  level: number | null;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
-  handle?: ReactNode;
 }) {
-  const tier = habit.tiers.find((t) => t.level === level);
-  const done = tier?.done ?? false;
-  // The other settable states for this version. SKIPPED/MISSED render their own
-  // tint + badge (matching the Plan page) instead of looking like plain pending.
-  const skipped = tier?.status === "SKIPPED";
-  const missed = tier?.status === "MISSED";
+  const tier =
+    level == null ? undefined : habit.tiers.find((t) => t.level === level);
+  const done =
+    level == null ? habit.status === "COMPLETED" : (tier?.done ?? false);
+  // The other settable states. SKIPPED/MISSED render their own tint + badge
+  // (matching the Plan page) instead of looking like plain pending.
+  const rowStatus = level == null ? habit.status : tier?.status;
+  const skipped = !done && rowStatus === "SKIPPED";
+  const missed = !done && rowStatus === "MISSED";
 
   return (
     <div
-      className={`flex select-none items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${
+      className={`flex select-none items-center gap-3 px-4 py-3 transition-colors ${
         done
-          ? "bg-calm-50"
+          ? "bg-whisper"
           : skipped
             ? "bg-stone-50"
             : missed
               ? "bg-rose-50"
-              : "bg-white shadow-sm"
+              : "bg-white"
       }`}
     >
-      {handle}
       {habit.is_support && (
-        <span className="shrink-0 rounded-full bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-stone-400">
+        <span className="shrink-0 rounded-full border border-mist bg-whisper px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400">
           helper
         </span>
       )}
       <div className="min-w-0 flex-1">
         <span
-          className={`block break-words text-sm font-medium ${
+          className={`block wrap-break-word text-sm font-medium ${
             done
               ? "text-calm-400 line-through"
               : skipped
                 ? "text-stone-400"
                 : missed
                   ? "text-rose-400"
-                  : "text-calm-900"
+                  : "text-ink"
           }`}
         >
           {habit.name}
@@ -230,6 +224,13 @@ function HabitTierRow({
         )}
       </div>
 
+      {/* Tier tag — names which version this row is (Roots / Growth). */}
+      {tier && (
+        <span className="shrink-0 rounded-full border border-mist bg-whisper px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-calm-700">
+          {tier.name}
+        </span>
+      )}
+
       {/* Status dot: shows the slot's state (✓ done · – skipped · ✗ missed),
         and a one-tap toggles Complete / undo. */}
       <button
@@ -239,8 +240,8 @@ function HabitTierRow({
         aria-pressed={done}
         onClick={() =>
           done
-            ? onLog(habit.id, "PENDING", level)
-            : onLog(habit.id, "COMPLETED", level)
+            ? onLog(habit.id, "PENDING", level ?? undefined)
+            : onLog(habit.id, "COMPLETED", level ?? undefined)
         }
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
           done
@@ -249,7 +250,7 @@ function HabitTierRow({
               ? "border-stone-400 bg-stone-400 text-white"
               : missed
                 ? "border-rose-400 bg-rose-400 text-white"
-                : "border-calm-300 text-transparent hover:border-calm-500"
+                : "border-mist text-transparent hover:border-calm-500"
         }`}
       >
         {skipped ? <DashIcon /> : missed ? <XIcon /> : <CheckIcon />}
@@ -267,15 +268,13 @@ function HabitRowWithMenu({
   habit,
   level,
   onLog,
-  handle,
   routines,
   habitRoutine,
   onSetRoutine,
 }: {
   habit: HabitRow;
-  level: number;
+  level: number | null;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
-  handle?: ReactNode;
   routines: Routine[];
   habitRoutine?: HabitRoutine;
   onSetRoutine: (habitId: number, routineId: number | null) => void;
@@ -291,7 +290,7 @@ function HabitRowWithMenu({
       }}
       className="cursor-pointer"
     >
-      <HabitTierRow habit={habit} level={level} onLog={onLog} handle={handle} />
+      <HabitTierRow habit={habit} level={level} onLog={onLog} />
 
       <HabitStatusSheet
         open={menuOpen}
@@ -300,7 +299,7 @@ function HabitRowWithMenu({
         routines={routines}
         habitRoutine={habitRoutine}
         onPick={(status) => {
-          onLog(habit.id, status, level);
+          onLog(habit.id, status, level ?? undefined);
           setMenuOpen(false);
         }}
         onSetRoutine={(habitId, routineId) => {
@@ -329,7 +328,7 @@ function HabitStatusSheet({
 }: {
   open: boolean;
   habit: HabitRow;
-  level: number;
+  level: number | null;
   routines: Routine[];
   habitRoutine?: HabitRoutine;
   onPick: (status: HabitStatus) => void;
@@ -348,12 +347,17 @@ function HabitStatusSheet({
 
   if (!open) return null;
 
-  const tier = habit.tiers.find((t) => t.level === level);
-  // The version's current state, so the menu can tick the active choice. A done
-  // row reads COMPLETED even when a higher version cascaded it (tier.done).
-  const current: HabitStatus = tier?.done
-    ? "COMPLETED"
-    : (tier?.status ?? "PENDING");
+  // The row's current state, so the menu can tick the active choice. A tiered
+  // row reads COMPLETED even when a higher version cascaded it (tier.done);
+  // an untiered row (level null) reads the whole-habit status.
+  const tier =
+    level == null ? undefined : habit.tiers.find((t) => t.level === level);
+  const current: HabitStatus =
+    level == null
+      ? habit.status
+      : tier?.done
+        ? "COMPLETED"
+        : (tier?.status ?? "PENDING");
 
   // Skip / Complete / Miss, shown side-by-side; the current status keeps a ring.
   // Clear (back to pending) renders separately below, only when a status is set.
@@ -508,18 +512,73 @@ function HabitStatusSheet({
   );
 }
 
-// A drag-to-reorder wrapper around HabitTierRow. Only the grip carries the drag
-// listeners, so tapping a row's complete button never starts a drag.
-function SortableHabitTierRow({
+// One habit = one card. A tiered habit stacks a row per version inside the same
+// card (split by whisper hairlines) so Roots and Growth read as ONE habit; an
+// untiered habit is a single whole-habit row. `focus` picks which tier row sits
+// on top. `handle` (the drag grip, when sortable) hugs the card's left edge and
+// drags the whole habit.
+function HabitCard({
   habit,
-  level,
+  focus,
+  onLog,
+  handle,
+  routines,
+  habitRoutine,
+  onSetRoutine,
+}: {
+  habit: HabitRow;
+  focus: TierFocus;
+  onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
+  handle?: ReactNode;
+  routines: Routine[];
+  habitRoutine?: HabitRoutine;
+  onSetRoutine: (habitId: number, routineId: number | null) => void;
+}) {
+  // Row order inside the card: tier levels low->high (Roots first), flipped
+  // when Growth has focus. [null] = the untiered single row.
+  const levels: (number | null)[] =
+    habit.tiers.length > 0
+      ? [...habit.tiers]
+          .sort((a, b) =>
+            focus === "GROWTH" ? b.level - a.level : a.level - b.level,
+          )
+          .map((t) => t.level)
+      : [null];
+
+  return (
+    <div className="flex items-center gap-2">
+      {handle}
+      <div
+        className={`min-w-0 flex-1 divide-y divide-whisper overflow-hidden ${CARD}`}
+      >
+        {levels.map((level) => (
+          <HabitRowWithMenu
+            key={level ?? "solo"}
+            habit={habit}
+            level={level}
+            onLog={onLog}
+            routines={routines}
+            habitRoutine={habitRoutine}
+            onSetRoutine={onSetRoutine}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// A drag-to-reorder wrapper around HabitCard. Only the grip carries the drag
+// listeners, so tapping a row inside the card never starts a drag.
+function SortableHabitCard({
+  habit,
+  focus,
   onLog,
   routines,
   habitRoutine,
   onSetRoutine,
 }: {
   habit: HabitRow;
-  level: number;
+  focus: TierFocus;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
   routines: Routine[];
   habitRoutine?: HabitRoutine;
@@ -555,9 +614,9 @@ function SortableHabitTierRow({
   );
   return (
     <div ref={setNodeRef} style={style}>
-      <HabitRowWithMenu
+      <HabitCard
         habit={habit}
-        level={level}
+        focus={focus}
         onLog={onLog}
         handle={handle}
         routines={routines}
@@ -568,13 +627,15 @@ function SortableHabitTierRow({
   );
 }
 
-// A whole tier section: a colored header + divider, then a row per habit that
-// has this tier. Renders nothing when no habit has the tier. When `sortable`,
-// each row gets a drag grip and a drag reorders the habits (persisted globally
-// via onReorder); otherwise rows are plain (the filtered "important" view).
-function TierSection({
-  level,
+// A group of habit cards: the main list, or the "Helpers" shelf below it.
+// `label` renders as a small-caps header with a mist hairline (null = none).
+// When `sortable`, each card gets a drag grip and a drag reorders the habits
+// within the group (persisted globally via onReorder); otherwise cards are
+// plain (viewing another day keeps tap-to-log without reorder).
+function HabitGroup({
+  label,
   habits,
+  focus,
   onLog,
   sortable,
   sensors,
@@ -583,20 +644,18 @@ function TierSection({
   routineMap,
   onSetRoutine,
 }: {
-  level: number;
+  label: string | null;
   habits: HabitRow[];
+  focus: TierFocus;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
   sortable: boolean;
   sensors: ReturnType<typeof useSensors>;
-  onReorder: (level: number, activeId: number, overId: number) => void;
+  onReorder: (activeId: number, overId: number) => void;
   routines: Routine[];
   routineMap: Map<number, HabitRoutine>;
   onSetRoutine: (habitId: number, routineId: number | null) => void;
 }) {
-  const rows = habits.filter((h) => h.tiers.some((t) => t.level === level));
-  if (rows.length === 0) return null;
-
-  const meta = TIER_META[level];
+  if (habits.length === 0) return null;
 
   const body = sortable ? (
     <DndContext
@@ -605,20 +664,20 @@ function TierSection({
       onDragEnd={(event: DragEndEvent) => {
         const { active, over } = event;
         if (over && active.id !== over.id) {
-          onReorder(level, Number(active.id), Number(over.id));
+          onReorder(Number(active.id), Number(over.id));
         }
       }}
     >
       <SortableContext
-        items={rows.map((h) => h.id)}
+        items={habits.map((h) => h.id)}
         strategy={verticalListSortingStrategy}
       >
-        <div className="space-y-1.5">
-          {rows.map((habit) => (
-            <SortableHabitTierRow
+        <div className="space-y-2.5">
+          {habits.map((habit) => (
+            <SortableHabitCard
               key={habit.id}
               habit={habit}
-              level={level}
+              focus={focus}
               onLog={onLog}
               routines={routines}
               habitRoutine={routineMap.get(habit.id)}
@@ -629,12 +688,12 @@ function TierSection({
       </SortableContext>
     </DndContext>
   ) : (
-    <div className="space-y-1.5">
-      {rows.map((habit) => (
-        <HabitRowWithMenu
+    <div className="space-y-2.5">
+      {habits.map((habit) => (
+        <HabitCard
           key={habit.id}
           habit={habit}
-          level={level}
+          focus={focus}
           onLog={onLog}
           routines={routines}
           habitRoutine={routineMap.get(habit.id)}
@@ -646,10 +705,14 @@ function TierSection({
 
   return (
     <div className="mb-6">
-      <div className="mb-3 flex items-center gap-3">
-        <h3 className={`text-sm font-medium ${meta.color}`}>{meta.label}</h3>
-        <div className="h-px flex-1 bg-calm-200" />
-      </div>
+      {label && (
+        <div className="mb-2.5 flex items-center gap-2.5">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.11em] text-stone-400">
+            {label}
+          </h3>
+          <div className="h-px flex-1 bg-mist" />
+        </div>
+      )}
       {body}
     </div>
   );
@@ -826,17 +889,19 @@ function HabitsPage() {
     }),
   );
 
-  // A row was dragged within a tier section. The section is only a SUBSET of all
-  // habits (those that have this tier), so we reorder that subset and splice it
-  // back into the single global order — Habit.order is one position per habit,
-  // shared across sections — then persist the whole list.
-  function handleReorder(level: number, activeId: number, overId: number) {
-    // Only rows that are BOTH in this tier and currently visible take part, so a
-    // hidden helper keeps its global slot instead of being swept into the new
-    // order (mirrors the Plan page's "reorder keeps hidden rows in place" rule).
+  // A card was dragged within its group (main habits, or the Helpers shelf).
+  // The group is only a SUBSET of all habits, so we reorder that subset and
+  // splice it back into the single global order — Habit.order is one position
+  // per habit — then persist the whole list.
+  function handleReorder(activeId: number, overId: number) {
+    const active = habits.find((h) => h.id === activeId);
+    if (!active) return;
+    // Only cards that are BOTH in the dragged card's group and currently
+    // visible take part, so a hidden helper keeps its global slot instead of
+    // being swept into the new order (mirrors the Plan page's "reorder keeps
+    // hidden rows in place" rule).
     const inSection = (h: HabitRow) =>
-      h.tiers.some((t) => t.level === level) &&
-      (showHelpers || !h.is_support);
+      h.is_support === active.is_support && (showHelpers || !h.is_support);
     const section = habits.filter(inSection);
     const from = section.findIndex((h) => h.id === activeId);
     const to = section.findIndex((h) => h.id === overId);
@@ -877,10 +942,25 @@ function HabitsPage() {
   const visible = showHelpers
     ? habits
     : habits.filter((habit) => !habit.is_support);
+  // The main list and the "Helpers" shelf below it (empty while helpers are
+  // hidden, so the shelf simply doesn't render).
+  const mains = visible.filter((habit) => !habit.is_support);
+  const helpers = visible.filter((habit) => habit.is_support);
 
   return (
     <>
-      <Header title="Habits" body="" />
+      <Header
+        title="Habits"
+        eyebrow="Your practice"
+        action={
+          <button
+            onClick={() => navigate("/habits/new")}
+            className={HEADER_ACTION}
+          >
+            + New
+          </button>
+        }
+      />
       <div className="max-w-md mx-auto">
         {/* ◀ [day] ▶ — browse other days, same as the Plan page. Always visible
             so it never vanishes mid-load and you can move off an empty day. */}
@@ -902,11 +982,11 @@ function HabitsPage() {
           </div>
         ) : habits.length === 0 ? (
           isViewingToday ? (
-            <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-accent-100 flex items-center justify-center">
-                <span className="text-3xl">&#x1F331;</span>
+            <div className={`p-10 text-center ${CARD}`}>
+              <div className="mb-4 flex justify-center">
+                <PlantWidget done={0} total={0} size={56} />
               </div>
-              <h3 className="font-heading text-xl text-stone-900 mb-2">
+              <h3 className="font-heading text-xl text-ink mb-1">
                 No habits yet
               </h3>
               <p className="text-stone-400 text-sm">
@@ -914,7 +994,7 @@ function HabitsPage() {
               </p>
               <button
                 onClick={() => navigate("/habits/new")}
-                className="mt-5 bg-calm-600 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-calm-700 transition-colors"
+                className="mt-5 rounded-full bg-calm-600 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-calm-700"
               >
                 + Add habit
               </button>
@@ -926,83 +1006,82 @@ function HabitsPage() {
           )
         ) : (
           <>
-            <button
-              onClick={() => navigate("/habits/new")}
-              className="w-full mb-3 bg-calm-600 text-white py-3 rounded-xl font-medium hover:bg-calm-700 transition-colors"
-            >
-              + Add habit
-            </button>
-
-            <button
-              onClick={() => navigate("/routines")}
-              className="w-full mb-4 flex items-center justify-between rounded-xl bg-white px-4 py-3 text-sm font-medium text-calm-700 shadow-sm transition-colors hover:bg-calm-50"
-            >
-              <span>Manage routines</span>
-              <span className="text-calm-300" aria-hidden>
-                ›
-              </span>
-            </button>
-
-            {/* Controls: which-tier-on-top picker (left), Show-helpers toggle (right). */}
+            {/* Controls: which-tier-on-top picker (left); Main/All decides
+                whether helper habits show (right). */}
             <div className="mb-5 flex items-center justify-between gap-2">
-              <div className="inline-flex rounded-full bg-white p-0.5 shadow-sm">
-                {(["GROWTH", "ROOTS"] as const).map((option) => (
+              <div className={SEG}>
+                {(["ROOTS", "GROWTH"] as const).map((option) => (
                   <button
                     key={option}
                     type="button"
                     onClick={() => setFocus(option)}
                     aria-pressed={focus === option}
-                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                      focus === option
-                        ? "bg-calm-600 text-white"
-                        : "text-stone-400 hover:text-stone-600"
-                    }`}
+                    className={segOption(focus === option)}
                   >
                     {option === "ROOTS" ? "Roots" : "Growth"}
                   </button>
                 ))}
               </div>
 
-              <button
-                type="button"
-                onClick={() => setShowHelpers((on) => !on)}
-                aria-pressed={showHelpers}
-                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-                  showHelpers
-                    ? "bg-calm-100 text-calm-700"
-                    : "bg-white text-stone-400 shadow-sm hover:text-stone-600"
-                }`}
-              >
-                {showHelpers ? "Hide helpers" : "Show helpers"}
-              </button>
+              <div className={SEG}>
+                {([false, true] as const).map((withHelpers) => (
+                  <button
+                    key={String(withHelpers)}
+                    type="button"
+                    onClick={() => setShowHelpers(withHelpers)}
+                    aria-pressed={showHelpers === withHelpers}
+                    className={segOption(showHelpers === withHelpers)}
+                  >
+                    {withHelpers ? "All" : "Main"}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            {/* Both tiers always render; the picker just chooses which sits on
-                top. TierSection returns null for a tier no habit has, so mapping
-                over both is safe. Reorder is the global catalog order, so it's
-                only offered on today (sortable=false elsewhere keeps tap-to-log). */}
-            {(focus === "ROOTS" ? [ROOTS, GROWTH] : [GROWTH, ROOTS]).map((level) => (
-              <TierSection
-                key={level}
-                level={level}
-                habits={visible}
-                onLog={logHabit}
-                sortable={isViewingToday}
-                sensors={sensors}
-                onReorder={handleReorder}
-                routines={routines}
-                routineMap={routineMap}
-                onSetRoutine={setHabitRoutine}
-              />
-            ))}
+            {/* One card per habit (its tiers stack inside); helpers sit on
+                their own labeled shelf below the main list. Reorder is the
+                global catalog order, so it's only offered on today
+                (sortable=false elsewhere keeps tap-to-log). */}
+            <HabitGroup
+              label={null}
+              habits={mains}
+              focus={focus}
+              onLog={logHabit}
+              sortable={isViewingToday}
+              sensors={sensors}
+              onReorder={handleReorder}
+              routines={routines}
+              routineMap={routineMap}
+              onSetRoutine={setHabitRoutine}
+            />
+            <HabitGroup
+              label="Helpers"
+              habits={helpers}
+              focus={focus}
+              onLog={logHabit}
+              sortable={isViewingToday}
+              sensors={sensors}
+              onReorder={handleReorder}
+              routines={routines}
+              routineMap={routineMap}
+              onSetRoutine={setHabitRoutine}
+            />
           </>
         )}
 
-        {/* Paused habits live on their own page — a quiet link to get there. */}
+        {/* Routine groups + paused habits live on their own pages — quiet
+            links to get there. */}
+        <button
+          type="button"
+          onClick={() => navigate("/routines")}
+          className="mt-2 w-full rounded-xl py-2.5 text-center text-sm font-medium text-calm-600 transition-colors hover:text-calm-700"
+        >
+          Manage routines ›
+        </button>
         <button
           type="button"
           onClick={() => navigate("/habits/paused")}
-          className="mt-2 w-full rounded-xl py-2.5 text-center text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
+          className="w-full rounded-xl py-2.5 text-center text-sm font-medium text-stone-400 transition-colors hover:text-stone-600"
         >
           View paused habits
         </button>

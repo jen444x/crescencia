@@ -22,7 +22,7 @@ export function DateNav({
         type="button"
         onClick={onPrev}
         aria-label="Previous day"
-        className="flex h-9 w-9 items-center justify-center rounded-full text-calm-600 transition-colors hover:bg-calm-100"
+        className="flex h-9 w-9 items-center justify-center rounded-full border border-mist bg-white text-calm-600 transition-colors hover:bg-whisper"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -41,14 +41,14 @@ export function DateNav({
       </button>
 
       <div className="flex flex-col items-center">
-        <span className="font-heading text-xl leading-tight text-calm-900">
+        <span className="font-heading text-xl leading-tight text-ink">
           {dayLabel(date)}
         </span>
         {!viewingToday && (
           <button
             type="button"
             onClick={onToday}
-            className="text-[11px] font-medium uppercase tracking-wide text-calm-500 transition-colors hover:text-calm-700"
+            className="text-[11px] font-semibold uppercase tracking-[0.13em] text-calm-600 transition-colors hover:text-calm-700"
           >
             Jump to today
           </button>
@@ -59,7 +59,7 @@ export function DateNav({
         type="button"
         onClick={onNext}
         aria-label="Next day"
-        className="flex h-9 w-9 items-center justify-center rounded-full text-calm-600 transition-colors hover:bg-calm-100"
+        className="flex h-9 w-9 items-center justify-center rounded-full border border-mist bg-white text-calm-600 transition-colors hover:bg-whisper"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"

@@ -2919,7 +2919,13 @@ def aspirations(request):
         }
         for a in asps
     ]
-    return JsonResponse(data, safe=False)
+    # `window` names the strip's actual dates (oldest first, last = today) so
+    # the frontend can label the columns. Without it the cells are purely
+    # positional and a client in another timezone would label them off-by-one
+    # (its local "today" can differ from this server-side window's end).
+    return JsonResponse(
+        {"window": [d.isoformat() for d in window], "aspirations": data}
+    )
 
 
 def aspiration(request, aspiration_id):

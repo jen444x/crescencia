@@ -214,9 +214,9 @@ function HabitCard({
         if ((e.target as HTMLElement).closest("[data-no-swipe]")) return;
         setMenuOpen(true);
       }}
-      className={`group flex select-none flex-col rounded-2xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
+      className={`group flex select-none flex-col rounded-[18px] border border-mist px-4 py-3 shadow-[0_1px_2px_rgba(27,46,42,0.04)] hover:shadow-md transition-shadow cursor-pointer ${
         done
-          ? "bg-calm-50"
+          ? "bg-whisper"
           : skipped
             ? "bg-stone-50"
             : missed
@@ -791,8 +791,8 @@ function RoutineBlock({
             complete circle on the right. A chevron marks that it expands into its
             members; the pencil opens the manage sheet. */}
         <div
-          className={`flex items-center gap-3 rounded-2xl px-4 py-3 shadow-sm transition-shadow hover:shadow-md ${
-            allDone ? "bg-calm-50" : "bg-white"
+          className={`flex items-center gap-3 rounded-[18px] border border-mist px-4 py-3 shadow-[0_1px_2px_rgba(27,46,42,0.04)] transition-shadow hover:shadow-md ${
+            allDone ? "bg-whisper" : "bg-white"
           }`}
         >
           <button
@@ -1525,7 +1525,7 @@ function FloatingControls({
           type="button"
           onClick={onGoToNow}
           aria-label="Jump to now"
-          className="flex h-10 items-center gap-1.5 rounded-full border border-calm-200 bg-white pl-2.5 pr-3 text-xs font-semibold text-calm-600 shadow-lg transition-colors hover:bg-calm-50"
+          className="flex h-10 items-center gap-1.5 rounded-full border border-mist bg-white pl-2.5 pr-3 text-xs font-semibold text-calm-600 shadow-lg transition-colors hover:bg-whisper"
         >
           <ClockIcon />
           Now
@@ -1536,7 +1536,7 @@ function FloatingControls({
           type="button"
           onClick={onGoToTop}
           aria-label="Scroll to top"
-          className="flex h-10 w-10 items-center justify-center rounded-full border border-calm-200 bg-white text-calm-600 shadow-lg transition-colors hover:bg-calm-50"
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-mist bg-white text-calm-600 shadow-lg transition-colors hover:bg-whisper"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -3899,7 +3899,7 @@ function PlanPage() {
                               Now
                             </span>
                           )}
-                          <div className="flex-1 h-px bg-calm-200" />
+                          <div className="flex-1 h-px bg-mist" />
                           {/* "Running late" shift stays tappable — opt it out of the
                           block's retime drag. */}
                           <div data-no-retime>
@@ -3954,7 +3954,7 @@ function PlanPage() {
                             </span>
                           )}
                         </span>
-                        <div className="flex-1 h-px bg-calm-200" />
+                        <div className="flex-1 h-px bg-mist" />
                       </div>
                       {!collapsed && (
                         <>

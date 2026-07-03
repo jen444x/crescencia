@@ -110,7 +110,7 @@ export default function PlanToolbar({
       <div
         role="group"
         aria-label="Day tier"
-        className="inline-flex rounded-full bg-calm-200 p-0.5"
+        className="inline-flex rounded-full border border-mist bg-white p-0.5"
       >
         {DAY_TIERS.map((t) => {
           const active = t.level === dayTier;
@@ -120,10 +120,10 @@ export default function PlanToolbar({
               type="button"
               aria-pressed={active}
               onClick={() => onTierChange(t.level)}
-              className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+              className={`rounded-full px-3.5 py-1.5 text-xs transition-colors ${
                 active
-                  ? "bg-white text-calm-700 shadow-sm"
-                  : "text-calm-700 hover:text-calm-900"
+                  ? "bg-whisper font-semibold text-calm-700 shadow-[inset_0_0_0_1px_var(--color-mist)]"
+                  : "font-medium text-stone-400 hover:text-stone-600"
               }`}
             >
               {t.name}
@@ -144,7 +144,7 @@ export default function PlanToolbar({
         title="Main only"
         className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
           mainOnly
-            ? "bg-amber-100 text-amber-600"
+            ? "bg-petal text-calm-700"
             : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
         }`}
       >
@@ -166,7 +166,7 @@ export default function PlanToolbar({
         {menuOpen && (
           <div
             role="menu"
-            className="absolute right-0 z-30 mt-1 w-44 overflow-hidden rounded-xl border border-calm-100 bg-white py-1 shadow-lg"
+            className="absolute right-0 z-30 mt-1 w-44 overflow-hidden rounded-xl border border-mist bg-white py-1 shadow-lg"
           >
             <button
               type="button"

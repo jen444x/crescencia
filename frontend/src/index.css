@@ -11,6 +11,15 @@
   --color-calm-200: #e5f0ec;
   --color-calm-50: #f4f8f6;
   --color-warm-100: #f9f6f2;
+  /* The named palette. ink/mist/whisper alias steps of the calm scale so new
+     styling can say what it means; lilac/petal are the bloom accents (lilac is
+     the PlantWidget's flower color — keep it rare, only where something
+     bloomed). */
+  --color-ink: #1b2e2a;
+  --color-mist: #d2e8e0;
+  --color-whisper: #f4f8f6;
+  --color-lilac: #c4b3e0;
+  --color-petal: #ece5f6;
   /* Tailwind v4 derives font utilities from the --font-* namespace, so these
      must be named --font-heading / --font-body for `font-heading` / `font-body`
      to exist. (They were --font-family-*, so `font-heading` was silently dead
