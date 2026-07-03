@@ -25,7 +25,7 @@ import {
   SharedNoteIcon,
   RetimeHandleIcon,
 } from "../components/icons";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
   DndContext,
   DragOverlay,
@@ -71,6 +71,7 @@ import { isDone, isSkipped, applyStatus } from "./plan/status";
 import { chainLabel } from "./plan/chains";
 import PlanToolbar from "./plan/components/PlanToolbar";
 import { DateNav } from "./plan/components/DateNav";
+import PlantWidget from "./plan/components/PlantWidget";
 import AddHabitButton from "../components/AddHabitButton";
 import { forwardItemForMove, forwardItemForPlan } from "./plan/forward";
 import {
@@ -213,7 +214,7 @@ function HabitCard({
         if ((e.target as HTMLElement).closest("[data-no-swipe]")) return;
         setMenuOpen(true);
       }}
-      className={`group flex select-none flex-col rounded-xl px-4 py-2 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
+      className={`group flex select-none flex-col rounded-2xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer ${
         done
           ? "bg-calm-50"
           : skipped
@@ -790,7 +791,7 @@ function RoutineBlock({
             complete circle on the right. A chevron marks that it expands into its
             members; the pencil opens the manage sheet. */}
         <div
-          className={`flex items-center gap-3 rounded-xl px-4 py-2 shadow-sm transition-shadow hover:shadow-md ${
+          className={`flex items-center gap-3 rounded-2xl px-4 py-3 shadow-sm transition-shadow hover:shadow-md ${
             allDone ? "bg-calm-50" : "bg-white"
           }`}
         >
@@ -3648,6 +3649,30 @@ function PlanPage() {
     [tierVisibleChains, mainOnly, newPlanIds],
   );
 
+  // Today's tally for the plant meter (its wilting/steady/flourishing state).
+  // Reads each habit's status the SAME way its card does — via slotStatus on the
+  // row's shown rung — so a completed/missed TIERED habit (whose status lives in
+  // habit.tiers, not habit.status) moves the plant immediately, not only after a
+  // reload. Iterates shownChains, so it mirrors the cards on screen (including the
+  // "Main only" filter). Purely derived; nothing is stored.
+  const planTotals = useMemo(() => {
+    let done = 0;
+    let missed = 0;
+    let total = 0;
+    for (const chain of shownChains) {
+      for (const h of chain.habits) {
+        const level = isCaseB(h)
+          ? (caseBDisplayLevel(h, dayTier) ?? undefined)
+          : rowCompleteTier(h, dayTier);
+        const st = slotStatus(h, level);
+        total++;
+        if (st === "COMPLETED") done++;
+        else if (st === "MISSED") missed++;
+      }
+    }
+    return { done, missed, total };
+  }, [shownChains, dayTier]);
+
   // The "Stretch" section: harder versions she can opt into. Two sources, in plan
   // order: (1) Case-A slots that placed as "stretch" (a tier above today that lives
   // at its own time), each completed at its own `tier`; (2) synthesized entries for
@@ -4049,8 +4074,21 @@ function PlanPage() {
   return (
     <>
       <div className="max-w-md mx-auto">
-        {/* The date selector doubles as the page header — the big day label is
-            the title, so there's no separate hero taking up space. */}
+        {/* Plant hero: the living progress meter — it grows with today's habits
+            and wilts when the day slips — with Jennifer's quote beneath it. */}
+        <div className="flex flex-col items-center pt-3.5 pb-2">
+          <PlantWidget
+            done={planTotals.done}
+            total={planTotals.total}
+            missed={planTotals.missed}
+          />
+          <p className="mt-2 text-center font-heading text-lg italic text-[#55695f]">
+            “what if it all works out”
+          </p>
+        </div>
+
+        {/* Date selector: browse other days; the plant + quote above are the
+            page header, so this stays compact. */}
         <DateNav
           date={viewedDate}
           onPrev={() => {
@@ -4067,15 +4105,6 @@ function PlanPage() {
           }}
         />
 
-        {/* Shortcut to the recurring "everyday routine" editor — the default
-            schedule that plays every day, separate from this day-by-day view. */}
-        <Link
-          to="/routine"
-          className="mb-3 flex items-center justify-center gap-1 rounded-xl border border-calm-200 py-2 text-sm font-medium text-calm-600 transition-colors hover:border-calm-400"
-        >
-          Everyday routine ›
-        </Link>
-
         {/* Day-level controls: the tier picker, the main-only filter, and
             the rare actions (new routine / skip day / reset), grouped into one
             compact bar. See ./plan/PlanToolbar. */}
@@ -4085,6 +4114,7 @@ function PlanPage() {
             onTierChange={setDayTier}
             mainOnly={mainOnly}
             onToggleMainOnly={() => setMainOnly((v) => !v)}
+            onEverydayRoutine={() => navigate("/routine")}
             onNewRoutine={() => setRoutineSheet({ mode: "create" })}
             showResetOrder={isViewingToday && orderChanged}
             onResetOrder={resetOrder}

@@ -42,6 +42,7 @@ export default function PlanToolbar({
   onTierChange,
   mainOnly,
   onToggleMainOnly,
+  onEverydayRoutine,
   onNewRoutine,
   showResetOrder,
   onResetOrder,
@@ -54,6 +55,7 @@ export default function PlanToolbar({
   onTierChange: (level: number) => void;
   mainOnly: boolean;
   onToggleMainOnly: () => void;
+  onEverydayRoutine: () => void;
   onNewRoutine: () => void;
   // Only today is reorderable, and only once something has actually moved — so the
   // "Reset order" item only appears then.
@@ -101,42 +103,53 @@ export default function PlanToolbar({
     "flex w-full items-center px-3 py-2 text-left text-sm text-calm-700 transition-colors hover:bg-calm-50";
 
   return (
-    <div className="-mt-1 mb-3 flex items-center justify-between gap-2">
-      <div className="flex items-center gap-2">
-        {/* Day-tier: Roots = the hard/minimum day, Growth = the everyday bar. Sets
-            which rung every tiered habit shows + logs at. A dropdown (not a 2-way
-            toggle) so more tiers can be added later via DAY_TIERS. */}
-        <select
-          value={dayTier}
-          onChange={(e) => onTierChange(Number(e.target.value))}
-          aria-label="Day tier"
-          className="cursor-pointer rounded-full border border-calm-200 bg-white px-3 py-1 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-50 focus:border-calm-500 focus:outline-none"
-        >
-          {DAY_TIERS.map((t) => (
-            <option key={t.level} value={t.level}>
+    <div className="-mt-1 mb-3 flex items-center gap-2">
+      {/* Day-tier segmented pill: Roots = the hard/minimum day, Growth = the
+          everyday bar. Sets which rung every tiered habit shows + logs at. Maps
+          over DAY_TIERS, so adding a future tier stays a one-line change there. */}
+      <div
+        role="group"
+        aria-label="Day tier"
+        className="inline-flex rounded-full bg-calm-200 p-0.5"
+      >
+        {DAY_TIERS.map((t) => {
+          const active = t.level === dayTier;
+          return (
+            <button
+              key={t.level}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onTierChange(t.level)}
+              className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+                active
+                  ? "bg-white text-calm-700 shadow-sm"
+                  : "text-calm-700 hover:text-calm-900"
+              }`}
+            >
               {t.name}
-            </option>
-          ))}
-        </select>
-
-        {/* "Main only": hide the helper/support habits, leaving just the main
-            ones she cares about — for a low-energy day. Pure view filter —
-            toggles instantly, persists. */}
-        <button
-          type="button"
-          onClick={onToggleMainOnly}
-          aria-pressed={mainOnly}
-          aria-label="Show main habits only (hide helpers)"
-          title="Main only"
-          className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
-            mainOnly
-              ? "bg-amber-100 text-amber-600"
-              : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
-          }`}
-        >
-          <StarIcon />
-        </button>
+            </button>
+          );
+        })}
       </div>
+
+      <div className="flex-1" />
+
+      {/* "Main only": hide the helper/support habits, leaving just the main ones
+          she cares about — for a low-energy day. Pure view filter — persists. */}
+      <button
+        type="button"
+        onClick={onToggleMainOnly}
+        aria-pressed={mainOnly}
+        aria-label="Show main habits only (hide helpers)"
+        title="Main only"
+        className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+          mainOnly
+            ? "bg-amber-100 text-amber-600"
+            : "text-calm-300 hover:bg-calm-50 hover:text-calm-500"
+        }`}
+      >
+        <StarIcon />
+      </button>
 
       {/* Rare day-level actions, tucked behind a "⋯" so they don't crowd the bar. */}
       <div className="relative" ref={menuRef}>
@@ -155,6 +168,14 @@ export default function PlanToolbar({
             role="menu"
             className="absolute right-0 z-30 mt-1 w-44 overflow-hidden rounded-xl border border-calm-100 bg-white py-1 shadow-lg"
           >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => act(onEverydayRoutine)}
+              className={itemClass}
+            >
+              Everyday routine
+            </button>
             <button
               type="button"
               role="menuitem"

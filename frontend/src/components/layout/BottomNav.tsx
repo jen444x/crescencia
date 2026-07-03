@@ -13,7 +13,7 @@ function BottomNav() {
   return (
     // z-40 keeps the bar above page content (chain step badges are z-10, so
     // without this they show through when rows scroll behind the bar).
-    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-gradient-to-r from-calm-600 to-calm-500 px-6 pt-3 pb-6 shadow-lg">
+    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-linear-to-r from-calm-600 to-calm-500 px-6 pt-3 pb-[calc(1.5rem+env(safe-area-inset-bottom))] shadow-lg">
       <div className="mx-auto flex max-w-md items-center gap-2">
         <NavLink to="/plan/" className={tabClass}>
           <svg

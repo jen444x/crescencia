@@ -4,9 +4,15 @@ import BottomNav from "./BottomNav";
 function Layout() {
   return (
     <>
-      <div className="min-h-screen bg-calm-50 px-6 pt-8 pb-32">
-        {/* padding-bottom for nav height */}
-        <Outlet />
+      {/* Full-bleed background: a soft near-white → pale-sage wash (bg-fixed so
+          it stays put while the page scrolls) — the airy "white light" feel from
+          the mock, instead of a flat fill. Content is held to a centered phone-
+          width column (max-w-md, matching the nav) so nothing sprawls on wider
+          screens. pb-32 leaves room for the fixed nav. */}
+      <div className="min-h-screen bg-linear-to-b from-[#f8fbf9] to-[#eaf1ec] bg-fixed pb-32">
+        <div className="mx-auto max-w-md px-6 pt-[calc(2rem+env(safe-area-inset-top))]">
+          <Outlet />
+        </div>
       </div>
       <BottomNav />
     </>

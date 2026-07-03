@@ -11,8 +11,12 @@
   --color-calm-200: #e5f0ec;
   --color-calm-50: #f4f8f6;
   --color-warm-100: #f9f6f2;
-  --font-family-heading: "Cormorant Garamond", serif;
-  --font-family-body: "Inter", system-ui, sans-serif;
+  /* Tailwind v4 derives font utilities from the --font-* namespace, so these
+     must be named --font-heading / --font-body for `font-heading` / `font-body`
+     to exist. (They were --font-family-*, so `font-heading` was silently dead
+     and every heading fell back to Inter.) */
+  --font-heading: "Cormorant Garamond", serif;
+  --font-body: "Inter", system-ui, sans-serif;
 }
 
 /* A gentle rise+fade for transient surfaces (toasts). */
@@ -69,7 +73,7 @@ textarea {
 }
 
 :root {
-  font-family: var(--font-family-body);
+  font-family: var(--font-body);
   line-height: 1.5;
   font-weight: 400;
   color: var(--color-calm-900);
@@ -79,4 +83,9 @@ textarea {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* Mobile polish: stop iOS from auto-inflating text on rotate, and drop the
+     grey tap-flash so taps feel native. */
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
 }
