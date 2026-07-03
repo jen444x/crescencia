@@ -9,8 +9,9 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .models import (
-    Area, BASE_VALID_FROM, Habit, HabitLog, HabitPause, HabitTier, Note, Chain,
-    ChainDay, ChainTime, Routine, Schedule, ScheduleDay, Tier, TierValue,
+    Area, Aspiration, BASE_VALID_FROM, Habit, HabitLog, HabitPause, HabitTier,
+    Note, Chain, ChainDay, ChainTime, Routine, Schedule, ScheduleDay, Tier,
+    TierValue,
 )
 from .views import FREEZE_CATCHUP_DAYS, freeze_day
 
@@ -2672,3 +2673,26 @@ class HabitsListDateTests(TestCase):
     def test_bad_date_is_rejected(self):
         resp = self.client.get(reverse("habits:habits_list"), {"date": "nope"})
         self.assertEqual(resp.status_code, 400)
+
+
+class AspirationListTests(TestCase):
+    """The aspirations list must show each attached habit ONCE, even when that
+    habit sits in several time-slots. Habit's default ordering is by Schedule
+    fields, so a plain prefetch JOINs Schedule and lists the habit once per slot
+    — the list view prefetches ordered by a Habit field to avoid that."""
+
+    def test_habit_in_many_slots_appears_once(self):
+        habit = Habit.objects.create(name="Wind down")
+        # Three time-slots (three chains) for the one habit — this is what made
+        # "Sleep better" show each habit 3×.
+        for i in range(3):
+            chain = Chain.objects.create()
+            Schedule.objects.create(habit=habit, chain=chain, order=i)
+
+        asp = Aspiration.objects.create(name="Sleep better")
+        asp.habits.add(habit)
+
+        resp = self.client.get(reverse("habits:aspirations"))
+        self.assertEqual(resp.status_code, 200)
+        row = next(a for a in json.loads(resp.content) if a["id"] == asp.id)
+        self.assertEqual([h["id"] for h in row["habits"]], [habit.id])

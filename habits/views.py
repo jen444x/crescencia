@@ -2855,8 +2855,13 @@ def aspirations(request):
     lower cascade as the detail/Habits pages). A tiered habit returns a `tiers`
     list; an untiered one returns top-level `days` (its `tiers` is [])."""
     today = timezone.localdate()
+    # Prefetch habits ordered by a Habit field (name), NOT the model default
+    # (`schedule__*`), which JOINs Schedule and would list a habit once per
+    # time-slot it sits in — the same trap habits_list guards against.
     asps = list(
-        Aspiration.objects.order_by("-created_at").prefetch_related("habits")
+        Aspiration.objects.order_by("-created_at").prefetch_related(
+            Prefetch("habits", queryset=Habit.objects.order_by("name"))
+        )
     )
 
     window = [today - timedelta(days=i)
