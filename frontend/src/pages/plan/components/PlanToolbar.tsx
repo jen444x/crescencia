@@ -44,6 +44,7 @@ export default function PlanToolbar({
   onToggleMainOnly,
   onEverydayRoutine,
   onNewRoutine,
+  onAddTime,
   showResetOrder,
   onResetOrder,
   showResetDay,
@@ -57,6 +58,9 @@ export default function PlanToolbar({
   onToggleMainOnly: () => void;
   onEverydayRoutine: () => void;
   onNewRoutine: () => void;
+  // "Add time" (new empty time block) lives in the ⋯ menu, not a dashed
+  // button under the list.
+  onAddTime: () => void;
   // Only today is reorderable, and only once something has actually moved — so the
   // "Reset order" item only appears then.
   showResetOrder: boolean;
@@ -122,7 +126,7 @@ export default function PlanToolbar({
               onClick={() => onTierChange(t.level)}
               className={`rounded-full px-3.5 py-1.5 text-xs transition-colors ${
                 active
-                  ? "bg-whisper font-semibold text-calm-700 shadow-[inset_0_0_0_1px_var(--color-mist)]"
+                  ? "bg-mint font-semibold text-calm-700"
                   : "font-medium text-stone-400 hover:text-stone-600"
               }`}
             >
@@ -168,6 +172,14 @@ export default function PlanToolbar({
             role="menu"
             className="absolute right-0 z-30 mt-1 w-44 overflow-hidden rounded-xl border border-mist bg-white py-1 shadow-lg"
           >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => act(onAddTime)}
+              className={itemClass}
+            >
+              Add time
+            </button>
             <button
               type="button"
               role="menuitem"

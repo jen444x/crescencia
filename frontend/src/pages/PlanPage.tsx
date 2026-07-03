@@ -72,6 +72,7 @@ import { chainLabel } from "./plan/chains";
 import PlanToolbar from "./plan/components/PlanToolbar";
 import { DateNav } from "./plan/components/DateNav";
 import PlantWidget from "./plan/components/PlantWidget";
+import AspirationDots from "../components/AspirationDots";
 import AddHabitButton from "../components/AddHabitButton";
 import { forwardItemForMove, forwardItemForPlan } from "./plan/forward";
 import {
@@ -205,6 +206,22 @@ function HabitCard({
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
 
+  // "Other versions": an INLINE tiered card (not a stretch card, which is
+  // already pinned to one rung) can unfold the habit's other rungs as compact
+  // sub-rows, so a rung the day-tier hides (e.g. Roots on a Growth day) can be
+  // acted on without switching the whole day's tier. Mirrors the Habits page.
+  const [expanded, setExpanded] = useState(false);
+  const [subMenuLevel, setSubMenuLevel] = useState<number | null>(null);
+  const otherTiers =
+    completeTier == null
+      ? (habit.tiers ?? []).filter((t) => t.level !== tierToSend)
+      : [];
+  const canExpand = otherTiers.length > 0;
+  const subTier =
+    subMenuLevel == null
+      ? null
+      : (habit.tiers?.find((t) => t.level === subMenuLevel) ?? null);
+
   return (
     <div
       // A tap anywhere on the card opens the status menu (Complete / Skip / Miss
@@ -252,8 +269,42 @@ function HabitCard({
                 {tierValue}
               </span>
             )}
+            <AspirationDots
+              ids={habit.aspirations}
+              className={`ml-1.5 ${done || skipped || missed ? "opacity-40" : ""}`}
+            />
           </h3>
         </div>
+
+        {/* Chevron: unfold this habit's other versions (see otherTiers above). */}
+        {canExpand && (
+          <button
+            type="button"
+            data-no-swipe
+            aria-expanded={expanded}
+            aria-label={expanded ? "Hide other versions" : "Show all versions"}
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded((v) => !v);
+            }}
+            className="-m-1 shrink-0 p-1 text-calm-300 transition-colors hover:text-calm-500"
+          >
+            <svg
+              className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              aria-hidden
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M19 9l-7 7-7-7"
+              />
+            </svg>
+          </button>
+        )}
 
         {/* Status dot: shows the slot's state (✓ done · – skipped · ✗ missed),
           and a one-tap toggles Complete / undo. Skip / Miss / Clear / note /
@@ -287,6 +338,78 @@ function HabitCard({
         </button>
       </div>
 
+      {/* The unfolded versions: one compact sub-row per OTHER rung — tier chip
+          (Roots wears clay, Growth leaf) + value + its own status ring. A tap
+          on the sub-row opens the status menu FOR THAT RUNG, so e.g. Roots can
+          be completed on a Growth day without touching the day tier. */}
+      {expanded &&
+        otherTiers.map((t) => {
+          const st = slotStatus(habit, t.level);
+          const subDone = st === "COMPLETED";
+          const subSkipped = st === "SKIPPED";
+          const subMissed = st === "MISSED";
+          return (
+            <div
+              key={t.level}
+              data-no-swipe
+              onClick={(e) => {
+                e.stopPropagation();
+                setSubMenuLevel(t.level);
+              }}
+              className="mt-2.5 flex items-center gap-2.5 border-t border-whisper pt-2.5"
+            >
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                  t.level === 1 ? "bg-blush text-clay" : "bg-mint text-calm-700"
+                }`}
+              >
+                {t.name}
+              </span>
+              <span
+                className={`min-w-0 flex-1 truncate text-sm ${
+                  subDone
+                    ? "text-calm-400 line-through"
+                    : subSkipped
+                      ? "text-stone-400"
+                      : subMissed
+                        ? "text-rose-400"
+                        : "text-stone-500"
+                }`}
+              >
+                {t.value || habit.name}
+              </span>
+              <button
+                type="button"
+                aria-label={
+                  subDone
+                    ? `Mark ${t.name} as not done`
+                    : `Mark ${t.name} as done`
+                }
+                aria-pressed={subDone}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStatus(
+                    habit.id,
+                    subDone ? "PENDING" : "COMPLETED",
+                    t.level,
+                  );
+                }}
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition active:scale-90 ${
+                  subDone
+                    ? "border-calm-600 bg-calm-600 text-white"
+                    : subSkipped
+                      ? "border-stone-400 bg-stone-400 text-white"
+                      : subMissed
+                        ? "border-rose-400 bg-rose-400 text-white"
+                        : "border-calm-300 text-transparent hover:border-calm-500"
+                }`}
+              >
+                {subSkipped ? <DashIcon /> : subMissed ? <XIcon /> : <CheckIcon />}
+              </button>
+            </div>
+          );
+        })}
+
       <PlanStatusSheet
         open={menuOpen}
         title={habit.name}
@@ -306,6 +429,39 @@ function HabitCard({
         }}
         onClose={() => setMenuOpen(false)}
       />
+
+      {/* The status menu for an unfolded sub-row — same sheet, pinned to that
+          rung's level. Plain per-level actions (no Case-B cascade/step-down):
+          the backend folds the higher-completes-lower cascade on its own. */}
+      {subTier && (
+        <PlanStatusSheet
+          open
+          title={`${habit.name} · ${subTier.name}`}
+          current={slotStatus(habit, subTier.level)}
+          hasNotes={hasNotes}
+          onPick={(action) => {
+            const status: HabitStatus =
+              action === "COMPLETE"
+                ? "COMPLETED"
+                : action === "SKIP"
+                  ? "SKIPPED"
+                  : action === "MISS"
+                    ? "MISSED"
+                    : "PENDING";
+            onStatus(habit.id, status, subTier.level);
+            setSubMenuLevel(null);
+          }}
+          onNote={() => {
+            setSubMenuLevel(null);
+            onOpenNote(habit);
+          }}
+          onDetails={() => {
+            setSubMenuLevel(null);
+            navigate(`/habits/${habit.id}`);
+          }}
+          onClose={() => setSubMenuLevel(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1093,7 +1249,7 @@ function ShiftControl({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-7 z-50 w-60 rounded-xl border border-calm-200 bg-white p-3 text-left shadow-lg">
+        <div className="absolute right-0 top-7 z-50 w-60 rounded-xl border border-mist bg-white p-3 text-left shadow-lg">
           <p className="text-xs font-semibold text-calm-700">Running late?</p>
           <p className="mb-2 text-[11px] leading-snug text-stone-400">
             Moves this chain and everything after it — today only.
@@ -1121,20 +1277,20 @@ function ShiftControl({
                 setCustom(Math.max(1, parseInt(e.target.value, 10) || 0))
               }
               aria-label="Custom minutes"
-              className="w-12 rounded-lg border border-calm-200 px-2 py-1 text-xs text-calm-700"
+              className="w-12 rounded-lg border border-mist px-2 py-1 text-xs text-calm-700"
             />
             <span className="text-[11px] text-stone-400">min</span>
             <button
               type="button"
               onClick={() => apply(-custom)}
-              className="flex-1 rounded-lg border border-calm-200 py-1 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+              className="flex-1 rounded-lg border border-mist py-1 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
             >
               Earlier
             </button>
             <button
               type="button"
               onClick={() => apply(custom)}
-              className="flex-1 rounded-lg border border-calm-200 py-1 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+              className="flex-1 rounded-lg border border-mist py-1 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
             >
               Later
             </button>
@@ -1348,7 +1504,7 @@ function ChainNameControl({
         placeholder="Name this chain"
         maxLength={100}
         aria-label="Chain name"
-        className="min-w-0 flex-1 rounded-lg border border-calm-200 bg-white px-2 py-0.5 text-xs font-medium text-calm-900 focus:border-calm-500 focus:outline-none"
+        className="min-w-0 flex-1 rounded-lg border border-mist bg-white px-2 py-0.5 text-xs font-medium text-calm-900 focus:border-calm-500 focus:outline-none"
       />
     );
   }
@@ -1601,6 +1757,9 @@ function NoteSheet({
   // Extra habits a NEW note should also attach to (this habit is always
   // included). Cleared after a successful add.
   const [alsoHabitIds, setAlsoHabitIds] = useState<number[]>([]);
+  // The "also add to" picker starts collapsed — a wall of every habit crowded
+  // the sheet; now it opens on demand into a scrollable checklist.
+  const [shareOpen, setShareOpen] = useState(false);
   // Which note is awaiting a "this one vs. all" delete choice (shared notes
   // only); null = none.
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
@@ -1714,7 +1873,7 @@ function NoteSheet({
                 return (
                   <li
                     key={n.id}
-                    className="rounded-xl border border-calm-200 bg-white p-3"
+                    className="rounded-xl border border-mist bg-white p-3"
                   >
                     <textarea
                       value={editText}
@@ -1733,7 +1892,7 @@ function NoteSheet({
                       <button
                         type="button"
                         onClick={() => setEditingId(null)}
-                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+                        className="rounded-full px-3 py-1.5 text-xs font-semibold text-calm-600 transition-colors hover:bg-whisper"
                       >
                         Cancel
                       </button>
@@ -1743,7 +1902,7 @@ function NoteSheet({
                             type="button"
                             onClick={() => saveEdit(n.id, "one")}
                             disabled={editText.trim() === "" || editSaving}
-                            className="rounded-lg border border-calm-300 px-4 py-1.5 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-50 disabled:opacity-50"
+                            className="rounded-full border border-mist px-4 py-1.5 text-xs font-semibold text-calm-700 transition-colors hover:bg-whisper disabled:opacity-50"
                           >
                             Just this habit
                           </button>
@@ -1751,7 +1910,7 @@ function NoteSheet({
                             type="button"
                             onClick={() => saveEdit(n.id, "all")}
                             disabled={editText.trim() === "" || editSaving}
-                            className="rounded-lg bg-calm-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+                            className="rounded-full bg-calm-600 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
                           >
                             All {n.habits.length} habits
                           </button>
@@ -1761,7 +1920,7 @@ function NoteSheet({
                           type="button"
                           onClick={() => saveEdit(n.id, "one")}
                           disabled={editText.trim() === "" || editSaving}
-                          className="rounded-lg bg-calm-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+                          className="rounded-full bg-calm-600 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
                         >
                           Save
                         </button>
@@ -1785,7 +1944,7 @@ function NoteSheet({
                       <button
                         type="button"
                         onClick={() => setConfirmDeleteId(null)}
-                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-calm-600 transition-colors hover:bg-calm-50"
+                        className="rounded-full px-3 py-1.5 text-xs font-semibold text-calm-600 transition-colors hover:bg-whisper"
                       >
                         Cancel
                       </button>
@@ -1795,7 +1954,7 @@ function NoteSheet({
                           onDelete(n.id, "one");
                           setConfirmDeleteId(null);
                         }}
-                        className="rounded-lg border border-calm-300 px-4 py-1.5 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-50"
+                        className="rounded-full border border-mist px-4 py-1.5 text-xs font-semibold text-calm-700 transition-colors hover:bg-whisper"
                       >
                         Just this habit
                       </button>
@@ -1805,7 +1964,7 @@ function NoteSheet({
                           onDelete(n.id, "all");
                           setConfirmDeleteId(null);
                         }}
-                        className="rounded-lg bg-rose-500 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600"
+                        className="rounded-full bg-rose-500 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-rose-600"
                       >
                         All {n.habits.length} habits
                       </button>
@@ -1818,7 +1977,7 @@ function NoteSheet({
               return (
                 <li
                   key={n.id}
-                  className="flex items-start gap-2 rounded-xl border border-calm-100 bg-calm-50 px-3 py-2"
+                  className="flex items-start gap-2 rounded-xl border border-mist bg-whisper px-3 py-2"
                 >
                   {n.shared && (
                     <span
@@ -1875,33 +2034,77 @@ function NoteSheet({
             included; these are the extras. */}
         {otherHabits.length > 0 && (
           <div className="mt-3">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-calm-500">
-              Also add to
-            </p>
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {otherHabits.map((h) => {
-                const on = alsoHabitIds.includes(h.id);
-                return (
-                  <button
-                    key={h.id}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() =>
-                      setAlsoHabitIds((prev) =>
-                        on ? prev.filter((id) => id !== h.id) : [...prev, h.id],
-                      )
-                    }
-                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                      on
-                        ? "border-calm-500 bg-calm-100 text-calm-700"
-                        : "border-calm-200 text-calm-500 hover:bg-calm-50"
-                    }`}
-                  >
-                    {h.name}
-                  </button>
-                );
-              })}
-            </div>
+            <button
+              type="button"
+              onClick={() => setShareOpen((o) => !o)}
+              aria-expanded={shareOpen}
+              className="flex w-full items-center justify-between rounded-xl border border-mist bg-white px-3 py-2.5 text-xs font-semibold text-calm-700 transition-colors hover:bg-whisper"
+            >
+              <span>
+                Also add to other habits
+                {alsoHabitIds.length > 0 ? ` · ${alsoHabitIds.length}` : ""}
+              </span>
+              <svg
+                className={`h-4 w-4 text-calm-400 transition-transform ${shareOpen ? "rotate-180" : ""}`}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                aria-hidden
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
+            </button>
+            {shareOpen && (
+              <div className="mt-1.5 max-h-44 overflow-y-auto rounded-xl border border-mist bg-whisper p-1.5">
+                {otherHabits.map((h) => {
+                  const on = alsoHabitIds.includes(h.id);
+                  return (
+                    <button
+                      key={h.id}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() =>
+                        setAlsoHabitIds((prev) =>
+                          on
+                            ? prev.filter((id) => id !== h.id)
+                            : [...prev, h.id],
+                        )
+                      }
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-ink transition-colors hover:bg-white"
+                    >
+                      <span
+                        className={`flex h-[17px] w-[17px] shrink-0 items-center justify-center rounded-[5px] border ${
+                          on
+                            ? "border-calm-600 bg-calm-600 text-white"
+                            : "border-mist bg-white text-transparent"
+                        }`}
+                      >
+                        <svg
+                          className="h-3 w-3"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={3}
+                          aria-hidden
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M5 13l4 4L19 7"
+                          />
+                        </svg>
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{h.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -2883,6 +3086,27 @@ function PlanPage() {
   // solid copy that follows your finger — otherwise a row dragged out of its
   // block fades in place and you can't see where you're moving it.
   const [dragId, setDragId] = useState<string | null>(null);
+  // Where the dragged row is hovering right now: a chain id, null for the
+  // Anytime group, undefined when it isn't over anything. Powers the overlay's
+  // live "→ 8:15 AM" chip so you can see where the habit would land.
+  const [dragOverPlanId, setDragOverPlanId] = useState<
+    number | null | undefined
+  >(undefined);
+  // Same target resolution as handlePlanDragEnd's drop parsing, kept tiny so
+  // the preview can never disagree with the real drop.
+  function resolveTargetPlanId(rawOver: string): number | null {
+    if (rawOver.startsWith("plan-")) {
+      const raw = rawOver.slice("plan-".length);
+      return raw === "anytime" ? null : Number(raw);
+    }
+    if (rawOver.startsWith("new-")) return null;
+    const overRid = Number(rawOver);
+    return (
+      chains.find(
+        (p) => p.id != null && p.habits.some((h) => h.row_id === overRid),
+      )?.id ?? null
+    );
+  }
 
   // Blocks just made with "＋ Add time" that are still empty. Empty blocks are
   // normally filtered out of the render (so historical bare time labels don't
@@ -3174,6 +3398,7 @@ function PlanPage() {
   // block -> move across. Both write the per-day layer via /days/arrange/.
   function handlePlanDragEnd(event: DragEndEvent) {
     setDragId(null); // drop finished — tear down the overlay
+    setDragOverPlanId(undefined);
     const { active, over } = event;
     if (!over) return;
 
@@ -3767,7 +3992,15 @@ function PlanPage() {
           sensors={planSensors}
           collisionDetection={closestCorners}
           onDragStart={(e) => setDragId(String(e.active.id))}
-          onDragCancel={() => setDragId(null)}
+          onDragOver={(e) =>
+            setDragOverPlanId(
+              e.over ? resolveTargetPlanId(String(e.over.id)) : undefined,
+            )
+          }
+          onDragCancel={() => {
+            setDragId(null);
+            setDragOverPlanId(undefined);
+          }}
           onDragEnd={handlePlanDragEnd}
         >
           <div
@@ -4014,60 +4247,38 @@ function PlanPage() {
             visible as it crosses between blocks. */}
           <DragOverlay>
             {draggingHabit ? (
-              <div className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm text-stone-800 shadow-lg ring-1 ring-calm-200">
-                <span className="text-calm-400">
-                  <GripIcon />
-                </span>
-                {draggingHabit.name}
-              </div>
+              (() => {
+                const targetChain =
+                  dragOverPlanId != null
+                    ? chains.find((c) => c.id === dragOverPlanId)
+                    : undefined;
+                return (
+                  <div className="rotate-1 scale-[1.03]">
+                    <div className="flex items-center gap-2.5 rounded-[18px] border border-mist bg-white px-4 py-3 text-sm font-medium text-ink shadow-[0_14px_34px_rgba(27,46,42,0.20)]">
+                      <span className="shrink-0 text-calm-300">
+                        <GripIcon />
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {draggingHabit.name}
+                      </span>
+                      {/* Live destination — the block under your finger. */}
+                      {dragOverPlanId !== undefined && (
+                        <span className="shrink-0 rounded-full border border-mist bg-whisper px-2.5 py-1 text-[11px] font-semibold text-calm-700">
+                          {dragOverPlanId === null
+                            ? "Anytime"
+                            : targetChain?.time
+                              ? `→ ${formatTime(targetChain.time)}`
+                              : "→ here"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()
             ) : null}
           </DragOverlay>
         </DndContext>
 
-        {/* ＋ Add time: make a new (empty) chain at a time you pick, then drag a
-          habit into it. Reuses the block if one already exists at that time. */}
-        <div className="mt-6">
-          {addingTime ? (
-            <div className="flex items-center gap-2">
-              <input
-                type="time"
-                value={newTime}
-                onChange={(e) => setNewTime(e.target.value)}
-                className="rounded-lg border border-calm-200 px-2 py-1.5 text-sm text-stone-800"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  addTime(newTime);
-                  setAddingTime(false);
-                  setNewTime("");
-                }}
-                disabled={!newTime}
-                className="rounded-lg bg-calm-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
-              >
-                Add
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAddingTime(false);
-                  setNewTime("");
-                }}
-                className="rounded-lg px-2 py-1.5 text-sm text-calm-500"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setAddingTime(true)}
-              className="w-full rounded-xl border border-dashed border-calm-300 px-3 py-2.5 text-sm font-medium text-calm-500 transition-colors hover:border-calm-400 hover:text-calm-700"
-            >
-              ＋ Add time
-            </button>
-          )}
-        </div>
       </>
     );
   }
@@ -4076,13 +4287,32 @@ function PlanPage() {
     <>
       <div className="max-w-md mx-auto">
         {/* Plant hero: the living progress meter — it grows with today's habits
-            and wilts when the day slips — with Jennifer's quote beneath it. */}
-        <div className="flex flex-col items-center pt-3.5 pb-2">
-          <PlantWidget
-            done={planTotals.done}
-            total={planTotals.total}
-            missed={planTotals.missed}
-          />
+            and wilts when the day slips — with Jennifer's quote beneath it.
+            Behind the plant: the aura wall (ported from the old mock she
+            loved) — one soft mint-into-lilac radial glow, no edges. */}
+        <div className="flex flex-col items-center pb-1 pt-2">
+          <div className="relative grid h-[116px] w-[210px] place-items-center">
+            {/* closest-side keeps the gradient fully transparent before the
+                box's edges — without it the glow clips at the box top and
+                leaves a faint color line above the aura. */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute -top-7 h-[170px] w-[230px]"
+              style={{
+                background:
+                  "radial-gradient(circle closest-side at 50% 45%, rgba(93,199,160,0.26) 0%, rgba(158,134,217,0.13) 45%, rgba(158,134,217,0.08) 58%, rgba(158,134,217,0.045) 68%, rgba(158,134,217,0.022) 78%, rgba(158,134,217,0.009) 88%, rgba(158,134,217,0) 100%)",
+              }}
+            />
+            <div className="relative">
+              <PlantWidget
+                done={planTotals.done}
+                total={planTotals.total}
+                missed={planTotals.missed}
+                size={84}
+                glow={false}
+              />
+            </div>
+          </div>
           <p className="mt-2 text-center font-heading text-lg italic text-[#55695f]">
             “what if it all works out”
           </p>
@@ -4117,6 +4347,7 @@ function PlanPage() {
             onToggleMainOnly={() => setMainOnly((v) => !v)}
             onEverydayRoutine={() => navigate("/routine")}
             onNewRoutine={() => setRoutineSheet({ mode: "create" })}
+            onAddTime={() => setAddingTime(true)}
             showResetOrder={isViewingToday && orderChanged}
             onResetOrder={resetOrder}
             showResetDay={dayFullySkipped || dayHasArrangement}
@@ -4124,6 +4355,42 @@ function PlanPage() {
             onSkipDay={() => setSkipDayOpen(true)}
             onResetDay={() => clearDay(viewedDate)}
           />
+        )}
+
+        {/* "Add time" form (opened from the ⋯ menu): a new empty chain at the
+          time you pick — drag a habit into it. Renders right here under the
+          toolbar so the menu action doesn't jump the page anywhere. */}
+        {addingTime && (
+          <div className="mb-4 flex items-center gap-2">
+            <input
+              type="time"
+              value={newTime}
+              onChange={(e) => setNewTime(e.target.value)}
+              className="rounded-lg border border-mist px-2 py-1.5 text-sm text-stone-800"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                addTime(newTime);
+                setAddingTime(false);
+                setNewTime("");
+              }}
+              disabled={!newTime}
+              className="rounded-lg bg-calm-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAddingTime(false);
+                setNewTime("");
+              }}
+              className="rounded-lg px-2 py-1.5 text-sm text-calm-500"
+            >
+              Cancel
+            </button>
+          </div>
         )}
         {body}
       </div>

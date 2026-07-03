@@ -902,7 +902,7 @@ class HabitsListTests(TestCase):
         self.assertEqual(
             set(row.keys()),
             {"id", "name", "area", "area_name", "is_support",
-             "ended_on", "tiers", "status"},
+             "ended_on", "tiers", "status", "aspirations"},
         )
         self.assertEqual(row["id"], self.meditate.id)
         self.assertEqual(row["name"], "Meditate")

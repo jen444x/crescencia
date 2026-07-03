@@ -55,7 +55,7 @@ function AddHabitPage() {
 
   return (
     <>
-      <Header title="Add habit" body="" />
+      <Header title="Add habit" eyebrow="Your practice" />
       <div className="max-w-md mx-auto">
         <HabitForm submitLabel="Add habit" onSubmit={createHabit} />
       </div>

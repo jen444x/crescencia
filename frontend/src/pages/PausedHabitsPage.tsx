@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "../components/layout/Header";
+import { CARD } from "../components/ui";
 import { useToast } from "../components/Toast";
 
 // One paused habit (a habit with an ended_on). This page lists ONLY the retired
@@ -65,6 +66,7 @@ function PausedHabitsPage() {
     <>
       <Header
         title="Paused habits"
+        eyebrow="Your practice"
         body="Habits you've stopped. They're off your plan and don't count as missed — their history is kept. Resume one to bring it back from today."
       />
       <div className="max-w-md mx-auto">
@@ -82,8 +84,8 @@ function PausedHabitsPage() {
             <p className="text-red-500 text-sm">{error}</p>
           </div>
         ) : habits.length === 0 ? (
-          <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
-            <h3 className="font-heading text-xl text-stone-900 mb-2">
+          <div className={`p-10 text-center ${CARD}`}>
+            <h3 className="font-heading text-xl text-ink mb-2">
               No paused habits
             </h3>
             <p className="text-stone-400 text-sm">
@@ -91,14 +93,14 @@ function PausedHabitsPage() {
             </p>
           </div>
         ) : (
-          <div className="space-y-1.5">
+          <div className="space-y-2.5">
             {habits.map((habit) => (
               <div
                 key={habit.id}
-                className="flex items-center gap-3 rounded-xl bg-white px-3 py-2.5 shadow-sm"
+                className={`flex items-center gap-3 px-4 py-3 ${CARD}`}
               >
                 <div className="min-w-0 flex-1">
-                  <span className="block break-words text-sm font-medium text-calm-900">
+                  <span className="block wrap-break-word text-sm font-medium text-ink">
                     {habit.name}
                   </span>
                   <span className="block text-xs text-stone-400">
@@ -109,7 +111,7 @@ function PausedHabitsPage() {
                 <button
                   type="button"
                   onClick={() => resume(habit.id)}
-                  className="shrink-0 rounded-full border border-calm-300 px-3 py-1 text-xs font-medium text-calm-700 transition-colors hover:bg-calm-50"
+                  className="shrink-0 rounded-full border border-mist bg-white px-3 py-1 text-xs font-semibold text-calm-700 transition-colors hover:bg-whisper"
                 >
                   Resume
                 </button>

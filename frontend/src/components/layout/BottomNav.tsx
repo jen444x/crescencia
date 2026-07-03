@@ -1,12 +1,10 @@
 import { NavLink } from "react-router-dom";
 
-// Shared style for the nav tabs: the active one sits in a soft whisper-green
-// well; the rest stay quiet until hovered.
+// Shared style for the nav tabs: the active one is a solid leaf-green pill —
+// the one saturated moment on the bar; the rest stay quiet until hovered.
 const tabClass = ({ isActive }: { isActive: boolean }) =>
   `flex flex-1 flex-col items-center gap-0.5 rounded-full py-1.5 transition-colors ${
-    isActive
-      ? "bg-whisper text-calm-700 shadow-[inset_0_0_0_1px_var(--color-mist)]"
-      : "text-calm-400 hover:text-calm-600"
+    isActive ? "bg-calm-600 text-white" : "text-calm-400 hover:text-calm-600"
   }`;
 
 // The four destinations: daily Plan, Aspirations, Habits, and Journal. Adding a

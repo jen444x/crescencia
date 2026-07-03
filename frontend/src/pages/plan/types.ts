@@ -79,6 +79,9 @@ export type Habit = {
     status?: ReadStatus;
     done?: boolean;
   }[];
+  // Aspiration ids this habit serves — rendered as bloom dots in the
+  // aspiration's bed color next to the name.
+  aspirations?: number[];
 };
 
 // A per-day note from the new Note model (GET /days/notes/). Unlike the legacy

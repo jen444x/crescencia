@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Header from "../components/layout/Header";
+import { CARD, F_LABEL, HEADER_CHIP } from "../components/ui";
 
 type VersionProgress = {
   level: number;
@@ -18,15 +19,20 @@ type HabitProgress = {
   streak: number;
 };
 
-// A habit/version's last-N-days completion as filled/hollow dots.
+// A habit/version's last-N-days completion as filled/hollow dots. The row is a
+// grid that shares the card's width equally, so it can never spill off the
+// card on a narrow phone (fixed-size dots could).
 function DotRow({ days }: { days: boolean[] }) {
   return (
-    <div className="flex items-center gap-1.5">
+    <div
+      className="grid gap-[5px]"
+      style={{ gridTemplateColumns: `repeat(${days.length}, minmax(0, 1fr))` }}
+    >
       {days.map((done, i) => (
         <span
           key={i}
-          className={`h-3 w-3 rounded-full ${
-            done ? "bg-calm-600" : "border border-calm-300"
+          className={`aspect-square w-full max-w-[15px] rounded-full ${
+            done ? "bg-calm-600" : "border-[1.5px] border-mist"
           }`}
         />
       ))}
@@ -95,41 +101,46 @@ function AspirationPage() {
 
   return (
     <>
-      <Header title={detail.name} body="" />
+      <Header
+        title={detail.name}
+        eyebrow="Aspiration"
+        action={
+          <button
+            onClick={() => navigate(`/aspirations/${id}/edit`)}
+            className={HEADER_CHIP}
+          >
+            Edit
+          </button>
+        }
+      />
       <div className="max-w-md mx-auto space-y-4">
-        <button
-          onClick={() => navigate(`/aspirations/${id}/edit`)}
-          className="w-full bg-white border border-calm-200 text-calm-700 py-2.5 rounded-xl font-medium text-sm hover:border-calm-400 transition-colors"
-        >
-          Edit aspiration
-        </button>
 
         {detail.reason && (
-          <div className="bg-white rounded-xl p-4 shadow-sm">
-            <p className="text-xs uppercase tracking-wide text-calm-500 mb-1">
+          <div className={`p-4 ${CARD}`}>
+            <p className={F_LABEL}>
               Reason
             </p>
-            <p className="text-calm-900 text-sm whitespace-pre-wrap">
+            <p className="text-ink text-sm whitespace-pre-wrap">
               {detail.reason}
             </p>
           </div>
         )}
         {detail.motivation && (
-          <div className="bg-white rounded-xl p-4 shadow-sm">
-            <p className="text-xs uppercase tracking-wide text-calm-500 mb-1">
+          <div className={`p-4 ${CARD}`}>
+            <p className={F_LABEL}>
               Motivation
             </p>
-            <p className="text-calm-900 text-sm whitespace-pre-wrap">
+            <p className="text-ink text-sm whitespace-pre-wrap">
               {detail.motivation}
             </p>
           </div>
         )}
         {detail.notes && (
-          <div className="bg-white rounded-xl p-4 shadow-sm">
-            <p className="text-xs uppercase tracking-wide text-calm-500 mb-1">
+          <div className={`p-4 ${CARD}`}>
+            <p className={F_LABEL}>
               Notes
             </p>
-            <p className="text-calm-900 text-sm whitespace-pre-wrap">
+            <p className="text-ink text-sm whitespace-pre-wrap">
               {detail.notes}
             </p>
           </div>
@@ -137,27 +148,27 @@ function AspirationPage() {
 
         <div>
           <div className="flex items-baseline justify-between mb-2 px-1">
-            <h2 className="font-heading text-xl text-calm-900">
+            <h2 className="font-heading text-xl text-ink">
               How it's going
             </h2>
-            <span className="text-xs text-calm-400">
+            <span className="text-xs text-stone-400">
               last {detail.progress_days} days
             </span>
           </div>
 
           {detail.habits.length === 0 ? (
-            <div className="bg-white rounded-xl p-6 text-center shadow-sm">
-              <p className="text-calm-400 text-sm">
+            <div className={`p-6 text-center ${CARD}`}>
+              <p className="text-stone-400 text-sm">
                 No habits attached yet. Edit this aspiration to add some.
               </p>
             </div>
           ) : (
             <ul className="space-y-3">
               {detail.habits.map((h) => (
-                <li key={h.id} className="bg-white rounded-xl p-4 shadow-sm">
+                <li key={h.id} className={`p-4 ${CARD}`}>
                   {h.tiers.length > 0 ? (
                     <>
-                      <p className="text-calm-900 font-medium text-sm mb-3">
+                      <p className="text-ink font-medium text-sm mb-3">
                         {h.name}
                       </p>
                       <div className="space-y-3">
@@ -173,7 +184,7 @@ function AspirationPage() {
                                   </span>
                                 )}
                               </span>
-                              <span className="text-xs text-calm-500 whitespace-nowrap">
+                              <span className="whitespace-nowrap rounded-full bg-petal px-2 py-0.5 text-[11px] font-semibold text-calm-700">
                                 🔥 {t.streak}
                               </span>
                             </div>
@@ -185,10 +196,10 @@ function AspirationPage() {
                   ) : (
                     <>
                       <div className="flex items-center justify-between mb-2">
-                        <p className="text-calm-900 font-medium text-sm">
+                        <p className="text-ink font-medium text-sm">
                           {h.name}
                         </p>
-                        <span className="text-xs text-calm-500 whitespace-nowrap">
+                        <span className="whitespace-nowrap rounded-full bg-petal px-2 py-0.5 text-[11px] font-semibold text-calm-700">
                           🔥 {h.streak}
                         </span>
                       </div>

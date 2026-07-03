@@ -105,6 +105,19 @@ def _habit_tiers(habit):
     return tiers
 
 
+def _aspirations_by_habit():
+    """habit_id -> [aspiration ids, ascending], one query over the M2M. The
+    frontend keys an aspiration's bloom color off its id, so the ascending
+    order keeps a habit's dots stable everywhere they render."""
+    by_habit = defaultdict(list)
+    for habit_id, asp_id in (
+        Aspiration.objects.order_by("id").values_list("habits__id", "id")
+    ):
+        if habit_id is not None:   # an aspiration with no habits yields (None, id)
+            by_habit[habit_id].append(asp_id)
+    return by_habit
+
+
 def _day_logs(target_date):
     """That day's HabitLogs grouped per habit into the shape `_version_status`
     needs: ``habit_id -> {specific:{level:status}, fallback:status|None,
@@ -381,6 +394,11 @@ def plan(request):
     # default to PENDING / "" via the helpers below.
     day_logs = _day_logs(target_date)
 
+    # habit_id -> [aspiration ids, ascending] in ONE query, so every row can
+    # carry which aspirations its habit serves (the frontend colors a bloom dot
+    # per aspiration) without an N+1 over the M2M.
+    asp_map = _aspirations_by_habit()
+
     # Each cycle's effective time for THIS day, with the full Phase-3 precedence:
     # this date's ChainDay (a "running late" shift, or the time a frozen day locked
     # in) > the recurring forward-time in effect (ChainTime) > the chain's recurring
@@ -455,6 +473,7 @@ def plan(request):
             "tier_name": tier_name,        # "Roots"/"Growth", or null
             "tier_value": tier_value,      # Case A: this slot's tier value, else null
             "tiers": tiers,                # per-version [{level,name,value,status,done}], [] if untiered
+            "aspirations": asp_map.get(habit.id, []),  # aspiration ids this habit serves
         }
 
     # The arrangement source differs by whether the day is frozen, but the payload
@@ -2658,6 +2677,9 @@ def habits_list(request):
             id__in=_paused_habit_ids(target_date)
         )
 
+    # habit_id -> [aspiration ids] in one query (bloom dots on the Habits page).
+    asp_map = _aspirations_by_habit()
+
     data = []
     for habit in habits:
         bucket = day_logs.get(habit.id)
@@ -2680,6 +2702,7 @@ def habits_list(request):
             "tiers": tiers,                        # per-version, [] if untiered
             # whole-habit status: done if any version done, else skip/missed/pending
             "status": _version_status(specific, fallback, None, is_past),
+            "aspirations": asp_map.get(habit.id, []),  # aspiration ids this habit serves
         })
 
     return JsonResponse(data, safe=False)

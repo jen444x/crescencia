@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import Header from "../components/layout/Header";
+import { CARD, CARD_TITLE } from "../components/ui";
 import HabitForm, { type HabitValues } from "../components/HabitForm";
 import ConfirmDialog from "../components/ConfirmDialog";
 
@@ -336,7 +337,7 @@ function EditHabitPage() {
 
   return (
     <>
-      <Header title="Edit habit" body="" />
+      <Header title={initial?.name ?? "Edit habit"} eyebrow="Edit habit" />
       <div className="max-w-md mx-auto">
         {isLoading && (
           <p className="text-center text-calm-500 text-sm">Loading...</p>
@@ -352,8 +353,8 @@ function EditHabitPage() {
 
         {/* Tiers: the easy (Roots) and everyday (Growth) versions of this habit. */}
         {initial && (
-          <section className="mt-8">
-            <h2 className="text-sm font-medium text-calm-900">Tiers</h2>
+          <section className={`mt-4 p-4 ${CARD}`}>
+            <h2 className={CARD_TITLE}>Tiers</h2>
 
             <div className="mt-3">
               {tiersError && (
@@ -371,16 +372,17 @@ function EditHabitPage() {
                   {tiers.map((tier) => (
                     <li
                       key={tier.level}
-                      className="flex items-center justify-between gap-3 rounded-lg bg-stone-50 px-3 py-2 text-sm text-calm-700"
+                      className="flex items-center gap-3 border-t border-whisper py-2.5 text-sm text-ink first:border-t-0 first:pt-0"
                     >
-                      <span>
-                        {tier.value ? `${tier.name} — ${tier.value}` : tier.name}
+                      <span className="shrink-0 rounded-full border border-mist bg-whisper px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-calm-700">
+                        {tier.name}
                       </span>
+                      <span className="min-w-0 flex-1">{tier.value || "—"}</span>
                       <button
                         type="button"
                         onClick={() => removeTier(tier.level)}
                         disabled={tiersSaving}
-                        className="text-xs text-red-500 hover:text-red-600 disabled:opacity-50"
+                        className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
                       >
                         Remove
                       </button>
@@ -399,7 +401,7 @@ function EditHabitPage() {
                 <select
                   value={tierLevel}
                   onChange={(e) => setTierLevel(Number(e.target.value))}
-                  className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-sm text-calm-700"
+                  className="rounded-xl border border-mist bg-whisper px-2.5 py-1.5 text-sm text-ink focus:border-calm-400 focus:outline-none"
                 >
                   <option value={1}>Roots</option>
                   <option value={2}>Growth</option>
@@ -409,14 +411,14 @@ function EditHabitPage() {
                   value={tierValue}
                   onChange={(e) => setTierValue(e.target.value)}
                   placeholder="value — optional (5 min, throw water)"
-                  className="flex-1 rounded-lg border border-stone-200 bg-white px-2 py-1 text-sm text-calm-700"
+                  className="min-w-0 flex-1 rounded-xl border border-mist bg-whisper px-2.5 py-1.5 text-sm text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
                 />
                 <button
                   type="submit"
                   disabled={tiersSaving}
-                  className="rounded-lg bg-calm-900 px-3 py-1 text-sm text-white hover:bg-calm-700 disabled:opacity-50"
+                  className="rounded-full bg-calm-600 px-3.5 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
                 >
-                  Save
+                  Add
                 </button>
               </form>
             </div>
@@ -425,14 +427,14 @@ function EditHabitPage() {
 
         {/* Per-day notes for this habit. Pick a day to browse its notes. */}
         {initial && (
-          <section className="mt-8">
+          <section className={`mt-4 p-4 ${CARD}`}>
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-medium text-calm-900">Notes</h2>
+              <h2 className={CARD_TITLE}>Notes</h2>
               <input
                 type="date"
                 value={noteDate}
                 onChange={(e) => setNoteDate(e.target.value)}
-                className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-sm text-calm-700"
+                className="rounded-full border border-mist bg-whisper px-2.5 py-1 text-xs font-semibold text-calm-700 focus:border-calm-400 focus:outline-none"
               />
             </div>
 
@@ -450,7 +452,7 @@ function EditHabitPage() {
                   {notes.map((note) => (
                     <li
                       key={note.id}
-                      className="rounded-lg bg-stone-50 px-3 py-2 text-sm text-calm-700"
+                      className="rounded-xl bg-whisper px-3 py-2 text-sm text-ink"
                     >
                       {note.body}
                     </li>
@@ -464,7 +466,7 @@ function EditHabitPage() {
         {/* Remove the habit: stop it going forward (keeps history) or delete it
             forever. When it's already stopped, this becomes a Resume control. */}
         {initial && (
-          <section className="mt-10 border-t border-stone-100 pt-6">
+          <section className="mt-8">
             {deleteError && (
               <p className="mb-3 text-center text-sm text-red-500">
                 {deleteError}
@@ -481,7 +483,7 @@ function EditHabitPage() {
                   type="button"
                   onClick={resumeHabit}
                   disabled={deleteBusy}
-                  className="mt-3 rounded-xl bg-calm-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+                  className="mt-3 rounded-full bg-calm-600 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
                 >
                   Resume habit
                 </button>
@@ -491,9 +493,9 @@ function EditHabitPage() {
                 type="button"
                 onClick={() => setDeleteOpen(true)}
                 disabled={deleteBusy}
-                className="w-full rounded-xl border border-rose-200 py-3 text-sm font-medium text-rose-600 transition-colors hover:bg-rose-50 disabled:opacity-50"
+                className="w-full py-2 text-center text-xs font-semibold text-rose-400 transition-colors hover:text-rose-500 disabled:opacity-50"
               >
-                Delete habit
+                Stop or delete this habit…
               </button>
             )}
           </section>

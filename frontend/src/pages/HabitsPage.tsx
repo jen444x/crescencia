@@ -7,6 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import Header from "../components/layout/Header";
+import AspirationDots from "../components/AspirationDots";
 import { CARD, SEG, segOption, HEADER_ACTION } from "../components/ui";
 import { useToast } from "../components/Toast";
 import { useNavigate } from "react-router-dom";
@@ -60,6 +61,9 @@ type HabitRow = {
   ended_on: string | null;
   tiers: HabitTier[];
   status: HabitStatus;
+  // Aspiration ids this habit serves — rendered as bloom dots in the
+  // aspiration's bed color next to the name.
+  aspirations: number[];
 };
 
 // A routine group (id + name) from GET /routines/, for the "Add to routine"
@@ -169,10 +173,12 @@ function HabitTierRow({
   habit,
   level,
   onLog,
+  expander,
 }: {
   habit: HabitRow;
   level: number | null;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
+  expander?: ReactNode;
 }) {
   const tier =
     level == null ? undefined : habit.tiers.find((t) => t.level === level);
@@ -202,18 +208,24 @@ function HabitTierRow({
         </span>
       )}
       <div className="min-w-0 flex-1">
-        <span
-          className={`block wrap-break-word text-sm font-medium ${
-            done
-              ? "text-calm-400 line-through"
-              : skipped
-                ? "text-stone-400"
-                : missed
-                  ? "text-rose-400"
-                  : "text-ink"
-          }`}
-        >
-          {habit.name}
+        <span className="flex flex-wrap items-center gap-x-1.5">
+          <span
+            className={`wrap-break-word text-sm font-medium ${
+              done
+                ? "text-calm-400 line-through"
+                : skipped
+                  ? "text-stone-400"
+                  : missed
+                    ? "text-rose-400"
+                    : "text-ink"
+            }`}
+          >
+            {habit.name}
+          </span>
+          <AspirationDots
+            ids={habit.aspirations}
+            className={done || skipped || missed ? "opacity-40" : ""}
+          />
         </span>
         {tier?.value && (
           <span
@@ -224,12 +236,19 @@ function HabitTierRow({
         )}
       </div>
 
-      {/* Tier tag — names which version this row is (Roots / Growth). */}
+      {/* Tier tag — names which version this row is. Roots wears clay (roots
+          live in earth), Growth wears leaf green. */}
       {tier && (
-        <span className="shrink-0 rounded-full border border-mist bg-whisper px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-calm-700">
+        <span
+          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+            tier.level === 1 ? "bg-blush text-clay" : "bg-mint text-calm-700"
+          }`}
+        >
           {tier.name}
         </span>
       )}
+
+      {expander}
 
       {/* Status dot: shows the slot's state (✓ done · – skipped · ✗ missed),
         and a one-tap toggles Complete / undo. */}
@@ -268,6 +287,7 @@ function HabitRowWithMenu({
   habit,
   level,
   onLog,
+  expander,
   routines,
   habitRoutine,
   onSetRoutine,
@@ -275,6 +295,7 @@ function HabitRowWithMenu({
   habit: HabitRow;
   level: number | null;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
+  expander?: ReactNode;
   routines: Routine[];
   habitRoutine?: HabitRoutine;
   onSetRoutine: (habitId: number, routineId: number | null) => void;
@@ -290,7 +311,7 @@ function HabitRowWithMenu({
       }}
       className="cursor-pointer"
     >
-      <HabitTierRow habit={habit} level={level} onLog={onLog} />
+      <HabitTierRow habit={habit} level={level} onLog={onLog} expander={expander} />
 
       <HabitStatusSheet
         open={menuOpen}
@@ -534,16 +555,47 @@ function HabitCard({
   habitRoutine?: HabitRoutine;
   onSetRoutine: (habitId: number, routineId: number | null) => void;
 }) {
-  // Row order inside the card: tier levels low->high (Roots first), flipped
-  // when Growth has focus. [null] = the untiered single row.
-  const levels: (number | null)[] =
+  // Collapsed, the card is just the FOCUSED version's row; the chevron expands
+  // it to show every version (focused first). [null] = the untiered single row
+  // (not listed on this page, kept as a guard).
+  const [expanded, setExpanded] = useState(false);
+  const focusLevel = focus === "ROOTS" ? 1 : 2;
+  const sorted: (number | null)[] =
     habit.tiers.length > 0
       ? [...habit.tiers]
           .sort((a, b) =>
-            focus === "GROWTH" ? b.level - a.level : a.level - b.level,
+            a.level === focusLevel
+              ? -1
+              : b.level === focusLevel
+                ? 1
+                : a.level - b.level,
           )
           .map((t) => t.level)
       : [null];
+  const levels = expanded ? sorted : sorted.slice(0, 1);
+  const hasMore = sorted.length > 1;
+
+  const expander = hasMore ? (
+    <button
+      type="button"
+      data-no-menu
+      aria-expanded={expanded}
+      aria-label={expanded ? "Hide other versions" : "Show all versions"}
+      onClick={() => setExpanded((v) => !v)}
+      className="-m-1 shrink-0 p-1 text-calm-300 transition-colors hover:text-calm-500"
+    >
+      <svg
+        className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        aria-hidden
+      >
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+      </svg>
+    </button>
+  ) : undefined;
 
   return (
     <div className="flex items-center gap-2">
@@ -551,12 +603,13 @@ function HabitCard({
       <div
         className={`min-w-0 flex-1 divide-y divide-whisper overflow-hidden ${CARD}`}
       >
-        {levels.map((level) => (
+        {levels.map((level, i) => (
           <HabitRowWithMenu
             key={level ?? "solo"}
             habit={habit}
             level={level}
             onLog={onLog}
+            expander={i === 0 ? expander : undefined}
             routines={routines}
             habitRoutine={habitRoutine}
             onSetRoutine={onSetRoutine}
@@ -729,7 +782,7 @@ function HabitsPage() {
   const [showHelpers, setShowHelpers] = useState(false);
   // Which tier sits on top (both always show). Roots on top by default; pick
   // Growth to put Growth above Roots.
-  const [focus, setFocus] = useState<TierFocus>("ROOTS");
+  const [focus, setFocus] = useState<TierFocus>("GROWTH");
   // The day being viewed (default: today). The ◀/▶ nav moves it and we re-fetch
   // /habits/ for that day, exactly like the Plan page — same statuses, just for
   // the chosen date.
@@ -902,7 +955,9 @@ function HabitsPage() {
     // being swept into the new order (mirrors the Plan page's "reorder keeps
     // hidden rows in place" rule).
     const inSection = (h: HabitRow) =>
-      h.is_support === active.is_support && (showHelpers || !h.is_support);
+      h.tiers.some((t) => t.level <= focusLevel) &&
+      h.is_support === active.is_support &&
+      (showHelpers || !h.is_support);
     const section = habits.filter(inSection);
     const from = section.findIndex((h) => h.id === activeId);
     const to = section.findIndex((h) => h.id === overId);
@@ -940,9 +995,19 @@ function HabitsPage() {
     }
   }
 
-  const visible = showHelpers
-    ? habits
-    : habits.filter((habit) => !habit.is_support);
+  // This page lists only TIERED habits (her call): it's the Roots/Growth
+  // practice board, not the full catalog — untiered habits live on the Plan
+  // page. The Roots/Growth picker FILTERS at-or-below the picked level (the
+  // Plan page's day-tier rule): Roots = just Roots versions; Growth = every
+  // habit at its best version, so a Roots-only habit (brush teeth) still shows
+  // on Growth. Expand a card to see all its versions. Helpers hide behind the
+  // Main/All toggle as before.
+  const focusLevel = focus === "ROOTS" ? 1 : 2;
+  const visible = habits.filter(
+    (habit) =>
+      habit.tiers.some((t) => t.level <= focusLevel) &&
+      (showHelpers || !habit.is_support),
+  );
   // The main list and the "Helpers" shelf below it (empty while helpers are
   // hidden, so the shelf simply doesn't render).
   const mains = visible.filter((habit) => !habit.is_support);
@@ -981,7 +1046,7 @@ function HabitsPage() {
             <div className="w-6 h-6 border-2 border-calm-300 border-t-calm-600 rounded-full animate-spin"></div>
             <span className="ml-3 text-stone-400 text-sm">Loading habits...</span>
           </div>
-        ) : habits.length === 0 ? (
+        ) : visible.length === 0 ? (
           isViewingToday ? (
             <div className={`p-10 text-center ${CARD}`}>
               <div className="mb-4 flex justify-center">

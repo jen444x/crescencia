@@ -23,7 +23,7 @@ function AddAspirationPage() {
 
   return (
     <>
-      <Header title="New aspiration" body="" />
+      <Header title="New aspiration" eyebrow="Where you're headed" />
       <div className="max-w-md mx-auto">
         <AspirationForm
           submitLabel="Create aspiration"

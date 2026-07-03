@@ -59,7 +59,7 @@ function fromDateYMD(): string {
 function GripIcon() {
   return (
     <svg
-      className="h-4 w-4 shrink-0 text-calm-300"
+      className="h-4 w-4 shrink-0"
       viewBox="0 0 24 24"
       fill="currentColor"
       aria-hidden
@@ -77,7 +77,6 @@ function GripIcon() {
 function HabitRow({ h }: { h: RoutineHabit }) {
   return (
     <>
-      <GripIcon />
       <span className="flex-1 text-sm text-calm-900">{h.name}</span>
       {h.routine_name && (
         <span className="rounded-full bg-calm-50 px-2 py-0.5 text-[10px] font-medium text-calm-500">
@@ -105,10 +104,20 @@ function SortableHabit({ h }: { h: RoutineHabit }) {
         opacity: isDragging ? 0.85 : 1,
         zIndex: isDragging ? 30 : undefined,
       }}
-      {...attributes}
-      {...listeners}
-      className="flex cursor-grab select-none items-center gap-2 px-4 py-3 active:cursor-grabbing"
+      className="flex select-none items-center gap-2 px-4 py-3"
     >
+      {/* Only the grip carries the drag listeners — with them on the whole row,
+          a slow-starting scroll (finger down ~450ms, then swipe) anywhere on a
+          row would grab it and drag instead of scrolling. */}
+      <button
+        type="button"
+        aria-label="Drag to reorder"
+        {...attributes}
+        {...listeners}
+        className="-m-2 shrink-0 cursor-grab select-none p-2 text-calm-300 hover:text-calm-500 active:cursor-grabbing"
+      >
+        <GripIcon />
+      </button>
       <HabitRow h={h} />
     </li>
   );

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "../components/layout/Header";
+import { CARD, F_INPUT, HEADER_ACTION } from "../components/ui";
 
 // A routine group from GET /routines/ — just id + name. Membership lives on the
 // schedule rows and is managed on the detail page.
@@ -68,17 +69,18 @@ function RoutinesPage() {
 
   return (
     <>
-      <Header title="Routines" body="" />
-      <div className="max-w-md mx-auto">
-        {!adding ? (
-          <button
-            onClick={() => setAdding(true)}
-            className="w-full mb-4 bg-calm-600 text-white py-3 rounded-xl font-medium hover:bg-calm-700 transition-colors"
-          >
-            + New routine
+      <Header
+        title="Routines"
+        eyebrow="Groups of habits"
+        action={
+          <button onClick={() => setAdding(true)} className={HEADER_ACTION}>
+            + New
           </button>
-        ) : (
-          <div className="mb-4 rounded-xl bg-white p-3 shadow-sm">
+        }
+      />
+      <div className="max-w-md mx-auto">
+        {adding && (
+          <div className={`mb-4 p-3 ${CARD}`}>
             <input
               autoFocus
               value={newName}
@@ -91,7 +93,7 @@ function RoutinesPage() {
                 }
               }}
               placeholder="Routine name (e.g. Morning routine)"
-              className="w-full rounded-lg border border-calm-200 px-3 py-2 text-sm text-calm-900 focus:border-calm-400 focus:outline-none"
+              className={F_INPUT}
             />
             <div className="mt-2 flex gap-2">
               <button
@@ -99,14 +101,14 @@ function RoutinesPage() {
                   setAdding(false);
                   setNewName("");
                 }}
-                className="flex-1 rounded-lg border border-calm-200 py-2 text-sm font-medium text-calm-700 transition-colors hover:bg-calm-50"
+                className="flex-1 rounded-full border border-mist py-2 text-sm font-medium text-calm-700 transition-colors hover:bg-whisper"
               >
                 Cancel
               </button>
               <button
                 onClick={createRoutine}
                 disabled={creating || !newName.trim()}
-                className="flex-1 rounded-lg bg-calm-600 py-2 text-sm font-medium text-white transition-colors hover:bg-calm-700 disabled:opacity-40"
+                className="flex-1 rounded-full bg-calm-600 py-2 text-sm font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-40"
               >
                 Create
               </button>
@@ -120,8 +122,8 @@ function RoutinesPage() {
         {error && <p className="text-red-500 text-sm text-center">{error}</p>}
 
         {!isLoading && !error && routines.length === 0 && (
-          <div className="bg-white rounded-2xl p-10 text-center shadow-sm">
-            <h3 className="font-heading text-xl text-stone-900 mb-2">
+          <div className={`p-10 text-center ${CARD}`}>
+            <h3 className="font-heading text-xl text-ink mb-2">
               No routines yet
             </h3>
             <p className="text-stone-400 text-sm">
@@ -132,12 +134,14 @@ function RoutinesPage() {
 
         <ul className="space-y-3">
           {routines.map((r) => (
-            <li key={r.id} className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <li key={r.id} className={`overflow-hidden ${CARD}`}>
               <button
                 onClick={() => navigate(`/routines/${r.id}`)}
                 className="flex w-full items-center gap-2 p-4 text-left"
               >
-                <h3 className="flex-1 font-medium text-stone-900">{r.name}</h3>
+                <h3 className="min-w-0 flex-1 font-heading text-xl leading-snug text-ink">
+                  {r.name}
+                </h3>
                 <span className="text-calm-300" aria-hidden>
                   ›
                 </span>

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { CARD, F_LABEL, F_INPUT, BTN_PRIMARY } from "./ui";
 
 export type HabitValues = {
   name: string;
@@ -69,13 +70,14 @@ function HabitForm({
     }
   }
 
-  const fieldClass =
-    "w-full px-4 py-4 bg-white border border-calm-200 rounded-xl focus:outline-none focus:border-calm-500 text-calm-900 placeholder:text-calm-400";
+  const fieldClass = F_INPUT;
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} className="space-y-4">
+      {/* All the fields live in one card; the save pill stands alone below. */}
+      <div className={`space-y-4 p-4 ${CARD}`}>
       <div>
-        <label className="block text-calm-700 text-sm mb-2 font-medium">
+        <label className={F_LABEL}>
           Name
         </label>
         <input
@@ -89,7 +91,7 @@ function HabitForm({
       </div>
 
       <div>
-        <label className="block text-calm-700 text-sm mb-2 font-medium">
+        <label className={F_LABEL}>
           Notes
         </label>
         <textarea
@@ -102,7 +104,7 @@ function HabitForm({
       </div>
 
       <div>
-        <label className="block text-calm-700 text-sm mb-2 font-medium">
+        <label className={F_LABEL}>
           Area
         </label>
         <select
@@ -121,24 +123,25 @@ function HabitForm({
         </select>
       </div>
 
-      <label className="flex items-center gap-3 cursor-pointer select-none">
+      <label className="flex items-start gap-3 cursor-pointer select-none">
         <input
           type="checkbox"
           checked={isSupport}
           onChange={(e) => setIsSupport(e.target.checked)}
-          className="h-4 w-4 rounded border-calm-300 text-calm-600 focus:ring-calm-500"
+          className="mt-0.5 h-4 w-4 rounded border-mist accent-calm-600"
         />
-        <span className="text-calm-700 text-sm font-medium">
+        <span className="text-xs leading-relaxed text-calm-700">
           Helper habit — a step that supports a main one (hidden from the Habits list)
         </span>
       </label>
+      </div>
 
       {error && <p className="text-red-500 text-sm">{error}</p>}
 
       <button
         type="submit"
         disabled={isSaving}
-        className="w-full bg-calm-600 text-white py-4 rounded-xl font-medium hover:bg-calm-700 transition-colors disabled:opacity-60"
+        className={BTN_PRIMARY}
       >
         {isSaving ? "Saving..." : submitLabel}
       </button>

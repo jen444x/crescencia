@@ -22,13 +22,15 @@ export function plantState(
 }
 
 // Glow strength grows with health — a soft sage halo behind the pot.
+// closest-side + a 0-alpha end stop keep the gradient fully faded before the
+// box edge — otherwise the glow clips into a visible rectangle.
 const GLOW: Record<PlantState, string> = {
   wilting:
-    "radial-gradient(circle at 50% 44%, rgba(123,171,154,.10), transparent 70%)",
+    "radial-gradient(circle closest-side at 50% 44%, rgba(71,161,131,.10), rgba(71,161,131,0) 100%)",
   steady:
-    "radial-gradient(circle at 50% 42%, rgba(123,171,154,.18), transparent 70%)",
+    "radial-gradient(circle closest-side at 50% 42%, rgba(71,161,131,.18), rgba(71,161,131,0) 100%)",
   flourishing:
-    "radial-gradient(circle at 50% 40%, rgba(123,171,154,.28), transparent 72%)",
+    "radial-gradient(circle closest-side at 50% 40%, rgba(71,161,131,.28), rgba(71,161,131,0) 100%)",
 };
 
 // The pot is shared by every state; only the foliage above it changes.
@@ -38,7 +40,7 @@ function Pot() {
       <path
         d="M22 47 L42 47 L40 60 Q32 62.5 24 60 Z"
         fill="#fff"
-        stroke="#dfeee6"
+        stroke="#d9a79e"
         strokeWidth={1.5}
       />
       <rect
@@ -47,11 +49,11 @@ function Pot() {
         width={24}
         height={5}
         rx={2.5}
-        fill="#f2f8f5"
-        stroke="#dfeee6"
+        fill="#f6eae8"
+        stroke="#d9a79e"
         strokeWidth={1}
       />
-      <ellipse cx={32} cy={47.5} rx={8} ry={1.5} fill="#3e5a4e" opacity={0.4} />
+      <ellipse cx={32} cy={47.5} rx={8} ry={1.5} fill="#b07c72" opacity={0.35} />
     </>
   );
 }
@@ -71,8 +73,8 @@ function Foliage({ state }: { state: PlantState }) {
         <ellipse cx={23} cy={40} rx={6.6} ry={3} fill="#9fb7ac" transform="rotate(26 23 40)" />
         <ellipse cx={41} cy={37} rx={6.6} ry={3} fill="#9fb7ac" transform="rotate(-26 41 37)" />
         <ellipse cx={26} cy={31} rx={6} ry={2.7} fill="#aecabd" transform="rotate(18 26 31)" />
-        <ellipse cx={33.5} cy={20} rx={2.4} ry={3.8} fill="#c9c0d8" transform="rotate(8 33.5 20)" />
-        <circle cx={24} cy={59} r={1.6} fill="#c4b3e0" opacity={0.65} />
+        <ellipse cx={33.5} cy={20} rx={2.4} ry={3.8} fill="#cdbaeb" transform="rotate(8 33.5 20)" />
+        <circle cx={24} cy={59} r={1.6} fill="#ad8fe0" opacity={0.65} />
       </>
     );
   }
@@ -83,18 +85,18 @@ function Foliage({ state }: { state: PlantState }) {
         <path
           d="M32 46 Q31 29 32 15"
           fill="none"
-          stroke="#2d4a44"
+          stroke="#2f8168"
           strokeWidth={2.4}
           strokeLinecap="round"
         />
-        <ellipse cx={24} cy={36} rx={7.4} ry={3.3} fill="#5a8f7b" transform="rotate(-28 24 36)" />
-        <ellipse cx={40} cy={32} rx={7.4} ry={3.3} fill="#5a8f7b" transform="rotate(28 40 32)" />
-        <ellipse cx={25} cy={27} rx={7} ry={3.1} fill="#7bab9a" transform="rotate(-33 25 27)" />
-        <ellipse cx={39} cy={24} rx={6.6} ry={3} fill="#7bab9a" transform="rotate(33 39 24)" />
-        <circle cx={30} cy={13.5} r={1.9} fill="#c4b3e0" />
-        <circle cx={34} cy={13.5} r={1.9} fill="#c4b3e0" />
-        <circle cx={30} cy={16.8} r={1.9} fill="#c4b3e0" />
-        <circle cx={34} cy={16.8} r={1.9} fill="#c4b3e0" />
+        <ellipse cx={24} cy={36} rx={7.4} ry={3.3} fill="#47a183" transform="rotate(-28 24 36)" />
+        <ellipse cx={40} cy={32} rx={7.4} ry={3.3} fill="#47a183" transform="rotate(28 40 32)" />
+        <ellipse cx={25} cy={27} rx={7} ry={3.1} fill="#62ba9a" transform="rotate(-33 25 27)" />
+        <ellipse cx={39} cy={24} rx={6.6} ry={3} fill="#62ba9a" transform="rotate(33 39 24)" />
+        <circle cx={30} cy={13.5} r={1.9} fill="#ad8fe0" />
+        <circle cx={34} cy={13.5} r={1.9} fill="#ad8fe0" />
+        <circle cx={30} cy={16.8} r={1.9} fill="#ad8fe0" />
+        <circle cx={34} cy={16.8} r={1.9} fill="#ad8fe0" />
         <circle cx={32} cy={15.1} r={1.3} fill="#f4efe8" />
       </>
     );
@@ -105,15 +107,15 @@ function Foliage({ state }: { state: PlantState }) {
       <path
         d="M32 46 Q31 30 32 17"
         fill="none"
-        stroke="#2d4a44"
+        stroke="#2f8168"
         strokeWidth={2.3}
         strokeLinecap="round"
       />
-      <ellipse cx={24} cy={37} rx={7.2} ry={3.2} fill="#5a8f7b" transform="rotate(-27 24 37)" />
-      <ellipse cx={40} cy={34} rx={7.2} ry={3.2} fill="#5a8f7b" transform="rotate(27 40 34)" />
-      <ellipse cx={25} cy={28} rx={6.6} ry={3} fill="#7bab9a" transform="rotate(-32 25 28)" />
-      <circle cx={31} cy={16.5} r={1.7} fill="#c4b3e0" />
-      <circle cx={34.5} cy={16.5} r={1.7} fill="#c4b3e0" />
+      <ellipse cx={24} cy={37} rx={7.2} ry={3.2} fill="#47a183" transform="rotate(-27 24 37)" />
+      <ellipse cx={40} cy={34} rx={7.2} ry={3.2} fill="#47a183" transform="rotate(27 40 34)" />
+      <ellipse cx={25} cy={28} rx={6.6} ry={3} fill="#62ba9a" transform="rotate(-32 25 28)" />
+      <circle cx={31} cy={16.5} r={1.7} fill="#ad8fe0" />
+      <circle cx={34.5} cy={16.5} r={1.7} fill="#ad8fe0" />
     </>
   );
 }
@@ -123,11 +125,15 @@ export default function PlantWidget({
   total,
   missed = 0,
   size = 68,
+  glow = true,
 }: {
   done: number;
   total: number;
   missed?: number;
   size?: number;
+  // Off when the plant sits inside its own aura (the Plan hero) — stacking the
+  // internal glow on top of it reads as a clipped rectangle.
+  glow?: boolean;
 }) {
   const state = plantState(done, missed, total);
   const label =
@@ -137,11 +143,13 @@ export default function PlantWidget({
 
   return (
     <div className="relative grid place-items-center">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute"
-        style={{ inset: "-16px -34px", background: GLOW[state] }}
-      />
+      {glow && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute"
+          style={{ inset: "-16px -34px", background: GLOW[state] }}
+        />
+      )}
       <svg
         aria-hidden
         viewBox="0 0 64 66"

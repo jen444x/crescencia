@@ -2,24 +2,31 @@
 @import "tailwindcss";
 
 @theme {
-  --color-calm-900: #1b2e2a;
-  --color-calm-700: #2d4a44;
-  --color-calm-600: #5a8f7b;
-  --color-calm-500: #7bab9a;
+  /* Color pass 2026-07-03: the greens deepened from grey-green to a real leaf
+     color (#47a183) — the desaturated originals were reading lifeless. */
+  --color-calm-900: #22382f;
+  --color-calm-700: #2f8168;
+  --color-calm-600: #47a183;
+  --color-calm-500: #62ba9a;
   --color-calm-400: #a8cfc2;
   --color-calm-300: #d2e8e0;
   --color-calm-200: #e5f0ec;
   --color-calm-50: #f4f8f6;
   --color-warm-100: #f9f6f2;
   /* The named palette. ink/mist/whisper alias steps of the calm scale so new
-     styling can say what it means; lilac/petal are the bloom accents (lilac is
-     the PlantWidget's flower color — keep it rare, only where something
-     bloomed). */
-  --color-ink: #1b2e2a;
+     styling can say what it means. lilac/petal are the bloom accents; clay/
+     blush the warm earth voice (tier "Roots", pots); mint the green wash.
+     Aspiration bed colors rotate lilac -> green -> clay by aspiration id. */
+  --color-ink: #22382f;
   --color-mist: #d2e8e0;
   --color-whisper: #f4f8f6;
-  --color-lilac: #c4b3e0;
-  --color-petal: #ece5f6;
+  --color-mint: #ebf7f1;
+  --color-lilac: #ad8fe0;
+  --color-lilac-deep: #7d5fb4;
+  --color-petal: #f1ebfa;
+  --color-clay: #b07c72;
+  --color-clay-soft: #d9a79e;
+  --color-blush: #f6eae8;
   /* Tailwind v4 derives font utilities from the --font-* namespace, so these
      must be named --font-heading / --font-body for `font-heading` / `font-body`
      to exist. (They were --font-family-*, so `font-heading` was silently dead
@@ -96,7 +103,9 @@ textarea {
   line-height: 1.5;
   font-weight: 400;
   color: var(--color-calm-900);
-  background-color: var(--color-warm-100);
+  /* Matches the top of the page wash so Safari's chrome, overscroll and
+     safe-area regions blend into the page instead of reading as grey bars. */
+  background-color: #f7fbf9;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;

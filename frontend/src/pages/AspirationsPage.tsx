@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import Header from "../components/layout/Header";
-import { CARD, HEADER_ACTION } from "../components/ui";
+import { CARD, HEADER_ACTION, bloomFor } from "../components/ui";
 
 type DayCell = { done: boolean; existed: boolean };
 type VersionWeek = {
@@ -187,70 +187,82 @@ function AspirationsPage() {
         <ul className="space-y-3">
           {aspirations.map((a) => {
             const open = openIds.has(a.id);
+            // Each aspiration is a garden bed with its own bloom color — a thin
+            // colored top edge, keyed off the id so the same color follows this
+            // aspiration everywhere (see BLOOMS).
+            const bloom = bloomFor(a.id);
             return (
-              <li key={a.id} className={`overflow-hidden ${CARD}`}>
-                <button
-                  onClick={() => toggleOne(a.id)}
-                  aria-expanded={open}
-                  className="flex w-full items-center gap-2 p-4 text-left"
-                >
-                  <Chevron open={open} />
-                  {/* Serif — an aspiration is an intention, not a list item. */}
-                  <h3 className="min-w-0 flex-1 font-heading text-xl leading-snug text-ink">
+              <li
+                key={a.id}
+                className={`overflow-hidden ${CARD}`}
+                style={{ borderTop: `3px solid ${bloom.edge}` }}
+              >
+                {/* The NAME opens the aspiration's page; everywhere else on the
+                    header row (including the chevron, right) toggles collapse. */}
+                <div className="flex w-full items-center p-4">
+                  <Link
+                    to={`/aspirations/${a.id}`}
+                    className="min-w-0 font-heading text-xl leading-snug text-ink transition-colors hover:text-calm-700"
+                  >
                     {a.name}
-                  </h3>
-                  <span className="shrink-0 rounded-full bg-petal px-2.5 py-0.5 text-[11px] font-semibold text-calm-700">
-                    {a.habits.length} habit{a.habits.length === 1 ? "" : "s"}
-                  </span>
-                </button>
+                  </Link>
+                  <button
+                    onClick={() => toggleOne(a.id)}
+                    aria-expanded={open}
+                    aria-label={`${open ? "Collapse" : "Expand"} ${a.name}`}
+                    className="-m-4 flex flex-1 items-center justify-end self-stretch p-4"
+                  >
+                    <Chevron open={open} />
+                  </button>
+                </div>
 
                 {open && (
-                  <div className="space-y-3 px-4 pb-4">
+                  <div className="px-4 pb-3">
                     {a.habits.length === 0 ? (
-                      <p className="text-stone-400 text-sm">No habits yet.</p>
+                      <p className="pb-1 text-stone-400 text-sm">
+                        No habits yet.
+                      </p>
                     ) : (
                       <>
                         <DowRow window={windowDays} />
-                        {a.habits.map((h) =>
-                          h.tiers.length > 0 ? (
-                            <div key={h.id}>
-                              <p className="mb-2 text-[13px] font-medium text-ink">
-                                {h.name}
-                              </p>
-                              <div className="space-y-2">
-                                {h.tiers.map((t) => (
-                                  <div key={t.level}>
-                                    <p className="mb-1 text-[11px] font-medium text-calm-600">
-                                      {t.name}
-                                      {t.value && (
-                                        <span className="text-stone-400">
-                                          {" · "}
-                                          {t.value}
-                                        </span>
-                                      )}
-                                    </p>
-                                    <WeekRow days={t.days} />
-                                  </div>
-                                ))}
+                        {/* A whisper hairline splits each habit from the next,
+                            so the strips read as clear per-habit groups. */}
+                        <div className="divide-y divide-whisper">
+                          {a.habits.map((h) =>
+                            h.tiers.length > 0 ? (
+                              <div key={h.id} className="py-3 first:pt-1">
+                                <p className="mb-2 text-[13px] font-medium text-ink">
+                                  {h.name}
+                                </p>
+                                <div className="space-y-2">
+                                  {h.tiers.map((t) => (
+                                    <div key={t.level}>
+                                      <p className="mb-1 text-[11px] font-medium text-calm-600">
+                                        {t.name}
+                                        {t.value && (
+                                          <span className="text-stone-400">
+                                            {" · "}
+                                            {t.value}
+                                          </span>
+                                        )}
+                                      </p>
+                                      <WeekRow days={t.days} />
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
-                            </div>
-                          ) : (
-                            <div key={h.id}>
-                              <p className="mb-1.5 text-[13px] font-medium text-ink">
-                                {h.name}
-                              </p>
-                              <WeekRow days={h.days} />
-                            </div>
-                          ),
-                        )}
+                            ) : (
+                              <div key={h.id} className="py-3 first:pt-1">
+                                <p className="mb-1.5 text-[13px] font-medium text-ink">
+                                  {h.name}
+                                </p>
+                                <WeekRow days={h.days} />
+                              </div>
+                            ),
+                          )}
+                        </div>
                       </>
                     )}
-                    <Link
-                      to={`/aspirations/${a.id}`}
-                      className="inline-block text-xs font-semibold text-calm-600 hover:text-calm-700"
-                    >
-                      Details ›
-                    </Link>
                   </div>
                 )}
               </li>

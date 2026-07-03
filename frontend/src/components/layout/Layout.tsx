@@ -9,7 +9,7 @@ function Layout() {
           the mock, instead of a flat fill. Content is held to a centered phone-
           width column (max-w-md, matching the nav) so nothing sprawls on wider
           screens. pb-32 leaves room for the fixed nav. */}
-      <div className="min-h-screen bg-linear-to-b from-[#f8fbf9] to-[#eaf1ec] bg-fixed pb-32">
+      <div className="min-h-screen bg-linear-to-b from-[#f7fbf9] to-[#e4f0ea] bg-fixed pb-32">
         <div className="mx-auto max-w-md px-6 pt-[calc(2rem+env(safe-area-inset-top))]">
           <Outlet />
         </div>

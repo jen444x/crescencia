@@ -54,7 +54,7 @@ function EditAspirationPage() {
 
   return (
     <>
-      <Header title="Edit aspiration" body="" />
+      <Header title="Edit aspiration" eyebrow="Where you're headed" />
       <div className="max-w-md mx-auto">
         {error && (
           <p className="text-red-500 text-sm text-center mb-4">{error}</p>
