@@ -1,4 +1,5 @@
 import type { Habit, HabitStatus, ReadStatus, Chain } from "./types";
+import { highestDoneLevel, isCaseB, levelsUpTo } from "./tier";
 
 // Read a habit's state, tolerating an older payload that only had done_today.
 export function isDone(habit: Habit) {
@@ -38,4 +39,37 @@ export function applyStatus(
       return { ...habit, tiers };
     }),
   }));
+}
+
+// Apply a tap-menu choice to one habit slot, preserving the tier cascade:
+// completing a Case-B rung marks the easier ones done too (so Clear can step DOWN
+// a rung); Clear on a done card uncompletes the highest done rung. Shared by the
+// active card (dot + menu) and the completed-tray row so they behave identically.
+type StatusAction = "COMPLETE" | "SKIP" | "MISS" | "CLEAR";
+export function applyStatusAction(
+  habit: Habit,
+  tierToSend: number | undefined,
+  action: StatusAction,
+  isDone: boolean,
+  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void,
+) {
+  if (action === "COMPLETE") {
+    if (isCaseB(habit) && tierToSend != null) {
+      for (const lvl of levelsUpTo(habit, tierToSend))
+        onStatus(habit.id, "COMPLETED", lvl);
+    } else {
+      onStatus(habit.id, "COMPLETED", tierToSend);
+    }
+  } else if (action === "SKIP") {
+    onStatus(habit.id, "SKIPPED", tierToSend);
+  } else if (action === "MISS") {
+    onStatus(habit.id, "MISSED", tierToSend);
+  } else {
+    // CLEAR -> back to pending. A done card steps DOWN from its highest done rung.
+    const top =
+      isDone && isCaseB(habit)
+        ? (highestDoneLevel(habit) ?? tierToSend)
+        : tierToSend;
+    onStatus(habit.id, "PENDING", top);
+  }
 }

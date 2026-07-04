@@ -1,4 +1,4 @@
-import type { Habit, SlotPlacement, ReadStatus } from "./types";
+import type { Chain, Habit, SlotPlacement, ReadStatus } from "./types";
 
 // The day-tier levels. Roots = the hard/minimum day; Growth = the everyday bar.
 // Levels match the backend's tier levels.
@@ -133,4 +133,90 @@ export function caseBDisplayLevel(
   const done = highestDoneLevel(habit);
   if (done != null && (today == null || done >= today)) return done;
   return today;
+}
+
+// habit id -> the highest Case-A tier-slot level (h.tier, the non-null ones)
+// that is <= dayTier, or null when none qualify. This picks which of a habit's
+// several tier-slots is its "today" version: the one that renders inline, while
+// lower slots are cascade-hidden and higher ones stretch. Untiered + Case-B
+// rows aren't in here (they carry no per-slot tier); slotPlacement handles them.
+export function computeInlineTierByHabit(
+  chains: Chain[],
+  dayTier: number,
+): Map<number, number | null> {
+  const byHabit = new Map<number, number[]>();
+  for (const chain of chains)
+    for (const h of chain.habits)
+      if (h.tier != null) {
+        const a = byHabit.get(h.id) ?? [];
+        a.push(h.tier);
+        byHabit.set(h.id, a);
+      }
+  const inline = new Map<number, number | null>();
+  for (const [hid, tiers] of byHabit) {
+    const ok = tiers.filter((t) => t <= dayTier);
+    inline.set(hid, ok.length ? Math.max(...ok) : null);
+  }
+  return inline;
+}
+
+// The day's tally for the plant meter (wilting/steady/flourishing). Reads each
+// habit's status the SAME way its card does — via slotStatus on the row's shown
+// rung — so a completed/missed TIERED habit (whose status lives in habit.tiers,
+// not habit.status) moves the plant immediately, not only after a reload. Pass
+// the ALREADY-filtered chains (shownChains) so it mirrors the cards on screen
+// (day-tier + "Main only"). Purely derived; nothing is stored.
+export function computePlanTotals(
+  chains: Chain[],
+  dayTier: number,
+): { done: number; missed: number; total: number } {
+  let done = 0;
+  let missed = 0;
+  let total = 0;
+  for (const chain of chains) {
+    for (const h of chain.habits) {
+      const level = isCaseB(h)
+        ? (caseBDisplayLevel(h, dayTier) ?? undefined)
+        : rowCompleteTier(h, dayTier);
+      const st = slotStatus(h, level);
+      total++;
+      if (st === "COMPLETED") done++;
+      else if (st === "MISSED") missed++;
+    }
+  }
+  return { done, missed, total };
+}
+
+// The "Stretch" section entries: harder versions she can opt into, in plan order.
+// Two sources: (1) Case-A slots that placed as "stretch" (a tier above today at
+// its own time), each completed at its own `tier`; (2) synthesized entries for
+// every Case-B rung ABOVE what the inline card already shows (above the highest
+// DONE rung, else above today), each completed at that rung's level. `level` is
+// the tier each card shows + sends. `mainOnly` drops helper/support habits.
+export function computeStretchSlots(
+  chains: Chain[],
+  inlineTierByHabit: Map<number, number | null>,
+  dayTier: number,
+  mainOnly: boolean,
+): { habit: Habit; level: number }[] {
+  const out: { habit: Habit; level: number }[] = [];
+  for (const chain of chains) {
+    for (const habit of chain.habits) {
+      if (mainOnly && habit.is_support) continue;
+      if (habit.tier != null) {
+        // Case A: this slot stretches when it's a harder tier than today.
+        if (slotPlacement(habit, inlineTierByHabit, dayTier) === "stretch")
+          out.push({ habit, level: habit.tier });
+      } else if (isCaseB(habit)) {
+        // Case B: one synthesized "do more" card per rung above what the inline
+        // card already shows — above the highest DONE rung (so a completed harder
+        // rung isn't also listed as a stretch), or above today when nothing's done.
+        const done = highestDoneLevel(habit);
+        const covered = done != null ? Math.max(dayTier, done) : dayTier;
+        for (const t of habit.tiers ?? [])
+          if (t.level > covered) out.push({ habit, level: t.level });
+      }
+    }
+  }
+  return out;
 }

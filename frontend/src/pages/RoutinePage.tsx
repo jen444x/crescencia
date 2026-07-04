@@ -61,13 +61,19 @@ function RoutinePage() {
       setSlots(flat);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An unknown error occurred");
+      setError(
+        err instanceof Error ? err.message : "An unknown error occurred",
+      );
     } finally {
       setIsLoading(false);
     }
   }, [routineId]);
 
   useEffect(() => {
+    // Fetch on mount / when routineId changes — a legitimate effect (syncing
+    // with the server). The rule can't see load()'s async boundary, so the
+    // setState it flags actually happens after an await, not synchronously.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
@@ -148,7 +154,9 @@ function RoutinePage() {
         {isLoading && (
           <p className="text-center text-calm-500 text-sm">Loading...</p>
         )}
-        {error && <p className="mb-3 text-red-500 text-sm text-center">{error}</p>}
+        {error && (
+          <p className="mb-3 text-red-500 text-sm text-center">{error}</p>
+        )}
 
         {!isLoading && !error && (
           <>
@@ -236,7 +244,9 @@ function RoutinePage() {
             )}
 
             {/* Add habits — every scheduled habit not already in a routine. */}
-            <h3 className="mb-2 text-sm font-medium text-calm-600">Add a habit</h3>
+            <h3 className="mb-2 text-sm font-medium text-calm-600">
+              Add a habit
+            </h3>
             {available.length === 0 ? (
               <p className="text-sm text-stone-400">
                 Every scheduled habit is already in a routine. (Only habits on
