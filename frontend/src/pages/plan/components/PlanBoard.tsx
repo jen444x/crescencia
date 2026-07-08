@@ -7,9 +7,11 @@ import type { Chain, Habit, HabitStatus, Segment } from "../types";
 import { slotPlacement } from "../tier";
 import { isDone } from "../status";
 import { buildSegments } from "../segments";
+import { Fragment } from "react";
 import { RowLayout } from "./RowLayout";
 import { SortableRow } from "./SortableRow";
 import { CompletedTray, RoutineBlock } from "./PlanBlocks";
+import { HabitChip } from "./HabitChip";
 
 // All of one plan's habits. Not-yet-completed habits show as the active list (a
 // drag-to-reorder list for scheduled plans; a plain list for "Anytime"), and
@@ -21,6 +23,7 @@ export function PlanBoard({
   dayTier,
   inlineTierByHabit,
   mainOnly,
+  planView,
   onStatus,
   onOpenNote,
   onRoutineLog,
@@ -46,6 +49,10 @@ export function PlanBoard({
   // "tomorrow" only touches that one day and never the recurring routine. Still
   // false for the "Anytime" group (no rows to reorder).
   interactive: boolean;
+  // "rows" (the default cards list) or "chips" (a dense wrap of pills). Chips is a
+  // glance-only layout, so it skips the drag list, the collapsed done-tray, and
+  // the routine blocks — every shown habit is just a chip, in order.
+  planView: "rows" | "chips";
 }) {
   const chainId = chain.id;
   // Register this block as a drop target so a row dragged out of another block
@@ -66,6 +73,32 @@ export function PlanBoard({
       slotPlacement(habit, inlineTierByHabit, dayTier) === "inline" &&
       (!mainOnly || !habit.is_support),
   );
+
+  // Compact layout: the cycle's habits are boxed runs of INLINE text that flow
+  // like words filling a line. A habit too long for the remaining space breaks
+  // ACROSS the line (starts here, finishes on the next line) and the following
+  // habit continues after it. The whitespace between habits is the break
+  // opportunity that lets a whole habit drop to the next line when it doesn't fit.
+  // Generous line-height so the boxed lines don't overlap. No drag / done-tray /
+  // routine grouping — it's a dense glance; Rows stays the view for arranging.
+  if (planView === "chips") {
+    if (habits.length === 0) return null;
+    return (
+      <div className="text-sm leading-[2.35]">
+        {habits.map((habit, i) => (
+          <Fragment key={habit.id}>
+            {i > 0 && " "}
+            <HabitChip
+              habit={habit}
+              dayTier={dayTier}
+              onStatus={onStatus}
+              onOpenNote={onOpenNote}
+            />
+          </Fragment>
+        ))}
+      </div>
+    );
+  }
 
   // Not reorderable when it's the "Anytime" group (no schedule rows) or any day
   // that isn't today (see `interactive` above).

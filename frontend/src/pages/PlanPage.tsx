@@ -47,6 +47,7 @@ import {
   sortHabitsToTemplate,
 } from "./plan/drag";
 import { usePersistentState } from "../hooks/usePersistentState";
+import { fetchChains, fetchDayNotes } from "./plan/api";
 import { usePlanScroll } from "./plan/usePlanScroll";
 import { useHabitStatus } from "./plan/useHabitStatus";
 import { useNotes } from "./plan/useNotes";
@@ -104,6 +105,15 @@ function PlanPage() {
     parse: (raw) => raw === "1",
     serialize: (v) => (v ? "1" : "0"),
   });
+
+  // How the plan is laid out: "rows" (the cards list, default) or "chips" (a dense
+  // wrap of pills per cycle). Persisted like the tier / main-only toggles, so the
+  // view stays where you left it across reloads and day switches.
+  const [planView, setPlanView] = usePersistentState<"rows" | "chips">(
+    "planView",
+    "rows",
+    { parse: (raw) => (raw === "chips" ? "chips" : "rows"), serialize: (v) => v },
+  );
 
   // Where the plan opens (and where the floating control parks you): at "now" (the
   // current time block, the default) or at the top. Set by whichever floating
@@ -244,34 +254,23 @@ function PlanPage() {
   // Writes the per-day layer via /days/arrange/ — never the recurring template.
   async function postReorder(chainId: number, orderedHabits: Habit[]) {
     if (orderedHabits.length === 0) return;
-    const snapshot = chainsRef.current;
-    setChains((prev) => applyPlanOrder(prev, chainId, orderedHabits));
 
     // /days/arrange/ keys on row_id (the day's stable per-row key) and wants the
     // whole list with fresh 1..N orders. A not-yet-saved row (placed this
     // session, no row_id) is sent as a {habit, plan, order} placement instead of
     // an {id: null} move — which the backend rejects — so the reorder persists.
-    const items = orderedHabits.map((habit, i) =>
-      habit.row_id != null
-        ? { id: habit.row_id, order: i + 1 }
-        : { habit: habit.id, chain: chainId, order: i + 1 },
+    const items = orderedHabits.map(
+      (habit, i): Record<string, number | null> =>
+        habit.row_id != null
+          ? { id: habit.row_id, order: i + 1 }
+          : { habit: habit.id, chain: chainId, order: i + 1 },
     );
 
-    try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/days/arrange/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date: toYMD(viewedDate), items }),
-      });
-      if (!res.ok) throw new Error("Request failed");
-      // A frozen day forks template rows into ScheduleDay rows (new row_ids), so
-      // re-fetch /plan/ to pick up the day's real keys + reconcile.
-      setReloadToken((token) => token + 1);
-    } catch {
-      // Don't silently snap back — surface it so a rejected save is visible.
-      setChains(snapshot);
-      toast("Couldn't reorder — try again", { variant: "error" });
-    }
+    await commitArrange(
+      (prev) => applyPlanOrder(prev, chainId, orderedHabits),
+      items,
+      "Couldn't reorder — try again",
+    );
   }
 
   // Drag entry point: remember the block's order *before* the move, apply it,
@@ -384,6 +383,32 @@ function PlanPage() {
     }
   }
 
+  // The optimistic-write spine shared by every per-day board edit (reorder, move
+  // across blocks, place from Anytime). Snapshot the board, apply `next` on
+  // screen right away, POST `items` to /days/arrange/, then reconcile: on success
+  // re-fetch /plan/ (a freeze can reassign row_ids) and hand back the snapshot so
+  // the caller can wire an Undo; on failure roll the board back and surface
+  // `errorMessage`. Returns whether the write stuck plus the pre-edit snapshot.
+  async function commitArrange(
+    next: Chain[] | ((prev: Chain[]) => Chain[]),
+    items: Array<Record<string, number | null>>,
+    errorMessage: string,
+  ): Promise<{ ok: boolean; snapshot: Chain[] }> {
+    const snapshot = chainsRef.current;
+    setChains(next);
+    const ok = await persistItems(items);
+    if (!ok) {
+      // Don't silently snap back — surface it so a rejected save is visible.
+      setChains(snapshot);
+      toast(errorMessage, { variant: "error" });
+      return { ok, snapshot };
+    }
+    // A frozen day forks template rows into ScheduleDay rows (new row_ids), so
+    // re-fetch /plan/ to pick up the day's real keys + reconcile.
+    setReloadToken((token) => token + 1);
+    return { ok, snapshot };
+  }
+
   // Move one row (`rid` = its row_id) out of `fromChain` into `toChain` for the
   // viewed day only, dropping its routine (a same-block tag) and
   // landing it before `overRid` (or at the end when dropped on empty block
@@ -399,7 +424,6 @@ function PlanPage() {
     const moved = fromChain.habits.find((h) => h.row_id === rid);
     if (!moved) return;
 
-    const snapshot = chainsRef.current;
     const origFrom = fromChain.habits;
     const origTo = toChain.habits;
 
@@ -441,16 +465,6 @@ function PlanPage() {
       return;
     }
 
-    setChains((prev) =>
-      prev.map((p) =>
-        p.id === fromChain.id
-          ? { ...p, habits: newFrom.map((h, i) => ({ ...h, order: i + 1 })) }
-          : p.id === toChain.id
-            ? { ...p, habits: newTo.map((h, i) => ({ ...h, order: i + 1 })) }
-            : p,
-      ),
-    );
-
     const items = [
       ...newFrom.map((h, i) => ({ id: h.row_id ?? null, order: i + 1 })),
       ...newTo.map((h, i) =>
@@ -459,15 +473,19 @@ function PlanPage() {
           : { id: h.row_id ?? null, order: i + 1 },
       ),
     ];
-    const ok = await persistItems(items);
-    if (!ok) {
-      setChains(snapshot);
-      toast("Couldn't move that habit", { variant: "error" });
-      return;
-    }
-    // A frozen day reassigns row_ids (template -> ScheduleDay); re-fetch /plan/
-    // so the optimistic rows pick up the day's real keys.
-    setReloadToken((token) => token + 1);
+    const { ok, snapshot } = await commitArrange(
+      (prev) =>
+        prev.map((p) =>
+          p.id === fromChain.id
+            ? { ...p, habits: newFrom.map((h, i) => ({ ...h, order: i + 1 })) }
+            : p.id === toChain.id
+              ? { ...p, habits: newTo.map((h, i) => ({ ...h, order: i + 1 })) }
+              : p,
+        ),
+      items,
+      "Couldn't move that habit",
+    );
+    if (!ok) return;
 
     toast("Habit moved", {
       action: {
@@ -552,7 +570,6 @@ function PlanPage() {
     // the drop position sticks (the placed habit as a placement, the siblings as
     // ordered moves).
     const next = moveOut(snapshot);
-    setChains(next);
     const block = next.find((p) => p.id === chainId);
     const items = (block?.habits ?? []).map(
       (h, i): Record<string, number | null> => {
@@ -565,14 +582,10 @@ function PlanPage() {
           : { id: h.row_id, order: i + 1 };
       },
     );
-    const ok = await persistItems(items);
-    if (!ok) {
-      setChains(snapshot);
-      toast("Couldn't place that habit", { variant: "error" });
-      return;
-    }
-    // The freeze assigns the new row its row_id; re-fetch to reconcile.
-    setReloadToken((token) => token + 1);
+    // The freeze assigns the new row its row_id; commitArrange re-fetches to
+    // reconcile on success.
+    const { ok } = await commitArrange(next, items, "Couldn't place that habit");
+    if (!ok) return;
     toast("Habit placed");
   }
 
@@ -673,31 +686,18 @@ function PlanPage() {
   );
 
   useEffect(() => {
-    async function fetchPlan() {
+    // Load everything the day needs: the board (chains) + its notes. The network
+    // calls live in ./plan/api; this owns loading/error and applies results.
+    async function loadDay() {
       setIsLoading(true);
       setError("");
-
-      // Omit ?date on today (identical to the original behaviour); pass it only
-      // when browsing another day.
-      const today = isSameDay(viewedDate, new Date());
-      const suffix = today ? "" : `?date=${toYMD(viewedDate)}`;
-      const url = `${import.meta.env.VITE_API_URL}/plan/${suffix}`;
-      const notesUrl = `${import.meta.env.VITE_API_URL}/days/notes/${suffix}`;
-
       try {
         // /plan/ and /days/notes/ are independent reads for the same day — fetch
         // them together so notes don't add a serial round-trip.
-        const [res, notesRes] = await Promise.all([
-          fetch(url, { method: "GET", headers: {} }),
-          fetch(notesUrl, { method: "GET", headers: {} }),
+        const [data, notes] = await Promise.all([
+          fetchChains(viewedDate),
+          fetchDayNotes(viewedDate),
         ]);
-
-        const data: Chain[] = await res.json();
-        if (!res.ok) {
-          setError((data as unknown as { error?: string }).error ?? "");
-          return;
-        }
-
         // A frozen /plan/ now returns the day's never-placed unscheduled habits in
         // the Anytime group itself (see habits/views.plan), so the screen matches a
         // fresh GET every time — no client-side re-attach needed, and a refresh is
@@ -705,10 +705,7 @@ function PlanPage() {
         setChains(data);
         // The order this day loaded with — what "Reset order" returns to.
         setBaselineOrder(data);
-
-        // Notes are additive: if the endpoint isn't live yet or errors, fall back
-        // to the legacy per-habit string by clearing the new-model notes.
-        setDayNotes(notesRes.ok ? await notesRes.json() : []);
+        setDayNotes(notes);
       } catch (error) {
         setError(
           error instanceof Error ? error.message : "An unknown error occurred",
@@ -717,7 +714,7 @@ function PlanPage() {
         setIsLoading(false);
       }
     }
-    fetchPlan();
+    loadDay();
     // Re-runs when the viewed day changes, or reloadToken is bumped (e.g. after
     // a "running late" shift) to pull the day's new effective times. setDayNotes
     // (from useNotes) is a stable setter — listed to satisfy exhaustive-deps.
@@ -950,6 +947,7 @@ function PlanPage() {
                   dayTier={dayTier}
                   inlineTierByHabit={inlineTierByHabit}
                   mainOnly={mainOnly}
+                  planView={planView}
                   isViewingToday={isViewingToday}
                   nowBlockId={nowBlockId}
                   visibleChains={visibleChains}
@@ -1026,6 +1024,8 @@ function PlanPage() {
             onTierChange={setDayTier}
             mainOnly={mainOnly}
             onToggleMainOnly={() => setMainOnly((v) => !v)}
+            planView={planView}
+            onViewChange={setPlanView}
             onEverydayRoutine={() => navigate("/routine")}
             onNewRoutine={() => setRoutineSheet({ mode: "create" })}
             onAddTime={() => setAddingTime(true)}

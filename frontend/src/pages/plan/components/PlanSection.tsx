@@ -23,6 +23,7 @@ export function PlanSection({
   dayTier,
   inlineTierByHabit,
   mainOnly,
+  planView,
   isViewingToday,
   nowBlockId,
   visibleChains,
@@ -42,6 +43,7 @@ export function PlanSection({
   dayTier: number;
   inlineTierByHabit: Map<number, number | null>;
   mainOnly: boolean;
+  planView: "rows" | "chips";
   isViewingToday: boolean;
   nowBlockId: number | null;
   visibleChains: Chain[];
@@ -79,6 +81,7 @@ export function PlanSection({
       dayTier={dayTier}
       inlineTierByHabit={inlineTierByHabit}
       mainOnly={mainOnly}
+      planView={planView}
       onStatus={onStatus}
       onOpenNote={onOpenNote}
       onRoutineLog={onRoutineLog}

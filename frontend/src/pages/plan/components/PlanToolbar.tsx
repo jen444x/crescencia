@@ -17,6 +17,43 @@ function StarIcon() {
   );
 }
 
+// Layout-toggle glyphs: stacked full lines for Rows (a card per line), and a
+// short wrapped paragraph for Compact (habits flowing as text). Self-contained
+// like the star/ellipsis above.
+function RowsIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+  );
+}
+
+function CompactIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M4 7h16M4 12h16M4 17h9" />
+    </svg>
+  );
+}
+
 function EllipsisIcon() {
   return (
     <svg
@@ -42,6 +79,8 @@ export default function PlanToolbar({
   onTierChange,
   mainOnly,
   onToggleMainOnly,
+  planView,
+  onViewChange,
   onEverydayRoutine,
   onNewRoutine,
   onAddTime,
@@ -56,6 +95,10 @@ export default function PlanToolbar({
   onTierChange: (level: number) => void;
   mainOnly: boolean;
   onToggleMainOnly: () => void;
+  // The plan's layout, and its setter. "rows" = the cards list; "chips" = the
+  // dense wrap. Persisted by the page, so it survives reloads and day switches.
+  planView: "rows" | "chips";
+  onViewChange: (view: "rows" | "chips") => void;
   onEverydayRoutine: () => void;
   onNewRoutine: () => void;
   // "Add time" (new empty time block) lives in the ⋯ menu, not a dashed
@@ -131,6 +174,41 @@ export default function PlanToolbar({
               }`}
             >
               {t.name}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Layout toggle: Rows (cards) vs Chips (dense wrap). Icon-only segmented
+          pill, styled like the day-tier pill so the two "how to view" controls
+          read as a pair. */}
+      <div
+        role="group"
+        aria-label="Layout"
+        className="inline-flex rounded-full border border-mist bg-white p-0.5"
+      >
+        {(
+          [
+            { view: "rows", label: "List view", icon: <RowsIcon /> },
+            { view: "chips", label: "Compact view", icon: <CompactIcon /> },
+          ] as const
+        ).map((opt) => {
+          const active = planView === opt.view;
+          return (
+            <button
+              key={opt.view}
+              type="button"
+              aria-pressed={active}
+              aria-label={opt.label}
+              title={opt.label}
+              onClick={() => onViewChange(opt.view)}
+              className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+                active
+                  ? "bg-mint text-calm-700"
+                  : "text-stone-400 hover:text-stone-600"
+              }`}
+            >
+              {opt.icon}
             </button>
           );
         })}
