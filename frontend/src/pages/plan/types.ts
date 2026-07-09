@@ -73,9 +73,11 @@ export type Habit = {
   // higher-completes-lower cascade into these, so a card just reads its own
   // version here. Used to drive each rung's done/skip/missed and Case B's rung.
   tiers?: {
-    level: number;
-    name: string;
+    level: number;               // per-habit ladder position (1..N); cascade order
+    name: string;                // the tag's display ("Roots"/"Growth"), "" if untagged
+    label?: number | null;       // the tag level (1=Roots, 2=Growth), null = untagged
     value: string;
+    version?: number;            // the rung's id — what a completion/log keys on
     status?: ReadStatus;
     done?: boolean;
   }[];

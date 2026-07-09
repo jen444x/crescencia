@@ -24,21 +24,21 @@ export function useHabitStatus({
   async function setHabitStatus(
     habitId: number,
     status: HabitStatus,
-    tier?: number,
+    version?: number,
   ) {
     const snapshot = chainsRef.current;
-    setChains((prev) => applyStatus(prev, habitId, status, tier));
+    setChains((prev) => applyStatus(prev, habitId, status, version));
 
     try {
-      // Send the `tier` for EVERY status (not just completion) so skip / missed /
-      // undo target THAT version's row, not the whole habit. Omitting it means the
-      // untiered ("whole habit") row, exactly as before.
+      // Send the `version` (rung id) for EVERY status (not just completion) so
+      // skip / missed / undo target THAT rung's row, not the whole habit. Omitting
+      // it means the untiered ("whole habit") row, exactly as before.
       const body: {
         status: HabitStatus;
         date?: string;
-        tier?: number;
+        version?: number;
       } = isViewingToday ? { status } : { status, date: toYMD(viewedDate) };
-      if (tier != null) body.tier = tier;
+      if (version != null) body.version = version;
 
       const res = await fetch(
         `${import.meta.env.VITE_API_URL}/habits/${habitId}/log/`,
@@ -54,7 +54,7 @@ export function useHabitStatus({
       // Un-completing a rung optimistically can't know which LOWER rungs were only
       // cascade-shown done (vs. completed in their own right), so reconcile an undo
       // from the server. Complete/skip/missed are exact optimistically — no reload.
-      if (status === "PENDING" && tier != null) triggerReload();
+      if (status === "PENDING" && version != null) triggerReload();
     } catch {
       setChains(snapshot);
     }

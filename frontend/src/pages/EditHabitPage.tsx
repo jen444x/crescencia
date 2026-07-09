@@ -110,8 +110,16 @@ type Note = {
   updated_at: string;
 };
 
-// One tier (Roots=1 / Growth=2) as returned by /habits/:id/.
-type Tier = { level: number; name: string; value: string };
+// One ladder rung as returned by /habits/:id/ (tiers[], low->high).
+type Tier = {
+  level: number;
+  name: string;
+  label: number | null; // tag level 1=Roots / 2=Growth, null = untagged
+  value: string;
+  version: number; // the rung's id
+};
+// A rung while editing: `id` present = an existing Version, absent = a new one.
+type EditRung = { id?: number; value: string; label: number | null };
 
 // Local "YYYY-MM-DD" for a Date — built from local parts (not toISOString,
 // which is UTC and can land on the wrong day). Matches how the rest of the app
@@ -146,11 +154,10 @@ function EditHabitPage() {
   const [notesLoading, setNotesLoading] = useState(true);
   const [notesError, setNotesError] = useState("");
 
-  // Tiers section: this habit's easy/everyday versions, plus the add/bump form
-  // and its own saving/error state so a failed tier save can't break the page.
-  const [tiers, setTiers] = useState<Tier[]>([]);
-  const [tierLevel, setTierLevel] = useState(2);
-  const [tierValue, setTierValue] = useState("");
+  // Ladder section: this habit's rungs (low->high), edited as one list and saved
+  // in a single POST. Each rung is a value + an OPTIONAL Roots/Growth tag; order
+  // is the rung's position (the cascade runs low->high).
+  const [rungs, setRungs] = useState<EditRung[]>([]);
   const [tiersSaving, setTiersSaving] = useState(false);
   const [tiersError, setTiersError] = useState("");
 
@@ -174,7 +181,13 @@ function EditHabitPage() {
           is_support: data.is_support,
         });
         setEndedOn(data.ended_on ?? null);
-        setTiers(data.tiers ?? []);
+        setRungs(
+          (data.tiers ?? []).map((t: Tier) => ({
+            id: t.version,
+            value: t.value,
+            label: t.label ?? null,
+          })),
+        );
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "An unknown error occurred",
@@ -228,57 +241,70 @@ function EditHabitPage() {
     navigate(-1);
   }
 
-  // Add or bump a tier's value. Saving an existing tier just updates its value.
-  async function saveTier() {
-    // Value is OPTIONAL — a tier can be a plain tag (e.g. makeup = Growth only,
-    // no number). A blank value just creates/keeps the tier without a value.
-    const value = tierValue.trim();
-    setTiersSaving(true);
-    setTiersError("");
-    try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/habits/${id}/tiers/`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tier: tierLevel, value }),
-        },
-      );
-      const data = await res.json();
-      if (!res.ok) {
-        setTiersError(data.error ?? "Could not save tier.");
-        return;
-      }
-      setTiers(data.tiers);
-      setTierValue("");
-    } catch (err) {
-      setTiersError(
-        err instanceof Error ? err.message : "An unknown error occurred",
-      );
-    } finally {
-      setTiersSaving(false);
-    }
+  // --- ladder editing (local until "Save ladder") ------------------------
+  function addRung() {
+    setRungs((rs) => [...rs, { value: "", label: null }]);
+  }
+  function removeRung(i: number) {
+    setRungs((rs) => rs.filter((_, j) => j !== i));
+  }
+  function moveRung(i: number, dir: -1 | 1) {
+    setRungs((rs) => {
+      const j = i + dir;
+      if (j < 0 || j >= rs.length) return rs;
+      const next = rs.slice();
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  }
+  function setRungValue(i: number, value: string) {
+    setRungs((rs) => rs.map((r, j) => (j === i ? { ...r, value } : r)));
+  }
+  function setRungLabel(i: number, label: number | null) {
+    // A tag (Roots/Growth) can sit on only ONE rung: setting it here clears it
+    // off whatever had it, mirroring the DB rule.
+    setRungs((rs) =>
+      rs.map((r, j) =>
+        j === i
+          ? { ...r, label }
+          : label != null && r.label === label
+            ? { ...r, label: null }
+            : r,
+      ),
+    );
   }
 
-  // Remove a tier from this habit.
-  async function removeTier(level: number) {
+  // Save the whole ladder in one POST (position = level, low->high).
+  async function saveLadder() {
     setTiersSaving(true);
     setTiersError("");
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/habits/${id}/tiers/${level}/delete/`,
+        `${import.meta.env.VITE_API_URL}/habits/${id}/versions/`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
+          body: JSON.stringify({
+            rungs: rungs.map((r) => ({
+              id: r.id,
+              value: r.value.trim(),
+              label: r.label,
+            })),
+          }),
         },
       );
       const data = await res.json();
       if (!res.ok) {
-        setTiersError(data.error ?? "Could not remove tier.");
+        setTiersError(data.error ?? "Could not save the ladder.");
         return;
       }
-      setTiers(data.tiers);
+      setRungs(
+        (data.tiers as Tier[]).map((t) => ({
+          id: t.version,
+          value: t.value,
+          label: t.label ?? null,
+        })),
+      );
     } catch (err) {
       setTiersError(
         err instanceof Error ? err.message : "An unknown error occurred",
@@ -351,38 +377,85 @@ function EditHabitPage() {
           />
         )}
 
-        {/* Tiers: the easy (Roots) and everyday (Growth) versions of this habit. */}
+        {/* Ladder: this habit's rungs, easiest -> hardest. Each is a value + an
+            optional Roots/Growth tag; order is the rung's position (cascade runs
+            low->high). Edited locally, saved in one "Save ladder" POST. */}
         {initial && (
           <section className={`mt-4 p-4 ${CARD}`}>
-            <h2 className={CARD_TITLE}>Tiers</h2>
+            <h2 className={CARD_TITLE}>Ladder</h2>
+            <p className="mt-1 text-xs text-stone-400">
+              Rungs from easiest to hardest — the number on the left is just the
+              position. The Roots/Growth tag is optional and sits on one rung.
+              Finishing a higher rung fills in the ones below.
+            </p>
 
             <div className="mt-3">
               {tiersError && (
-                <p className="text-red-500 text-sm text-center mb-2">
+                <p className="mb-2 text-center text-sm text-red-500">
                   {tiersError}
                 </p>
               )}
 
-              {tiers.length === 0 ? (
-                <p className="text-center text-stone-400 text-sm">
-                  No tiers yet — add an easy or everyday version below.
+              {rungs.length === 0 ? (
+                <p className="text-center text-sm text-stone-400">
+                  No rungs yet — add one below.
                 </p>
               ) : (
-                <ul className="space-y-2">
-                  {tiers.map((tier) => (
+                <ul className="space-y-1.5">
+                  {rungs.map((r, i) => (
                     <li
-                      key={tier.level}
-                      className="flex items-center gap-3 border-t border-whisper py-2.5 text-sm text-ink first:border-t-0 first:pt-0"
+                      key={r.id ?? `new-${i}`}
+                      className="flex items-center gap-2 border-t border-whisper py-2 first:border-t-0 first:pt-0"
                     >
-                      <span className="shrink-0 rounded-full border border-mist bg-whisper px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-calm-700">
-                        {tier.name}
-                      </span>
-                      <span className="min-w-0 flex-1">{tier.value || "—"}</span>
+                      {/* position + reorder (order = the rung's level) */}
+                      <div className="flex shrink-0 flex-col items-center leading-none">
+                        <button
+                          type="button"
+                          aria-label="Move rung up"
+                          disabled={i === 0 || tiersSaving}
+                          onClick={() => moveRung(i, -1)}
+                          className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
+                        >
+                          ▲
+                        </button>
+                        <span className="my-0.5 text-[10px] font-bold text-calm-700">
+                          {i + 1}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label="Move rung down"
+                          disabled={i === rungs.length - 1 || tiersSaving}
+                          onClick={() => moveRung(i, 1)}
+                          className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
+                        >
+                          ▼
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        value={r.value}
+                        onChange={(e) => setRungValue(i, e.target.value)}
+                        placeholder="value (e.g. 1000 steps)"
+                        className="min-w-0 flex-1 rounded-xl border border-mist bg-whisper px-2.5 py-1.5 text-sm text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
+                      />
+                      <select
+                        value={r.label ?? 0}
+                        onChange={(e) =>
+                          setRungLabel(i, Number(e.target.value) || null)
+                        }
+                        aria-label="Tag"
+                        className="shrink-0 rounded-xl border border-mist bg-whisper px-2 py-1.5 text-sm text-ink focus:border-calm-400 focus:outline-none"
+                      >
+                        <option value={0}>— none —</option>
+                        <option value={1}>Roots</option>
+                        <option value={2}>Growth</option>
+                      </select>
                       <button
                         type="button"
-                        onClick={() => removeTier(tier.level)}
+                        aria-label="Remove rung"
+                        onClick={() => removeRung(i)}
                         disabled={tiersSaving}
-                        className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
+                        className="shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
                       >
                         Remove
                       </button>
@@ -391,36 +464,24 @@ function EditHabitPage() {
                 </ul>
               )}
 
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  saveTier();
-                }}
-                className="mt-3 flex items-center gap-2"
-              >
-                <select
-                  value={tierLevel}
-                  onChange={(e) => setTierLevel(Number(e.target.value))}
-                  className="rounded-xl border border-mist bg-whisper px-2.5 py-1.5 text-sm text-ink focus:border-calm-400 focus:outline-none"
-                >
-                  <option value={1}>Roots</option>
-                  <option value={2}>Growth</option>
-                </select>
-                <input
-                  type="text"
-                  value={tierValue}
-                  onChange={(e) => setTierValue(e.target.value)}
-                  placeholder="value — optional (5 min, throw water)"
-                  className="min-w-0 flex-1 rounded-xl border border-mist bg-whisper px-2.5 py-1.5 text-sm text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
-                />
+              <div className="mt-3 flex items-center justify-between gap-2">
                 <button
-                  type="submit"
+                  type="button"
+                  onClick={addRung}
                   disabled={tiersSaving}
-                  className="rounded-full bg-calm-600 px-3.5 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+                  className="rounded-full border border-mist bg-whisper px-3.5 py-1.5 text-sm font-semibold text-calm-700 transition-colors hover:border-calm-400 disabled:opacity-50"
                 >
-                  Add
+                  + Add rung
                 </button>
-              </form>
+                <button
+                  type="button"
+                  onClick={saveLadder}
+                  disabled={tiersSaving}
+                  className="rounded-full bg-calm-600 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
+                >
+                  {tiersSaving ? "Saving…" : "Save ladder"}
+                </button>
+              </div>
             </div>
           </section>
         )}

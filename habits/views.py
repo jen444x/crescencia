@@ -12,7 +12,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Aspiration, Routine, Habit, Chain, ChainDay, ChainTime, Schedule, ScheduleDay, HabitLog, HabitPause, Note, JournalEntry, Tier, HabitTier, TierValue
+from .models import Area, Aspiration, Routine, Habit, Chain, ChainDay, ChainTime, Schedule, ScheduleDay, HabitLog, HabitPause, Note, JournalEntry, Tier, HabitTier, TierValue, Version
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -88,21 +88,25 @@ def _shift_time(base, minutes):
 
 
 def _habit_tiers(habit):
-    """This habit's tiers low->high, each with its current value (the newest
-    TierValue). Returns [] for an untiered habit. Shape matches the /chains/ and
-    habit-detail contract: [{level, name, value}, ...]."""
-    tiers = []
-    for ht in (HabitTier.objects.filter(habit=habit)
-               .select_related("tier").order_by("tier__level")):
-        if ht.tier is None:        # tier FK is SET_NULL; skip an orphaned row
-            continue
-        current = TierValue.objects.filter(habit_tier=ht).first()  # ordering -> newest
-        tiers.append({
-            "level": ht.tier.level,
-            "name": ht.tier.get_level_display(),
-            "value": current.value if current else "",
+    """This habit's ladder rungs low->high: [{level, name, value, version}, ...].
+
+    Sourced from the Version table (was HabitTier + TierValue). `level` is the
+    per-habit ladder position (1..N) the cascade orders by; `name` is the OPTIONAL
+    Roots/Growth tag ("" when the rung is untagged, e.g. a 2000 between a Roots
+    1000 and a Growth 6000); `value` is the rung text; `version` is the rung id a
+    log/completion keys on. [] for a plain habit (no rungs). The field is still
+    called `tiers` on the wire for now — same shape the frontend already reads,
+    plus the `version` id and a possibly-empty `name`."""
+    rungs = []
+    for v in habit.versions.select_related("label").order_by("level"):
+        rungs.append({
+            "level": v.level,
+            "name": v.label.get_level_display() if v.label_id else "",
+            "label": v.label.level if v.label_id else None,  # tag level 1/2/3, or null
+            "value": v.value,
+            "version": v.id,
         })
-    return tiers
+    return rungs
 
 
 def _aspirations_by_habit():
@@ -132,7 +136,7 @@ def _day_logs(target_date):
     )
     for hid, level, status, notes in HabitLog.objects.filter(
         date=target_date
-    ).values_list("habit_id", "tier__level", "status", "notes"):
+    ).values_list("habit_id", "version__level", "status", "notes"):
         b = buckets[hid]
         if level is None:
             b["fallback"] = status
@@ -674,12 +678,13 @@ def plan(request):
 def log_habit(request, habit_id):
     """Set a habit's status and/or notes for a given day (defaults to today).
 
-    Body: {"status"?, "notes"?, "tier"?: 1|2|3, "date"?: "YYYY-MM-DD"} — send at
-    least one of `status` / `notes`.
+    Body: {"status"?, "notes"?, "version"?: id, "tier"?: 1|2|3, "date"?: "..."} —
+    send at least one of `status` / `notes`.
       - status: COMPLETED (complete) | PENDING (undo) | SKIPPED (skip) | MISSED.
-      - tier: WHICH version this log is for. Omit for an untiered habit or a
-        whole-habit action; a level writes that version's row, so Root and Growth
-        are tracked independently (one row per habit/date/tier).
+      - version: WHICH rung this log is for (its id). Omit for a plain habit or a
+        whole-habit action; a rung id writes that rung's row, so each rung is
+        tracked independently (one row per habit/date/version). `tier` (1|2|3) is
+        still accepted and mapped to the rung with that label, for back-compat.
       - notes: free text for the day; settable WITHOUT a status, so jotting a note
         doesn't mark the habit done. Send "" to clear it.
     """
@@ -705,14 +710,26 @@ def log_habit(request, habit_id):
     if has_notes and not isinstance(body["notes"], str):
         return JsonResponse({"error": "'notes' must be a string."}, status=400)
 
-    # Optional: WHICH version (tier level) this log is for — it keys the row
-    # (habit, date, tier). Validated up front; a tier the habit doesn't have is a 400.
+    # WHICH rung this log is for — it keys the row (habit, date, version). Prefer
+    # an explicit `version` id; accept a legacy `tier` level and resolve it to the
+    # rung wearing that label (a version's level is renumbered per-habit, so we map
+    # on the label, not the number). Omit both for a whole-habit action.
+    raw_version = body.get("version")
     raw_tier = body.get("tier")
-    has_tier = "tier" in body and raw_tier is not None
-    if has_tier:
+    version_obj = None
+    if raw_version is not None:
+        version_obj = (Version.objects.filter(habit=habit, id=raw_version)
+                       .select_related("label").first())
+        if version_obj is None:
+            return JsonResponse(
+                {"error": f"This habit has no version {raw_version}."}, status=400
+            )
+    elif raw_tier is not None:
         if raw_tier not in (1, 2, 3):
             return JsonResponse({"error": "'tier' must be 1, 2, or 3."}, status=400)
-        if not HabitTier.objects.filter(habit=habit, tier__level=raw_tier).exists():
+        version_obj = (Version.objects.filter(habit=habit, label__level=raw_tier)
+                       .select_related("label").first())
+        if version_obj is None:
             return JsonResponse(
                 {"error": f"This habit has no tier {raw_tier}."}, status=400
             )
@@ -725,12 +742,16 @@ def log_habit(request, habit_id):
         return date_error
 
     # One log per (habit, date, version); create it the first time it's touched.
-    # tier=None is the untiered/"whole habit" row; a level is that one version.
-    tier_obj = Tier.objects.filter(level=raw_tier).first() if has_tier else None
+    # version=None is the untiered/"whole habit" row; a rung is that one version.
+    # `tier` is kept in sync from the rung's label (null for an untagged rung) as a
+    # cross-check / rollback path until the P3 cleanup drops it.
     with transaction.atomic():
         log, _ = HabitLog.objects.get_or_create(
-            habit=habit, date=target_date, tier=tier_obj
+            habit=habit, date=target_date, version=version_obj,
+            defaults={"tier_id": version_obj.label_id if version_obj else None},
         )
+        if version_obj is not None and log.tier_id != version_obj.label_id:
+            log.tier_id = version_obj.label_id
 
         if has_status:
             log.status = body["status"]
@@ -748,7 +769,8 @@ def log_habit(request, habit_id):
     return JsonResponse({
         "habit_id": habit.id,
         "date": log.date,
-        "tier": log.tier.level if log.tier_id else None,
+        "version": log.version_id,
+        "tier": version_obj.level if version_obj else None,  # ladder position
         "status": log.status,
         "done_today": log.status == HabitLog.Status.COMPLETED,
         "notes": log.notes,
@@ -757,58 +779,75 @@ def log_habit(request, habit_id):
 
 @csrf_exempt
 @require_POST
-def add_habit_tier(request, habit_id):
-    """Add a tier to a habit, or set/bump its value — all are "append a value".
+def save_habit_versions(request, habit_id):
+    """Save a habit's whole ladder in one shot (the ladder editor's Save).
 
-    Body: {"tier": 1|2|3, "value": "7 min" (OPTIONAL)}. Ensures the HabitTier
-    exists; if a non-empty value is given, appends a TierValue dated today (the
-    new current value; the old one stays as history). No value = a plain tier tag
-    (e.g. a Growth-only habit like makeup). Returns {"tiers": [...]} — same shape
-    as /chains/.
+    Body: {"rungs": [{"id"?: version_id, "value": "1000 steps",
+                      "label": 1|2|3|null}, ...]} — in ladder order, low -> high.
+
+    Each rung's `level` becomes its POSITION (1..N), so the cascade always runs
+    low->high and she never types a version number. A rung with an `id` updates
+    that existing Version (keeping its history); a rung with no id is created; any
+    of the habit's existing versions NOT listed is deleted (its logs SET_NULL back
+    to whole-habit). A label (1=Roots, 2=Growth) may sit on at most ONE rung.
+    Returns the saved {"tiers": [...]} — same shape /plan/ reads.
     """
     habit = get_object_or_404(Habit, id=habit_id)
-
     try:
         body = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
         return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
 
-    level = body.get("tier")
-    if level not in (1, 2, 3):
-        return JsonResponse({"error": "'tier' must be 1, 2, or 3."}, status=400)
-    # Value is OPTIONAL: a habit can simply belong to a tier with no number/label
-    # (e.g. "makeup" is a Growth-only habit). Only append a TierValue when a
-    # non-empty value is actually given.
-    value = body.get("value")
-    if value is not None and not isinstance(value, str):
-        return JsonResponse({"error": "'value' must be a string."}, status=400)
+    rungs = body.get("rungs")
+    if not isinstance(rungs, list):
+        return JsonResponse({"error": "'rungs' must be a list."}, status=400)
+
+    seen_labels = set()
+    cleaned = []
+    for i, r in enumerate(rungs):
+        if not isinstance(r, dict):
+            return JsonResponse({"error": "each rung must be an object."}, status=400)
+        value = r.get("value", "")
+        if not isinstance(value, str):
+            return JsonResponse({"error": "'value' must be a string."}, status=400)
+        label = r.get("label")
+        if label not in (None, 1, 2, 3):
+            return JsonResponse({"error": "'label' must be 1, 2, 3, or null."}, status=400)
+        if label is not None:
+            if label in seen_labels:
+                return JsonResponse(
+                    {"error": "A tag (Roots/Growth) can sit on only one rung."}, status=400
+                )
+            seen_labels.add(label)
+        cleaned.append({"id": r.get("id"), "value": value.strip(),
+                        "label": label, "level": i + 1})
 
     with transaction.atomic():
-        tier, _ = Tier.objects.get_or_create(level=level)
-        habit_tier, _ = HabitTier.objects.get_or_create(habit=habit, tier=tier)
-        if isinstance(value, str) and value.strip():
-            TierValue.objects.create(
-                habit_tier=habit_tier,
-                value=value.strip(),
-                started=timezone.localdate(),
-            )
+        existing = {v.id: v for v in habit.versions.all()}
+        # Park existing levels out of the 1..N range first, so re-seating rungs to
+        # their new positions can't trip unique(habit, level) mid-reconcile.
+        habit.versions.update(level=F("level") + 1000)
 
-    return JsonResponse({"tiers": _habit_tiers(habit)})
+        kept = set()
+        for c in cleaned:
+            tier = Tier.objects.get_or_create(level=c["label"])[0] if c["label"] else None
+            v = existing.get(c["id"]) if c["id"] is not None else None
+            if v is None:
+                v = Version(habit=habit)
+            v.level, v.value, v.label = c["level"], c["value"], tier
+            v.save()
+            kept.add(v.id)
 
+        for vid, v in existing.items():
+            if vid not in kept:
+                # Removing a rung also removes ITS day-records — they meant "I hit
+                # this specific amount", which no longer exists as a rung. (We can't
+                # just SET_NULL them onto the whole-habit row: the per-day
+                # uniqueness would reject a day that already has one.) Relabel a
+                # rung instead of deleting it to keep its history.
+                HabitLog.objects.filter(version=v).delete()
+                v.delete()
 
-@csrf_exempt
-@require_POST
-def delete_habit_tier(request, habit_id, level):
-    """Drop a tier from a habit. Deletes the HabitTier and its TierValue history
-    (CASCADE); the habit just stops existing at that tier. Past logs keep their
-    `tier` (it's a Tier FK, not a HabitTier FK). Returns the remaining
-    {"tiers": [...]}. No such tier on the habit -> 404.
-    """
-    habit = get_object_or_404(Habit, id=habit_id)
-    habit_tier = HabitTier.objects.filter(habit=habit, tier__level=level).first()
-    if habit_tier is None:
-        return JsonResponse({"error": f"This habit has no tier {level}."}, status=404)
-    habit_tier.delete()
     return JsonResponse({"tiers": _habit_tiers(habit)})
 
 
@@ -2814,7 +2853,7 @@ def _aspiration_habit_progress(habits, today):
         habit_id__in=habit_ids,
         date__gte=earliest,
         date__lte=today,
-    ).values_list("habit_id", "date", "tier__level", "status"):
+    ).values_list("habit_id", "date", "version__level", "status"):
         b = buckets[(hid, d)]
         if level is None:
             b["fallback"] = status
@@ -2896,7 +2935,7 @@ def aspirations(request):
     if habit_ids:
         for hid, d, level, status in HabitLog.objects.filter(
             habit_id__in=habit_ids, date__gte=window[0], date__lte=today,
-        ).values_list("habit_id", "date", "tier__level", "status"):
+        ).values_list("habit_id", "date", "version__level", "status"):
             b = buckets[(hid, d)]
             if level is None:
                 b["fallback"] = status

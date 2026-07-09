@@ -5,6 +5,7 @@ import {
   isCaseB,
   rowCompleteTier,
   slotStatus,
+  tagChipClasses,
 } from "../tier";
 import { DashIcon, XIcon, CheckIcon } from "../../../components/icons";
 import type { Habit, HabitStatus } from "../types";
@@ -226,13 +227,13 @@ export function HabitCard({
               }}
               className="mt-2.5 flex items-center gap-2.5 border-t border-whisper pt-2.5"
             >
-              <span
-                className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-                  t.level === 1 ? "bg-blush text-clay" : "bg-mint text-calm-700"
-                }`}
-              >
-                {t.name}
-              </span>
+              {t.name && (
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${tagChipClasses(t.label)}`}
+                >
+                  {t.name}
+                </span>
+              )}
               <span
                 className={`min-w-0 flex-1 truncate text-sm ${
                   subDone
@@ -259,7 +260,7 @@ export function HabitCard({
                   onStatus(
                     habit.id,
                     subDone ? "PENDING" : "COMPLETED",
-                    t.level,
+                    t.version,
                   );
                 }}
                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition active:scale-90 ${
@@ -322,7 +323,7 @@ export function HabitCard({
                   : action === "MISS"
                     ? "MISSED"
                     : "PENDING";
-            onStatus(habit.id, status, subTier.level);
+            onStatus(habit.id, status, subTier.version);
             setSubMenuLevel(null);
           }}
           onNote={() => {

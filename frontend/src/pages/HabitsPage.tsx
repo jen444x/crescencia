@@ -39,9 +39,11 @@ type HabitStatus = "PENDING" | "COMPLETED" | "SKIPPED" | "MISSED";
 // TODAY's per-version state. The backend folds the higher-completes-lower
 // cascade into `done`/`status`, so a row reads its own tier here.
 type HabitTier = {
-  level: number;
-  name: string;
+  level: number; // per-habit ladder position (1..N)
+  name: string; // the tag's display ("Roots"/"Growth"), "" if untagged
+  label: number | null; // tag level 1=Roots / 2=Growth, null = untagged
   value: string;
+  version: number; // the rung's id — what a completion sends
   status?: HabitStatus;
   done?: boolean;
 };
@@ -236,12 +238,16 @@ function HabitTierRow({
         )}
       </div>
 
-      {/* Tier tag — names which version this row is. Roots wears clay (roots
-          live in earth), Growth wears leaf green. */}
-      {tier && (
+      {/* Tag — names which rung this row is (Roots wears clay, Growth leaf).
+          An untagged rung shows no chip, just its value. */}
+      {tier && tier.name && (
         <span
           className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-            tier.level === 1 ? "bg-blush text-clay" : "bg-mint text-calm-700"
+            tier.label === 1
+              ? "bg-blush text-clay"
+              : tier.label === 2
+                ? "bg-mint text-calm-700"
+                : "bg-calm-50 text-calm-400"
           }`}
         >
           {tier.name}
@@ -259,8 +265,8 @@ function HabitTierRow({
         aria-pressed={done}
         onClick={() =>
           done
-            ? onLog(habit.id, "PENDING", level ?? undefined)
-            : onLog(habit.id, "COMPLETED", level ?? undefined)
+            ? onLog(habit.id, "PENDING", tier?.version)
+            : onLog(habit.id, "COMPLETED", tier?.version)
         }
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition active:scale-90 ${
           done
@@ -320,7 +326,11 @@ function HabitRowWithMenu({
         routines={routines}
         habitRoutine={habitRoutine}
         onPick={(status) => {
-          onLog(habit.id, status, level ?? undefined);
+          const version =
+            level == null
+              ? undefined
+              : habit.tiers.find((t) => t.level === level)?.version;
+          onLog(habit.id, status, version);
           setMenuOpen(false);
         }}
         onSetRoutine={(habitId, routineId) => {
@@ -559,7 +569,14 @@ function HabitCard({
   // it to show every version (focused first). [null] = the untiered single row
   // (not listed on this page, kept as a guard).
   const [expanded, setExpanded] = useState(false);
-  const focusLevel = focus === "ROOTS" ? 1 : 2;
+  // Which rung sits on top: the one wearing the focused TAG (Roots/Growth), so a
+  // 3-rung ladder shows its Roots rung under "Roots" and its Growth rung under
+  // "Growth" — not just level 1 vs 2. Falls back to the lowest rung.
+  const focusLabel = focus === "ROOTS" ? 1 : 2;
+  const focusLevel =
+    habit.tiers.find((t) => t.label === focusLabel)?.level ??
+    habit.tiers[0]?.level ??
+    1;
   const sorted: (number | null)[] =
     habit.tiers.length > 0
       ? [...habit.tiers]
@@ -903,17 +920,21 @@ function HabitsPage() {
     setHabits(data);
   }
 
-  // Complete / undo a habit (optionally at a tier), then re-fetch so the cascade
-  // across tiers shows.
-  async function logHabit(habitId: number, status: HabitStatus, tier?: number) {
+  // Complete / undo a habit (optionally at one rung), then re-fetch so the cascade
+  // across rungs shows.
+  async function logHabit(
+    habitId: number,
+    status: HabitStatus,
+    version?: number,
+  ) {
     try {
-      // Send the tier for EVERY status (not just completion) so undo / skip /
-      // missed target that version's row, not the whole habit. On another day,
-      // send the date too so the log lands on the VIEWED day, not today.
-      const body: { status: HabitStatus; tier?: number; date?: string } = {
+      // Send the `version` (rung id) for EVERY status (not just completion) so
+      // undo / skip / missed target that rung's row, not the whole habit. On
+      // another day, send the date too so the log lands on the VIEWED day.
+      const body: { status: HabitStatus; version?: number; date?: string } = {
         status,
       };
-      if (tier != null) body.tier = tier;
+      if (version != null) body.version = version;
       if (!isViewingToday) body.date = toYMD(viewedDate);
 
       const res = await fetch(

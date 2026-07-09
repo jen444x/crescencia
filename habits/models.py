@@ -210,6 +210,10 @@ class Schedule(models.Model):
     # and Roots at 11am. The tier's value/history lives on HabitTier/TierValue;
     # this just places the tier on the timeline.
     tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
+    # The rung this placement is for. Added in P1 (0037) alongside `tier`,
+    # backfilled from it by label; the logical slot key becomes (habit, version)
+    # in P2. SET_NULL, like `tier` — an unplaced rung just drops off the timeline.
+    version = models.ForeignKey("Version", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     order = models.PositiveIntegerField(null=True, blank=True)
     # The date this placement takes effect. Reads pick the row with the greatest
     # valid_from <= the viewed date; a single base generation reproduces today's
@@ -261,6 +265,10 @@ class ScheduleDay(models.Model):
     chain = models.ForeignKey(Chain, on_delete=models.SET_NULL, null=True, blank=True)
     routine = models.ForeignKey(Routine, on_delete=models.SET_NULL, null=True, blank=True)
     tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
+    # The rung this frozen slot photographed. Added in P1 (0037) alongside `tier`
+    # and backfilled from it; `tier` stays as the live source + cross-check until
+    # the P3 cleanup. SET_NULL so deleting a rung never erases a past frozen day.
+    version = models.ForeignKey("Version", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     order = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
@@ -278,6 +286,12 @@ class ScheduleDay(models.Model):
                 condition=models.Q(tier__isnull=True),
                 name="one_untiered_scheduleday_per_date_habit",
             ),
+            # NOTE: the version-keyed twins of these constraints are DEFERRED to
+            # P2/P3. They can't coexist with tier-only writers: until P2 flips the
+            # writers, a new tiered row has version=null, so a version-null unique
+            # would treat two tiered rows on one day as duplicate. They get added
+            # once writers set `version`, and replace the tier pair when P3 drops
+            # `tier`.
         ]
 
     def __str__(self):
@@ -309,22 +323,32 @@ class HabitLog(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     notes = models.TextField(blank=True)
     tier = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
+    # The rung this log records. Added in P1 (0037) alongside `tier` and backfilled
+    # from it (map by label, since a version's level is renumbered per-habit).
+    # SET_NULL — deleting a rung must NOT erase the days you hit it; this is a new
+    # cascade vector the old global-Tier FK never had. Null = whole-habit row
+    # (untiered habit or blanket skip), the same meaning tier=null carries today.
+    version = models.ForeignKey("Version", on_delete=models.SET_NULL, null=True, blank=True, related_name="logs")
 
     class Meta:
         constraints = [
-            # At most one row per specific version per habit per day...
+            # One row per specific RUNG per habit per day (P2 — completion is keyed
+            # on `version` now, so N rungs work and an untagged rung is fine)...
             models.UniqueConstraint(
-                fields=["habit", "date", "tier"],
-                condition=models.Q(tier__isnull=False),
-                name="one_log_per_habit_date_tier",
+                fields=["habit", "date", "version"],
+                condition=models.Q(version__isnull=False),
+                name="one_log_per_habit_date_version",
             ),
-            # ...and at most one untiered ("whole habit") row per habit per day.
-            # Two constraints because Postgres treats NULLs as distinct, so a
-            # single nullable-tier unique would let duplicate untiered rows slip in.
+            # ...and at most one whole-habit row (version null) per habit per day.
+            # Two constraints because Postgres treats NULLs as distinct. These
+            # REPLACE the tier-keyed pair: with untagged rungs, `tier` no longer
+            # keys a row (an untagged rung's log has tier=null), so a tier-null
+            # unique would wrongly collide it with the whole-habit row. `tier`
+            # stays as a written cross-check column until P3.
             models.UniqueConstraint(
                 fields=["habit", "date"],
-                condition=models.Q(tier__isnull=True),
-                name="one_untiered_log_per_habit_date",
+                condition=models.Q(version__isnull=True),
+                name="one_untiered_log_per_habit_date_v",
             ),
         ]
 
@@ -364,3 +388,46 @@ class TierValue(models.Model):
 
     def __str__(self):
         return f"{self.habit_tier_id}: {self.value} (from {self.started})"
+
+
+class Version(models.Model):
+    """One rung on a habit's personal ladder — a specific amount of the habit,
+    with an OPTIONAL Roots/Growth tag.
+
+    Replaces HabitTier + TierValue. Instead of borrowing from the global 3-level
+    Tier list, a habit owns as many rungs as it wants:
+
+    - `level` is the rung's POSITION on THIS habit's ladder (1 = easiest/lowest),
+      not a global tier. It's the only thing the downward cascade orders by:
+      completing a higher rung reads the lower ones done (see views._version_status).
+      You never type it — it's the drag/order position, renumbered 1..N.
+    - `value` is the rung's text ("2000 steps", "cold water", "by 8am").
+    - `label` is the OPTIONAL Roots/Growth tag. null = an untagged rung — e.g. a
+      2000 sitting between a Roots 1000 and a Growth 6000. A given tag sits on at
+      most one rung per habit; that's enforced in the editor, not the DB, because
+      the column is nullable (Postgres treats NULLs as distinct, so a partial
+      unique would be the only way and it isn't worth a migration constraint yet).
+
+    A PLAIN habit has ZERO Version rows. "no rungs" and "one implicit rung" mean
+    the same thing to the user, so we don't store a filler rung that just repeats
+    the habit's name; the serializer synthesizes a single implicit rung instead,
+    so reads never branch on "does this habit have a ladder". Real rows appear only
+    when a second rung is added.
+    """
+    habit = models.ForeignKey(Habit, on_delete=models.CASCADE, related_name="versions")
+    level = models.PositiveIntegerField()      # 1 = lowest rung; per-habit position
+    value = models.CharField(max_length=100)   # "2000 steps", "cold water", "by 8am"
+    label = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
+
+    class Meta:
+        ordering = ["habit_id", "level"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["habit", "level"],
+                name="one_version_per_habit_level",
+            )
+        ]
+
+    def __str__(self):
+        tag = self.label.get_level_display() if self.label else "—"
+        return f"{self.habit.name} v{self.level} ({self.value}, {tag})"

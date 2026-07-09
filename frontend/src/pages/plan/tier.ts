@@ -13,6 +13,38 @@ export const DAY_TIERS: { level: number; name: string }[] = [
   { level: GROWTH_LEVEL, name: "Growth" },
 ];
 
+// The ladder position the day-toggle points AT for this habit. The toggle picks a
+// TAG (Roots/Growth); this finds the rung wearing that tag and returns its level,
+// so "today's bar" is the labeled rung — untagged rungs in between sit above or
+// below it and fall out as stretch/covered. Plain 2-rung habits (Roots=level 1,
+// Growth=level 2) map straight back to the old `dayTier` number. If the habit has
+// no rung with that tag, fall back to its top rung so nothing is hidden.
+export function effectiveDayLevel(habit: Habit, dayTier: number): number {
+  const rungs = habit.tiers ?? [];
+  const tagged = rungs.find((t) => t.label === dayTier);
+  if (tagged) return tagged.level;
+  const levels = rungs.map((t) => t.level);
+  return levels.length ? Math.max(...levels) : dayTier;
+}
+
+// The rung id (Version.id) at a given ladder level — what a completion sends over
+// the wire. undefined when there's no such rung (or an untiered/whole-habit act).
+export function versionForLevel(
+  habit: Habit,
+  level: number | undefined,
+): number | undefined {
+  if (level == null) return undefined;
+  return habit.tiers?.find((t) => t.level === level)?.version;
+}
+
+// Chip classes for a rung's tag: Roots wears clay-on-blush, Growth leaf-on-mint,
+// an untagged rung a quiet neutral. Keyed on the tag level, not the ladder level.
+export function tagChipClasses(label: number | null | undefined): string {
+  if (label === ROOTS_LEVEL) return "bg-blush text-clay";
+  if (label === GROWTH_LEVEL) return "bg-mint text-calm-700";
+  return "bg-calm-50 text-calm-400";
+}
+
 // True when a row carries no tiers at all — a plain habit that renders and
 // completes exactly as it always has (no tier label, no tier sent).
 export function isUntiered(habit: Habit): boolean {
@@ -29,9 +61,10 @@ export function isCaseB(habit: Habit): boolean {
 // Case B's "today" rung: the highest tier level <= dayTier, or null if the habit
 // has no rung at/below today (then its inline row is dropped — it only stretches).
 export function caseBInlineLevel(habit: Habit, dayTier: number): number | null {
+  const eff = effectiveDayLevel(habit, dayTier);
   const at = (habit.tiers ?? [])
     .map((t) => t.level)
-    .filter((lvl) => lvl <= dayTier);
+    .filter((lvl) => lvl <= eff);
   return at.length ? Math.max(...at) : null;
 }
 
@@ -212,7 +245,8 @@ export function computeStretchSlots(
         // card already shows — above the highest DONE rung (so a completed harder
         // rung isn't also listed as a stretch), or above today when nothing's done.
         const done = highestDoneLevel(habit);
-        const covered = done != null ? Math.max(dayTier, done) : dayTier;
+        const eff = effectiveDayLevel(habit, dayTier);
+        const covered = done != null ? Math.max(eff, done) : eff;
         for (const t of habit.tiers ?? [])
           if (t.level > covered) out.push({ habit, level: t.level });
       }

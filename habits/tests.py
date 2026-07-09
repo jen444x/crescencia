@@ -11,7 +11,7 @@ from django.utils import timezone
 from .models import (
     Area, Aspiration, BASE_VALID_FROM, Habit, HabitLog, HabitPause, HabitTier,
     Note, Chain, ChainDay, ChainTime, Routine, Schedule, ScheduleDay, Tier,
-    TierValue,
+    TierValue, Version,
 )
 from .views import FREEZE_CATCHUP_DAYS, freeze_day
 
@@ -879,12 +879,13 @@ class HabitsListTests(TestCase):
         self.run = Habit.objects.create(name="Run", area=self.body)
 
     def _add_tier(self, habit, *, level, value):
-        """Mirror add_habit_tier: ensure the HabitTier exists and append a value
-        dated today (the newest TierValue is the current value)."""
+        """Create/replace a rung (Version) at this level. label = the Roots/Growth
+        tag for that level (1=Roots, 2=Growth), mirroring the old tier model so the
+        ladder position and the tag line up in these fixtures."""
         tier, _ = Tier.objects.get_or_create(level=level)
-        habit_tier, _ = HabitTier.objects.get_or_create(habit=habit, tier=tier)
-        TierValue.objects.create(
-            habit_tier=habit_tier, value=value, started=self.today
+        Version.objects.update_or_create(
+            habit=habit, level=level,
+            defaults={"value": value, "label": tier},
         )
 
     def _get(self):
@@ -915,16 +916,20 @@ class HabitsListTests(TestCase):
         self.assertEqual(row["tiers"], [])
 
     def test_tiered_habit_lists_tiers_low_to_high_with_current_values(self):
-        row = self._by_id(self._get())[self.meditate.id]
+        tiers = self._by_id(self._get())[self.meditate.id]["tiers"]
+        # drop the dynamic version id for a stable field comparison
+        got = [{k: v for k, v in t.items() if k != "version"} for t in tiers]
         self.assertEqual(
-            row["tiers"],
+            got,
             [
-                {"level": 1, "name": "Roots", "value": "2 min",
+                {"level": 1, "name": "Roots", "label": 1, "value": "2 min",
                  "status": "PENDING", "done": False},
-                {"level": 2, "name": "Growth", "value": "10 min",
+                {"level": 2, "name": "Growth", "label": 2, "value": "10 min",
                  "status": "PENDING", "done": False},
             ],
         )
+        # every rung carries its version id (what a completion keys on)
+        self.assertTrue(all(isinstance(t["version"], int) for t in tiers))
 
     def test_tier_value_uses_the_newest_tiervalue(self):
         # Bump Roots to a new value; the newest started date wins.
@@ -936,10 +941,10 @@ class HabitsListTests(TestCase):
         self.assertEqual(roots["value"], "5 min")
 
     def test_completed_habit_reflects_today_status_and_tier(self):
-        tier2 = Tier.objects.get(level=2)
+        v2 = Version.objects.get(habit=self.meditate, level=2)
         HabitLog.objects.create(
             habit=self.meditate, date=self.today,
-            status=HabitLog.Status.COMPLETED, tier=tier2,
+            status=HabitLog.Status.COMPLETED, version=v2, tier=v2.label,
         )
         row = self._by_id(self._get())[self.meditate.id]
         # Whole-habit status reads done when any version is done.
@@ -1110,8 +1115,10 @@ class PerVersionStatusTests(TestCase):
         return t
 
     def _add_tier(self, level, value):
-        ht, _ = HabitTier.objects.get_or_create(habit=self.water, tier=self._tier(level))
-        TierValue.objects.create(habit_tier=ht, value=value, started=self.today)
+        Version.objects.update_or_create(
+            habit=self.water, level=level,
+            defaults={"value": value, "label": self._tier(level)},
+        )
 
     def _log(self, status, tier=None, date=None):
         body = {"status": status}
@@ -2511,9 +2518,8 @@ class DeleteHabitTests(TestCase):
         # Give the habit a version + a past log + a frozen day so we can prove
         # everything attached is gone.
         tier, _ = Tier.objects.get_or_create(level=2)
-        habit_tier = HabitTier.objects.create(habit=self.habit, tier=tier)
-        TierValue.objects.create(habit_tier=habit_tier, value="5 min",
-                                 started=self.today)
+        version = Version.objects.create(habit=self.habit, level=2, value="5 min",
+                                         label=tier)
         HabitLog.objects.create(habit=self.habit, date=self.yesterday,
                                 status=HabitLog.Status.COMPLETED)
         ScheduleDay.objects.create(date=self.yesterday, habit=self.habit,
@@ -2529,8 +2535,8 @@ class DeleteHabitTests(TestCase):
 
         self.assertFalse(Habit.objects.filter(id=self.habit.id).exists())
         self.assertFalse(Schedule.objects.filter(habit_id=self.habit.id).exists())
-        self.assertFalse(HabitTier.objects.filter(habit_id=self.habit.id).exists())
-        self.assertFalse(TierValue.objects.filter(habit_tier_id=habit_tier.id).exists())
+        self.assertFalse(Version.objects.filter(habit_id=self.habit.id).exists())
+        self.assertFalse(Version.objects.filter(id=version.id).exists())
         # History rows are explicitly removed, not left as nameless habit=null rows.
         self.assertFalse(HabitLog.objects.filter(habit_id=self.habit.id).exists())
         self.assertEqual(HabitLog.objects.filter(habit__isnull=True).count(), 0)

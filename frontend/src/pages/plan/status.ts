@@ -1,5 +1,5 @@
 import type { Habit, HabitStatus, ReadStatus, Chain } from "./types";
-import { highestDoneLevel, isCaseB, levelsUpTo } from "./tier";
+import { highestDoneLevel, isCaseB, levelsUpTo, versionForLevel } from "./tier";
 
 // Read a habit's state, tolerating an older payload that only had done_today.
 export function isDone(habit: Habit) {
@@ -9,30 +9,30 @@ export function isSkipped(habit: Habit) {
   return habit.status === "SKIPPED";
 }
 
-// Return a NEW plans array with one habit's status set. With a `tier` it sets
-// that ONE version's status (and, on a completion, cascades DOWN to mark the
-// lower rungs done); without one it sets the whole-habit status. Pure +
-// immutable, so React reliably re-renders.
+// Return a NEW plans array with one habit's status set. With a `version` (rung id)
+// it sets that ONE rung's status (and, on a completion, cascades DOWN to mark the
+// lower rungs done); without one it sets the whole-habit status. Pure + immutable,
+// so React reliably re-renders.
 export function applyStatus(
   chains: Chain[],
   habitId: number,
   status: HabitStatus,
-  tier?: number,
+  version?: number,
 ): Chain[] {
   return chains.map((chain) => ({
     ...chain,
     habits: chain.habits.map((habit) => {
       if (habit.id !== habitId) return habit;
-      if (tier == null) {
+      if (version == null) {
         return { ...habit, status, done_today: status === "COMPLETED" };
       }
-      // Per-version: update this rung. A completion cascades down (a higher win
-      // marks the lower rungs done); skip/missed touch only this rung. An undo's
-      // full de-cascade is reconciled by a refetch in setHabitStatus.
+      // The completed rung's ladder position, so the cascade knows which rungs
+      // are "below" it (completing a higher win marks the lower rungs done).
+      const level = (habit.tiers ?? []).find((t) => t.version === version)?.level;
       const tiers = (habit.tiers ?? []).map((t) => {
-        if (t.level === tier)
+        if (t.version === version)
           return { ...t, status, done: status === "COMPLETED" };
-        if (status === "COMPLETED" && t.level < tier)
+        if (status === "COMPLETED" && level != null && t.level < level)
           return { ...t, status: "COMPLETED" as ReadStatus, done: true };
         return t;
       });
@@ -48,28 +48,29 @@ export function applyStatus(
 type StatusAction = "COMPLETE" | "SKIP" | "MISS" | "CLEAR";
 export function applyStatusAction(
   habit: Habit,
-  tierToSend: number | undefined,
+  tierToSend: number | undefined, // a ladder LEVEL; translated to a version id below
   action: StatusAction,
   isDone: boolean,
-  onStatus: (habitId: number, status: HabitStatus, tier?: number) => void,
+  onStatus: (habitId: number, status: HabitStatus, version?: number) => void,
 ) {
+  const v = (level: number | undefined) => versionForLevel(habit, level);
   if (action === "COMPLETE") {
     if (isCaseB(habit) && tierToSend != null) {
       for (const lvl of levelsUpTo(habit, tierToSend))
-        onStatus(habit.id, "COMPLETED", lvl);
+        onStatus(habit.id, "COMPLETED", v(lvl));
     } else {
-      onStatus(habit.id, "COMPLETED", tierToSend);
+      onStatus(habit.id, "COMPLETED", v(tierToSend));
     }
   } else if (action === "SKIP") {
-    onStatus(habit.id, "SKIPPED", tierToSend);
+    onStatus(habit.id, "SKIPPED", v(tierToSend));
   } else if (action === "MISS") {
-    onStatus(habit.id, "MISSED", tierToSend);
+    onStatus(habit.id, "MISSED", v(tierToSend));
   } else {
     // CLEAR -> back to pending. A done card steps DOWN from its highest done rung.
     const top =
       isDone && isCaseB(habit)
         ? (highestDoneLevel(habit) ?? tierToSend)
         : tierToSend;
-    onStatus(habit.id, "PENDING", top);
+    onStatus(habit.id, "PENDING", v(top));
   }
 }
