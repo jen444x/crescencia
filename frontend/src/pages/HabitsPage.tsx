@@ -183,6 +183,7 @@ function HabitTierRow({
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
   expander?: ReactNode;
 }) {
+  const navigate = useNavigate();
   const tier =
     level == null ? undefined : habit.tiers.find((t) => t.level === level);
   const done =
@@ -193,9 +194,19 @@ function HabitTierRow({
   const skipped = !done && rowStatus === "SKIPPED";
   const missed = !done && rowStatus === "MISSED";
 
+  // Tier edge: a thin right bar in the rung's tag color (Roots=clay, Growth=leaf)
+  // that replaces the old right-side chip. Untagged/untiered rows keep a
+  // transparent bar so every row stays the same width.
+  const tierEdge =
+    tier?.label === 1
+      ? "border-clay"
+      : tier?.label === 2
+        ? "border-calm-600"
+        : "border-transparent";
+
   return (
     <div
-      className={`flex select-none items-center gap-3 px-4 py-3 transition-colors ${
+      className={`flex select-none items-center gap-3 border-r-[3px] px-4 py-3 transition-colors ${tierEdge} ${
         done
           ? "bg-whisper"
           : skipped
@@ -225,6 +236,31 @@ function HabitTierRow({
           >
             {habit.name}
           </span>
+          {/* Direct link to the habit's own page (skips the status sheet).
+              Marked data-no-menu so tapping it navigates instead of opening
+              the menu. */}
+          <button
+            type="button"
+            data-no-menu
+            aria-label={`Open ${habit.name}`}
+            onClick={() => navigate(`/habits/${habit.id}`)}
+            className="-my-1 shrink-0 p-0.5 text-calm-300 transition-colors hover:text-calm-500"
+          >
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              aria-hidden
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M9 5l7 7-7 7"
+              />
+            </svg>
+          </button>
           <AspirationDots
             ids={habit.aspirations}
             className={done || skipped || missed ? "opacity-40" : ""}
@@ -238,22 +274,6 @@ function HabitTierRow({
           </span>
         )}
       </div>
-
-      {/* Tag — names which rung this row is (Roots wears clay, Growth leaf).
-          An untagged rung shows no chip, just its value. */}
-      {tier && tier.name && (
-        <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-            tier.label === 1
-              ? "bg-blush text-clay"
-              : tier.label === 2
-                ? "bg-mint text-calm-700"
-                : "bg-calm-50 text-calm-400"
-          }`}
-        >
-          {tier.name}
-        </span>
-      )}
 
       {expander}
 
@@ -1107,7 +1127,15 @@ function HabitsPage() {
                     type="button"
                     onClick={() => setFocus(option)}
                     aria-pressed={focus === option}
-                    className={segOption(focus === option)}
+                    // Active option wears its own tier color (Roots=clay/blush,
+                    // Growth=leaf/mint); inactive matches the shared segOption.
+                    className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                      focus === option
+                        ? option === "ROOTS"
+                          ? "bg-blush font-semibold text-clay"
+                          : "bg-mint font-semibold text-calm-700"
+                        : "font-medium text-stone-400 hover:text-stone-600"
+                    }`}
                   >
                     {option === "ROOTS" ? "Roots" : "Growth"}
                   </button>
