@@ -7,7 +7,7 @@ const tabClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? "bg-calm-600 text-white" : "text-calm-400 hover:text-calm-600"
   }`;
 
-// The four destinations: daily Plan, Aspirations, Habits, and Journal. Adding a
+// The four destinations: Habits, daily Plan, Aspirations, and Journal. Adding a
 // habit lives on the Habits page now (it didn't belong in the nav). Areas/Insights
 // can still slot back in here once those pages are ready.
 function BottomNav() {
@@ -17,6 +17,24 @@ function BottomNav() {
     // without this they show through when rows scroll behind the pill).
     <nav className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] left-4 right-4 z-40">
       <div className="mx-auto flex max-w-md items-center gap-0.5 rounded-full border border-mist bg-white/80 p-1.5 shadow-[0_6px_22px_rgba(27,46,42,0.12)] backdrop-blur-md">
+        <NavLink to="/habits" end className={tabClass}>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-5 w-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={1.8}
+              d="M5 13l4 4L19 7"
+            />
+          </svg>
+          <span className="text-[10px] font-semibold">Habits</span>
+        </NavLink>
+
         <NavLink to="/plan/" className={tabClass}>
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -51,24 +69,6 @@ function BottomNav() {
             />
           </svg>
           <span className="text-[10px] font-semibold">Aspirations</span>
-        </NavLink>
-
-        <NavLink to="/habits" end className={tabClass}>
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.8}
-              d="M5 13l4 4L19 7"
-            />
-          </svg>
-          <span className="text-[10px] font-semibold">Habits</span>
         </NavLink>
 
         <NavLink to="/journal/" className={tabClass}>
