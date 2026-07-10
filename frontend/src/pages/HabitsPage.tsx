@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 import Header from "../components/layout/Header";
 import AspirationDots from "../components/AspirationDots";
 import { CARD, SEG, segOption, HEADER_ACTION } from "../components/ui";
+import { usePersistentState } from "../hooks/usePersistentState";
 import { useToast } from "../components/Toast";
 import { useNavigate } from "react-router-dom";
 import {
@@ -799,7 +800,10 @@ function HabitsPage() {
   const [showHelpers, setShowHelpers] = useState(false);
   // Which tier sits on top (both always show). Roots on top by default; pick
   // Growth to put Growth above Roots.
-  const [focus, setFocus] = useState<TierFocus>("GROWTH");
+  const [focus, setFocus] = usePersistentState<TierFocus>("habitsFocus", "GROWTH", {
+    parse: (raw) => (raw === "ROOTS" ? "ROOTS" : "GROWTH"),
+    serialize: (v) => v,
+  });
   // The day being viewed (default: today). The ◀/▶ nav moves it and we re-fetch
   // /habits/ for that day, exactly like the Plan page — same statuses, just for
   // the chosen date.
