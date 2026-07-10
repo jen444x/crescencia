@@ -2,13 +2,15 @@ import {
   useState,
   useEffect,
   useCallback,
+  createContext,
+  useContext,
   type CSSProperties,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import Header from "../components/layout/Header";
-import AspirationDots, { type AspirationRef } from "../components/AspirationDots";
-import { CARD, SEG, segOption, HEADER_ACTION } from "../components/ui";
+import { type AspirationRef } from "../components/AspirationDots";
+import { CARD, SEG, segOption, HEADER_ACTION, bloomFor } from "../components/ui";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { useToast } from "../components/Toast";
 import { useNavigate } from "react-router-dom";
@@ -89,6 +91,20 @@ type HabitRoutine = {
 // Which tier row sits on top inside each habit's card (ROOTS first by default;
 // pick GROWTH to flip the order).
 type TierFocus = "ROOTS" | "GROWTH";
+
+// Page-level info HabitCard reads without prop-drilling through the group and
+// sortable wrappers: whether "Expand all" is on, and aspiration id -> name for
+// the expanded detail block (the habits list sends only ids + colors, no names).
+type HabitsExpandInfo = {
+  expandAll: boolean;
+  showStreak: boolean;
+  aspirationNames: Map<number, string>;
+};
+const HabitsExpandContext = createContext<HabitsExpandInfo>({
+  expandAll: false,
+  showStreak: true,
+  aspirationNames: new Map(),
+});
 
 
 function CheckIcon() {
@@ -191,6 +207,7 @@ function HabitTierRow({
   primary?: boolean;
 }) {
   const navigate = useNavigate();
+  const { showStreak } = useContext(HabitsExpandContext);
   const tier =
     level == null ? undefined : habit.tiers.find((t) => t.level === level);
   const done =
@@ -246,14 +263,14 @@ function HabitTierRow({
           {/* Streak: consecutive completed days. Once per habit (top row) and
               only when there's an active run. Same 🔥 pill as the Aspirations
               page. */}
-          {primary && habit.streak > 0 && (
+          {primary && showStreak && habit.streak > 0 && (
             <span className="whitespace-nowrap rounded-full bg-petal px-2 py-0.5 text-[11px] font-semibold text-calm-700">
               🔥 {habit.streak}
             </span>
           )}
           {/* Direct link to the habit's own page (skips the status sheet).
-              Marked data-no-menu so tapping it navigates instead of opening
-              the menu. */}
+              Marked data-no-menu so tapping it navigates instead of opening the
+              menu. */}
           <button
             type="button"
             data-no-menu
@@ -276,10 +293,6 @@ function HabitTierRow({
               />
             </svg>
           </button>
-          <AspirationDots
-            aspirations={habit.aspirations}
-            className={done || skipped || missed ? "opacity-40" : ""}
-          />
         </span>
         {tier?.value && (
           <span
@@ -609,10 +622,13 @@ function HabitCard({
   habitRoutine?: HabitRoutine;
   onSetRoutine: (habitId: number, routineId: number | null) => void;
 }) {
-  // Collapsed, the card is just the FOCUSED version's row; the chevron expands
-  // it to show every version (focused first). [null] = the untiered single row
-  // (not listed on this page, kept as a guard).
-  const [expanded, setExpanded] = useState(false);
+  // Collapsed, the card is just the FOCUSED version's row; expanding shows every
+  // version (focused first) plus a detail block (area + aspirations). Expansion
+  // comes from this card's own chevron OR the page's "Expand all". [null] = the
+  // untiered single row (kept as a guard).
+  const { expandAll, aspirationNames } = useContext(HabitsExpandContext);
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = expandAll || localExpanded;
   // Which rung sits on top: the one wearing the focused TAG (Roots/Growth), so a
   // 3-rung ladder shows its Roots rung under "Roots" and its Growth rung under
   // "Growth" — not just level 1 vs 2. Falls back to the lowest rung.
@@ -633,16 +649,22 @@ function HabitCard({
           )
           .map((t) => t.level)
       : [null];
-  const levels = expanded ? sorted : sorted.slice(0, 1);
-  const hasMore = sorted.length > 1;
+  // Which versions the card shows. Collapsed: just the focused one. Expanded:
+  // every version AT OR BELOW the focused tier — so on Growth you also see the
+  // Roots row, but on Roots you see only Roots.
+  const shown = expanded
+    ? sorted.filter((lvl) => lvl == null || lvl <= focusLevel)
+    : sorted.slice(0, 1);
 
-  const expander = hasMore ? (
+  // Every habit is expandable — expanding reveals its area + aspirations (and any
+  // lower version rows), so the chevron always shows.
+  const expander = (
     <button
       type="button"
       data-no-menu
       aria-expanded={expanded}
-      aria-label={expanded ? "Hide other versions" : "Show all versions"}
-      onClick={() => setExpanded((v) => !v)}
+      aria-label={expanded ? "Hide details" : "Show details"}
+      onClick={() => setLocalExpanded((v) => !v)}
       className="-m-1 shrink-0 p-1 text-calm-300 transition-colors hover:text-calm-500"
     >
       <svg
@@ -656,7 +678,7 @@ function HabitCard({
         <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
       </svg>
     </button>
-  ) : undefined;
+  );
 
   return (
     <div className="flex items-center gap-2">
@@ -664,7 +686,10 @@ function HabitCard({
       <div
         className={`min-w-0 flex-1 divide-y divide-whisper overflow-hidden ${CARD}`}
       >
-        {levels.map((level, i) => (
+        {/* The habit's rows exactly as normal: collapsed = the focused version;
+            expanded = every version at or below the focused tier. The chevron
+            (on the top row) toggles this card. */}
+        {shown.map((level, i) => (
           <HabitRowWithMenu
             key={level ?? "solo"}
             habit={habit}
@@ -677,6 +702,42 @@ function HabitCard({
             onSetRoutine={onSetRoutine}
           />
         ))}
+
+        {/* Expanded: the habit's area and the aspirations it serves, below its
+            row(s). This is where the aspirations live now (the collapsed row
+            dropped its dots). */}
+        {expanded && (
+          <div className="bg-whisper px-4 py-2.5 text-xs">
+            <div className="flex gap-2 py-0.5">
+              <span className="min-w-[70px] text-[10px] font-semibold uppercase tracking-wide text-stone-400">
+                Area
+              </span>
+              <span className="text-ink">{habit.area_name ?? "—"}</span>
+            </div>
+            {habit.aspirations.length > 0 && (
+              <div className="flex gap-2 py-0.5">
+                <span className="min-w-[70px] text-[10px] font-semibold uppercase tracking-wide text-stone-400">
+                  Aspirations
+                </span>
+                <span className="flex flex-wrap gap-x-3 gap-y-1">
+                  {habit.aspirations.map((a) => (
+                    <span
+                      key={a.id}
+                      className="inline-flex items-center gap-1.5 text-ink"
+                    >
+                      <span
+                        className="h-[7px] w-[7px] rounded-full"
+                        style={{ background: bloomFor(a.id, a.color).dot }}
+                        aria-hidden
+                      />
+                      {aspirationNames.get(a.id) ?? "…"}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -859,8 +920,39 @@ function HabitsPage() {
   const [routineMap, setRoutineMap] = useState<Map<number, HabitRoutine>>(
     new Map(),
   );
+  // "Expand all" opens every habit's detail (versions + area + aspirations) at
+  // once; the per-card chevrons still work when it's off.
+  const [expandAll, setExpandAll] = useState(false);
+  // Whether the 🔥 streak chip shows on habit rows. Persisted, on by default.
+  const [showStreak, setShowStreak] = usePersistentState<boolean>(
+    "showStreak",
+    true,
+    { parse: (raw) => raw === "1", serialize: (v) => (v ? "1" : "0") },
+  );
+  // aspiration id -> name, for the expanded detail block (the habits list sends
+  // only ids + colors). Fetched once; a failed load just leaves names blank.
+  const [aspirationNames, setAspirationNames] = useState<Map<number, string>>(
+    new Map(),
+  );
   const toast = useToast();
   const navigate = useNavigate();
+
+  // Load aspiration names once, for the expanded detail block.
+  useEffect(() => {
+    async function fetchAspirationNames() {
+      try {
+        const res = await fetch(`${import.meta.env.VITE_API_URL}/aspirations/`);
+        const data = await res.json();
+        if (!res.ok) return;
+        const map = new Map<number, string>();
+        for (const a of data.aspirations ?? []) map.set(a.id, a.name);
+        setAspirationNames(map);
+      } catch {
+        // Non-fatal: names just show blank in the detail block.
+      }
+    }
+    fetchAspirationNames();
+  }, []);
 
   // The Habits page lists only ACTIVE habits for the VIEWED day; paused ones live
   // on their own page (/habits/paused), so this never asks for ended ones. The
@@ -1083,7 +1175,7 @@ function HabitsPage() {
   const helpers = visible.filter((habit) => habit.is_support);
 
   return (
-    <>
+    <HabitsExpandContext.Provider value={{ expandAll, showStreak, aspirationNames }}>
       <Header
         title="Habits"
         eyebrow="Your practice"
@@ -1181,6 +1273,45 @@ function HabitsPage() {
               </div>
             </div>
 
+            {/* Row of view toggles: show/hide the streak chips, and expand or
+                collapse every habit's detail at once. */}
+            <div className="mb-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowStreak((v) => !v)}
+                aria-pressed={showStreak}
+                className={`inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  showStreak
+                    ? "border-transparent bg-petal text-calm-700"
+                    : "border-mist bg-white text-stone-400 hover:border-calm-300"
+                }`}
+              >
+                🔥 Streak
+              </button>
+              <button
+                type="button"
+                onClick={() => setExpandAll((v) => !v)}
+                aria-pressed={expandAll}
+                className="inline-flex items-center gap-1.5 rounded-full border border-mist bg-white px-3 py-1.5 text-xs font-semibold text-calm-700 transition-colors hover:border-calm-300"
+              >
+                <svg
+                  className={`h-3.5 w-3.5 transition-transform ${expandAll ? "rotate-180" : ""}`}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2.2}
+                  aria-hidden
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M4 9l8 8 8-8"
+                  />
+                </svg>
+                {expandAll ? "Collapse all" : "Expand all"}
+              </button>
+            </div>
+
             {/* One card per habit (its tiers stack inside); helpers sit on
                 their own labeled shelf below the main list. Reorder is the
                 global catalog order, so it's only offered on today
@@ -1229,7 +1360,7 @@ function HabitsPage() {
           View paused habits
         </button>
       </div>
-    </>
+    </HabitsExpandContext.Provider>
   );
 }
 
