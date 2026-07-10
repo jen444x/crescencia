@@ -2744,3 +2744,64 @@ class AspirationListTests(TestCase):
         self.assertEqual(body["window"][-1], timezone.localdate().isoformat())
         row = next(a for a in body["aspirations"] if a["id"] == asp.id)
         self.assertEqual([h["id"] for h in row["habits"]], [habit.id])
+
+
+class AspirationColorTests(TestCase):
+    """An aspiration can carry a chosen bloom color (index 0-5); null = the
+    id-based default. It flows through create/edit and every read."""
+
+    def _create(self, **body):
+        return self.client.post(
+            reverse("habits:create_aspiration"),
+            data=json.dumps(body), content_type="application/json",
+        )
+
+    def _edit(self, asp_id, **body):
+        return self.client.post(
+            reverse("habits:edit_aspiration", args=[asp_id]),
+            data=json.dumps(body), content_type="application/json",
+        )
+
+    def test_create_stores_color_and_detail_returns_it(self):
+        resp = self._create(name="Move more", color=3)
+        self.assertEqual(resp.status_code, 201)
+        asp_id = json.loads(resp.content)["id"]
+        self.assertEqual(Aspiration.objects.get(id=asp_id).color, 3)
+        detail = json.loads(
+            self.client.get(reverse("habits:aspiration", args=[asp_id])).content
+        )
+        self.assertEqual(detail["color"], 3)
+
+    def test_create_without_color_defaults_null(self):
+        resp = self._create(name="Sleep better")
+        asp_id = json.loads(resp.content)["id"]
+        self.assertIsNone(Aspiration.objects.get(id=asp_id).color)
+
+    def test_edit_changes_color(self):
+        asp = Aspiration.objects.create(name="Read more", color=1)
+        resp = self._edit(asp.id, color=4)
+        self.assertEqual(resp.status_code, 200)
+        asp.refresh_from_db()
+        self.assertEqual(asp.color, 4)
+
+    def test_edit_can_clear_color_to_null(self):
+        asp = Aspiration.objects.create(name="Read more", color=1)
+        self._edit(asp.id, color=None)
+        asp.refresh_from_db()
+        self.assertIsNone(asp.color)
+
+    def test_out_of_range_color_is_rejected(self):
+        resp = self._create(name="Bad", color=9)
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(Aspiration.objects.filter(name="Bad").exists())
+
+    def test_non_integer_color_is_rejected(self):
+        self.assertEqual(self._create(name="Bad", color="blue").status_code, 400)
+
+    def test_habits_list_emits_aspiration_color_for_dots(self):
+        habit = Habit.objects.create(name="Walk")
+        asp = Aspiration.objects.create(name="Move more", color=2)
+        asp.habits.add(habit)
+        rows = json.loads(self.client.get(reverse("habits:habits_list")).content)
+        row = next(r for r in rows if r["id"] == habit.id)
+        self.assertEqual(row["aspirations"], [{"id": asp.id, "color": 2}])

@@ -468,7 +468,7 @@ function HabitStatusSheet({
     // tap handler and instantly re-open the menu. Stop it at the root.
     <div
       onClick={(e) => e.stopPropagation()}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-end gap-2 p-3 sm:justify-center"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-end gap-2 px-3 pt-3 pb-[calc(env(safe-area-inset-bottom)+5rem)] sm:justify-center sm:pb-3"
     >
       <div
         className="animate-backdrop-in absolute inset-0 bg-ink/40 backdrop-blur-[2px]"
