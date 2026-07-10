@@ -3,7 +3,10 @@ import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import Header from "../components/layout/Header";
 import { CARD, CARD_TITLE } from "../components/ui";
-import HabitForm, { type HabitValues } from "../components/HabitForm";
+import HabitForm, {
+  type HabitValues,
+  type AspirationOption,
+} from "../components/HabitForm";
 import ConfirmDialog from "../components/ConfirmDialog";
 
 // The bottom sheet offering the two ways to remove a habit, modeled on Google
@@ -161,6 +164,10 @@ function EditHabitPage() {
   const [tiersSaving, setTiersSaving] = useState(false);
   const [tiersError, setTiersError] = useState("");
 
+  // Options for the form's "Aspiration" dropdown (non-helper habits). The chosen
+  // value lives inside HabitForm and saves with the rest of the form.
+  const [allAspirations, setAllAspirations] = useState<AspirationOption[]>([]);
+
   // Load the habit so the form can pre-fill its current name/notes/area.
   useEffect(() => {
     async function fetchHabit() {
@@ -179,6 +186,8 @@ function EditHabitPage() {
           notes: data.notes,
           area: data.area,
           is_support: data.is_support,
+          // Single-select dropdown: show the first aspiration it belongs to.
+          aspiration_id: (data.aspirations ?? [])[0] ?? null,
         });
         setEndedOn(data.ended_on ?? null);
         setRungs(
@@ -226,13 +235,41 @@ function EditHabitPage() {
     fetchNotes();
   }, [id, noteDate]);
 
+  // Load every aspiration (id + name) so the picker can offer them. Cheap and
+  // habit-independent, so it runs once; a failed load just leaves it empty.
+  useEffect(() => {
+    async function fetchAspirations() {
+      try {
+        const res = await fetch(`${import.meta.env.VITE_API_URL}/aspirations/`);
+        const data = await res.json();
+        if (res.ok) {
+          setAllAspirations(
+            (data.aspirations ?? []).map((a: AspirationOption) => ({
+              id: a.id,
+              name: a.name,
+            })),
+          );
+        }
+      } catch {
+        // Non-fatal: the picker just shows no options.
+      }
+    }
+    fetchAspirations();
+  }, []);
+
   async function saveHabit(values: HabitValues) {
+    // The dropdown is single-select; the endpoint takes the full id list, so
+    // send [] or a one-item list. aspiration_id itself isn't a habit field.
+    const { aspiration_id, ...rest } = values;
     const res = await fetch(
       `${import.meta.env.VITE_API_URL}/habits/${id}/edit/`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
+        body: JSON.stringify({
+          ...rest,
+          aspiration_ids: aspiration_id != null ? [aspiration_id] : [],
+        }),
       },
     );
     const data = await res.json();
@@ -374,6 +411,7 @@ function EditHabitPage() {
             initial={initial}
             submitLabel="Save changes"
             onSubmit={saveHabit}
+            aspirationOptions={allAspirations}
           />
         )}
 

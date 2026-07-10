@@ -6,9 +6,18 @@ export type HabitValues = {
   notes: string;
   area: number | null;
   is_support: boolean;
+  // The one aspiration this habit works toward (or null). null on pages that
+  // don't offer the picker (the Add page passes no options).
+  aspiration_id: number | null;
 };
 
 type Area = {
+  id: number;
+  name: string;
+};
+
+// One choosable aspiration for the (optional) aspiration dropdown.
+export type AspirationOption = {
   id: number;
   name: string;
 };
@@ -21,15 +30,22 @@ function HabitForm({
   initial,
   submitLabel,
   onSubmit,
+  aspirationOptions,
 }: {
   initial?: HabitValues;
   submitLabel: string;
   onSubmit: (values: HabitValues) => Promise<void>;
+  // When provided, an "Aspiration" dropdown is shown (non-helper habits only).
+  // Omit it to hide the field entirely (e.g. the Add page).
+  aspirationOptions?: AspirationOption[];
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [area, setArea] = useState<number | null>(initial?.area ?? null);
   const [isSupport, setIsSupport] = useState(initial?.is_support ?? false);
+  const [aspirationId, setAspirationId] = useState<number | null>(
+    initial?.aspiration_id ?? null,
+  );
   const [areas, setAreas] = useState<Area[]>([]);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -62,6 +78,7 @@ function HabitForm({
         notes: notes.trim(),
         area,
         is_support: isSupport,
+        aspiration_id: aspirationId,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -102,6 +119,31 @@ function HabitForm({
           className={`${fieldClass} resize-none`}
         />
       </div>
+
+      {/* Aspiration this habit works toward — shown only when the parent offers
+          options (the Edit page) and the habit isn't a helper. Sits between
+          Notes and Area. */}
+      {aspirationOptions && !isSupport && (
+        <div>
+          <label className={F_LABEL}>
+            Aspiration
+          </label>
+          <select
+            value={aspirationId ?? ""}
+            onChange={(e) =>
+              setAspirationId(e.target.value ? Number(e.target.value) : null)
+            }
+            className={fieldClass}
+          >
+            <option value="">No aspiration</option>
+            {aspirationOptions.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div>
         <label className={F_LABEL}>

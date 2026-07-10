@@ -1975,6 +1975,11 @@ def _habit_detail(habit):
         "is_support": habit.is_support,
         "ended_on": habit.ended_on,     # null = active; a date = retired (stopped)
         "tiers": _habit_tiers(habit),   # same shape as in /chains/
+        # The aspirations this habit works toward (ids only, stable order so the
+        # bloom colors stay put). Editable from the habit page for non-helpers.
+        "aspirations": list(
+            habit.aspirations.order_by("id").values_list("id", flat=True)
+        ),
     }
 
 
@@ -2035,8 +2040,8 @@ def create_habit(request):
 @csrf_exempt
 @require_POST
 def edit_habit(request, habit_id):
-    """Update a habit's name / notes / area. Partial: only the fields present in
-    the body are changed."""
+    """Update a habit's name / notes / area / aspirations. Partial: only the
+    fields present in the body are changed."""
     habit = get_object_or_404(Habit, id=habit_id)
 
     try:
@@ -2069,6 +2074,20 @@ def edit_habit(request, habit_id):
         if not isinstance(body["is_support"], bool):
             return JsonResponse({"error": "'is_support' must be true or false."}, status=400)
         habit.is_support = body["is_support"]
+
+    # Aspirations this habit works toward. A present list REPLACES the whole set
+    # (same M2M as the aspiration side's habit_ids, just written from the habit).
+    # Unknown ids are silently dropped by the filter.
+    if "aspiration_ids" in body:
+        ids = body["aspiration_ids"]
+        if not isinstance(ids, list) or not all(
+            isinstance(i, int) and not isinstance(i, bool) for i in ids
+        ):
+            return JsonResponse(
+                {"error": "'aspiration_ids' must be a list of aspiration ids."},
+                status=400,
+            )
+        habit.aspirations.set(Aspiration.objects.filter(id__in=ids))
 
     habit.save()
     return JsonResponse(_habit_detail(habit))
