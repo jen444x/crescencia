@@ -136,7 +136,7 @@ export function HabitChip({
           </span>
         )}
         <AspirationDots
-          ids={habit.aspirations}
+          aspirations={habit.aspirations}
           className={`ml-1 ${done || skipped || missed ? "opacity-40" : ""}`}
         />
 

@@ -31,8 +31,14 @@ export const BLOOMS = [
   { edge: "#dfa0b4", dot: "#d98fa6" }, // rose
   { edge: "#9fb6de", dot: "#8aa8d8" }, // sky
 ] as const;
-export const bloomFor = (aspirationId: number) =>
-  BLOOMS[aspirationId % BLOOMS.length];
+// The bloom an aspiration wears. `colorIndex` (0-5) is the user's chosen color;
+// when it's null/undefined we fall back to the id-based default so untouched
+// aspirations keep their original hue.
+export const bloomFor = (aspirationId: number, colorIndex?: number | null) =>
+  BLOOMS[
+    (((colorIndex ?? aspirationId) % BLOOMS.length) + BLOOMS.length) %
+      BLOOMS.length
+  ];
 
 // The primary action pill that sits on a page header's baseline ("+ New").
 export const HEADER_ACTION =

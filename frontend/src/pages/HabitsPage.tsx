@@ -7,7 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import Header from "../components/layout/Header";
-import AspirationDots from "../components/AspirationDots";
+import AspirationDots, { type AspirationRef } from "../components/AspirationDots";
 import { CARD, SEG, segOption, HEADER_ACTION } from "../components/ui";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { useToast } from "../components/Toast";
@@ -64,9 +64,9 @@ type HabitRow = {
   ended_on: string | null;
   tiers: HabitTier[];
   status: HabitStatus;
-  // Aspiration ids this habit serves — rendered as bloom dots in the
-  // aspiration's bed color next to the name.
-  aspirations: number[];
+  // Aspirations this habit serves ({id, color}) — rendered as bloom dots in
+  // each aspiration's chosen (or id-default) color next to the name.
+  aspirations: AspirationRef[];
   // Current streak: consecutive days completed, ending on the viewed day. 0
   // when there's no active run (the 🔥 chip is hidden then).
   streak: number;
@@ -277,7 +277,7 @@ function HabitTierRow({
             </svg>
           </button>
           <AspirationDots
-            ids={habit.aspirations}
+            aspirations={habit.aspirations}
             className={done || skipped || missed ? "opacity-40" : ""}
           />
         </span>

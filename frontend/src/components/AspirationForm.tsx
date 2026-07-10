@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { CARD, F_LABEL, F_INPUT, BTN_PRIMARY } from "./ui";
+import { CARD, F_LABEL, F_INPUT, BTN_PRIMARY, BLOOMS } from "./ui";
 
 // Shared by the Add and Edit aspiration pages — mirrors HabitForm: controlled
 // inputs, validates name, hands the assembled values to `onSubmit`.
@@ -8,6 +8,8 @@ export type AspirationValues = {
   reason: string;
   motivation: string;
   notes: string;
+  // Chosen bloom color index (0-5), or null to keep the id-based default.
+  color: number | null;
   habit_ids: number[];
 };
 
@@ -28,6 +30,7 @@ function AspirationForm({
   const [reason, setReason] = useState(initial?.reason ?? "");
   const [motivation, setMotivation] = useState(initial?.motivation ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [color, setColor] = useState<number | null>(initial?.color ?? null);
   const [habitIds, setHabitIds] = useState<number[]>(initial?.habit_ids ?? []);
   const [habits, setHabits] = useState<HabitOption[]>([]);
   const [error, setError] = useState("");
@@ -67,6 +70,7 @@ function AspirationForm({
         reason: reason.trim(),
         motivation: motivation.trim(),
         notes: notes.trim(),
+        color,
         habit_ids: habitIds,
       });
     } catch (err) {
@@ -89,6 +93,47 @@ function AspirationForm({
             maxLength={200}
             className={fieldClass}
           />
+        </div>
+
+        <div>
+          <label className={F_LABEL}>Color</label>
+          <div className="flex flex-wrap gap-3">
+            {BLOOMS.map((b, i) => {
+              const selected = color === i;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => setColor(i)}
+                  aria-label={`Color ${i + 1}`}
+                  aria-pressed={selected}
+                  className={`flex h-8 w-8 items-center justify-center rounded-full transition ${
+                    selected
+                      ? "ring-2 ring-calm-600 ring-offset-2 ring-offset-white"
+                      : ""
+                  }`}
+                  style={{ background: b.dot }}
+                >
+                  {selected && (
+                    <svg
+                      className="h-4 w-4 text-white"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                      aria-hidden
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M5 13l4 4L19 7"
+                      />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         <div>

@@ -110,15 +110,16 @@ def _habit_tiers(habit):
 
 
 def _aspirations_by_habit():
-    """habit_id -> [aspiration ids, ascending], one query over the M2M. The
-    frontend keys an aspiration's bloom color off its id, so the ascending
-    order keeps a habit's dots stable everywhere they render."""
+    """habit_id -> [{"id", "color"}, ...] ascending by id, one query over the
+    M2M. `color` is the aspiration's chosen bloom index (null = its id-based
+    default); the frontend colors the dots from it. Ascending order keeps a
+    habit's dots stable everywhere they render."""
     by_habit = defaultdict(list)
-    for habit_id, asp_id in (
-        Aspiration.objects.order_by("id").values_list("habits__id", "id")
+    for habit_id, asp_id, color in (
+        Aspiration.objects.order_by("id").values_list("habits__id", "id", "color")
     ):
         if habit_id is not None:   # an aspiration with no habits yields (None, id)
-            by_habit[habit_id].append(asp_id)
+            by_habit[habit_id].append({"id": asp_id, "color": color})
     return by_habit
 
 
@@ -3041,6 +3042,7 @@ def aspirations(request):
         {
             "id": a.id,
             "name": a.name,
+            "color": a.color,   # chosen bloom index, or null for the id default
             "habits": [
                 habit_strip(h)
                 for h in sorted(a.habits.all(), key=lambda h: h.name.lower())
@@ -3069,6 +3071,7 @@ def aspiration(request, aspiration_id):
         "reason": asp.reason,
         "motivation": asp.motivation,
         "notes": asp.notes,
+        "color": asp.color,   # chosen bloom index, or null for the id default
         "created_at": asp.created_at,
         "habit_ids": [h.id for h in habits],
         "habits": _aspiration_habit_progress(habits, today),
@@ -3076,11 +3079,28 @@ def aspiration(request, aspiration_id):
     })
 
 
+ASPIRATION_COLOR_COUNT = 6   # size of the frontend BLOOMS palette (0..5)
+
+
+def _color_error(value):
+    """None if `value` is a usable color (null, or an index 0..5), else a 400."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) \
+            or not (0 <= value < ASPIRATION_COLOR_COUNT):
+        return JsonResponse(
+            {"error": f"'color' must be null or 0..{ASPIRATION_COLOR_COUNT - 1}."},
+            status=400,
+        )
+    return None
+
+
 @csrf_exempt
 @require_POST
 def create_aspiration(request):
-    """Create an aspiration. Body: {name, reason?, motivation?, notes?,
-    habit_ids?}. habit_ids attaches existing habits to it."""
+    """Create an aspiration. Body: {name, reason?, motivation?, notes?, color?,
+    habit_ids?}. habit_ids attaches existing habits to it; color is a bloom index
+    (0..5) or null for the id-based default."""
     try:
         body = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
@@ -3090,11 +3110,16 @@ def create_aspiration(request):
     if not name:
         return JsonResponse({"error": "Name is required."}, status=400)
 
+    color_error = _color_error(body.get("color"))
+    if color_error:
+        return color_error
+
     asp = Aspiration.objects.create(
         name=name,
         reason=(body.get("reason") or "").strip(),
         motivation=(body.get("motivation") or "").strip(),
         notes=(body.get("notes") or "").strip(),
+        color=body.get("color"),
     )
     habit_ids = body.get("habit_ids")
     if habit_ids:
@@ -3106,7 +3131,7 @@ def create_aspiration(request):
 @require_POST
 def edit_aspiration(request, aspiration_id):
     """Update an aspiration. Body may carry any of name, reason, motivation,
-    notes, habit_ids; absent keys are left unchanged. A present habit_ids
+    notes, color, habit_ids; absent keys are left unchanged. A present habit_ids
     REPLACES the whole attached-habit set (the edit form always sends it)."""
     asp = get_object_or_404(Aspiration, id=aspiration_id)
     try:
@@ -3125,6 +3150,11 @@ def edit_aspiration(request, aspiration_id):
         asp.motivation = (body.get("motivation") or "").strip()
     if "notes" in body:
         asp.notes = (body.get("notes") or "").strip()
+    if "color" in body:
+        color_error = _color_error(body.get("color"))
+        if color_error:
+            return color_error
+        asp.color = body.get("color")
     asp.save()
 
     if "habit_ids" in body:

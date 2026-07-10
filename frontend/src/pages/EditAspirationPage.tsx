@@ -27,6 +27,7 @@ function EditAspirationPage() {
           reason: data.reason,
           motivation: data.motivation,
           notes: data.notes,
+          color: data.color ?? null,
           habit_ids: data.habit_ids,
         });
       } catch (err) {

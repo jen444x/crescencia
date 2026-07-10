@@ -16,7 +16,12 @@ type HabitWeek = {
   tiers: VersionWeek[]; // one strip per version; [] when the habit is untiered
   days: DayCell[]; // untiered habit only
 };
-type Aspiration = { id: number; name: string; habits: HabitWeek[] };
+type Aspiration = {
+  id: number;
+  name: string;
+  color: number | null; // chosen bloom index, or null for the id-based default
+  habits: HabitWeek[];
+};
 
 // 7-day completion strip: filled = done, hollow = not done, whisper = the habit
 // didn't exist that day yet (so it couldn't have been done). Drawn on the same
@@ -188,9 +193,10 @@ function AspirationsPage() {
           {aspirations.map((a) => {
             const open = openIds.has(a.id);
             // Each aspiration is a garden bed with its own bloom color — a thin
-            // colored top edge, keyed off the id so the same color follows this
-            // aspiration everywhere (see BLOOMS).
-            const bloom = bloomFor(a.id);
+            // colored top edge. Uses the aspiration's chosen color, falling back
+            // to the id-based default, so the same color follows it everywhere
+            // (see BLOOMS).
+            const bloom = bloomFor(a.id, a.color);
             return (
               <li
                 key={a.id}

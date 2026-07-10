@@ -24,6 +24,10 @@ class Aspiration(models.Model):
     reason = models.TextField(blank=True)          # why you want it
     motivation = models.TextField(blank=True)      # what keeps you going
     notes = models.TextField(blank=True)
+    # Chosen bloom color, as an index (0-5) into the frontend BLOOMS palette.
+    # null = use the id-based default (id % 6), so existing beds keep the color
+    # they had until the user picks one.
+    color = models.PositiveSmallIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     # The habits that serve this aspiration. Many-to-many: one habit can support
     # several aspirations ("walk 5000 steps" feeds both "move more" and "get
