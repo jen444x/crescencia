@@ -10,6 +10,8 @@ export type AspirationValues = {
   notes: string;
   // Chosen bloom color index (0-5), or null to keep the id-based default.
   color: number | null;
+  // "YYYY-MM-DD" deadline, or null for an open-ended (forever) aspiration.
+  target_date: string | null;
   habit_ids: number[];
 };
 
@@ -31,6 +33,7 @@ function AspirationForm({
   const [motivation, setMotivation] = useState(initial?.motivation ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [color, setColor] = useState<number | null>(initial?.color ?? null);
+  const [targetDate, setTargetDate] = useState<string>(initial?.target_date ?? "");
   const [habitIds, setHabitIds] = useState<number[]>(initial?.habit_ids ?? []);
   const [habits, setHabits] = useState<HabitOption[]>([]);
   const [error, setError] = useState("");
@@ -71,6 +74,7 @@ function AspirationForm({
         motivation: motivation.trim(),
         notes: notes.trim(),
         color,
+        target_date: targetDate || null,
         habit_ids: habitIds,
       });
     } catch (err) {
@@ -134,6 +138,32 @@ function AspirationForm({
               );
             })}
           </div>
+        </div>
+
+        <div>
+          <label className={F_LABEL}>Target date</label>
+          <input
+            type="date"
+            value={targetDate}
+            onChange={(e) => setTargetDate(e.target.value)}
+            className={fieldClass}
+          />
+          <p className="mt-1.5 text-xs text-stone-400">
+            {targetDate ? (
+              <>
+                Counts down to this day, with a heatmap of your progress.{" "}
+                <button
+                  type="button"
+                  onClick={() => setTargetDate("")}
+                  className="font-semibold text-calm-600 underline"
+                >
+                  Clear
+                </button>
+              </>
+            ) : (
+              "Optional — add a deadline to make this a goal with a countdown."
+            )}
+          </p>
         </div>
 
         <div>

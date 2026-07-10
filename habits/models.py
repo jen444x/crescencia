@@ -29,6 +29,11 @@ class Aspiration(models.Model):
     # they had until the user picks one.
     color = models.PositiveSmallIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # An optional deadline that turns a directional aspiration into a dated GOAL
+    # ("get ready for the move by Aug 5"). null = open-ended/forever — the default,
+    # and what every aspiration was until now. When set, the detail page shows a
+    # countdown and a completion heatmap over the window [created_at, target_date].
+    target_date = models.DateField(null=True, blank=True)
     # The habits that serve this aspiration. Many-to-many: one habit can support
     # several aspirations ("walk 5000 steps" feeds both "move more" and "get
     # outside"), and an aspiration is made of several habits. blank=True so an

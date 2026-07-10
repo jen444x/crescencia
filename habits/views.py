@@ -2932,6 +2932,86 @@ def _aspiration_habit_progress(habits, today):
     return rows
 
 
+def _aspiration_heatmap(asp, habits, today):
+    """Per-day completion across a dated aspiration's window, for the goal heatmap.
+
+    The window runs from the day the aspiration was created (`created_at`) through
+    its `target_date`, inclusive. For each ELAPSED day we report how many of the
+    aspiration's habits read COMPLETED that day (`done`) out of how many APPLIED
+    that day (`total`) — a habit applies once it exists and until it's retired,
+    the same date-aware rule the Habits page uses (Habit.date_added/ended_on).
+    Future days carry `done=null` so the frontend can draw them hollow ("still to
+    come"). The frontend shades each day by done/total and lays the days out as a
+    month calendar; `days_left`/`elapsed_days` feed the countdown.
+    """
+    habits = list(habits)
+    start = timezone.localtime(asp.created_at).date()
+    target = asp.target_date
+    if target < start:            # a target before the start -> empty window
+        target = start
+
+    # done_on(hid, day): did this habit read COMPLETED that day (any version)?
+    # One windowed query over just the ELAPSED span, same bucket shape as the
+    # list/detail progress helpers.
+    last_elapsed = min(today, target)
+    buckets = defaultdict(lambda: {"specific": {}, "fallback": None})
+    habit_ids = [h.id for h in habits]
+    if habit_ids and last_elapsed >= start:
+        for hid, d, level, status in HabitLog.objects.filter(
+            habit_id__in=habit_ids, date__gte=start, date__lte=last_elapsed,
+        ).values_list("habit_id", "date", "version__level", "status"):
+            b = buckets[(hid, d)]
+            if level is None:
+                b["fallback"] = status
+            else:
+                b["specific"][level] = status
+
+    def done_on(hid, day):
+        b = buckets.get((hid, day))
+        specific = b["specific"] if b else {}
+        fallback = b["fallback"] if b else None
+        return _version_status(
+            specific, fallback, None, is_past=day < today
+        ) == HabitLog.Status.COMPLETED
+
+    # A habit applies on `day` once it exists and until it's retired (ended_on is
+    # exclusive) — mirrors the Habit model docstring / Habits-page filter.
+    added = {h.id: timezone.localtime(h.date_added).date() for h in habits}
+
+    def applies_on(h, day):
+        if day < added[h.id]:
+            return False
+        return h.ended_on is None or h.ended_on > day
+
+    days = []
+    all_done_days = 0
+    day = start
+    while day <= target:
+        applied = [h for h in habits if applies_on(h, day)]
+        total = len(applied)
+        if day <= today:
+            done = sum(1 for h in applied if done_on(h.id, day))
+            if total and done >= total:
+                all_done_days += 1
+        else:
+            done = None                       # future -> hollow
+        days.append({"d": day.isoformat(), "done": done, "total": total})
+        day += timedelta(days=1)
+
+    total_days = (target - start).days + 1
+    elapsed_days = min((today - start).days + 1, total_days) if today >= start else 0
+    return {
+        "start_date": start.isoformat(),
+        "target_date": target.isoformat(),
+        "today": today.isoformat(),
+        "total_days": total_days,
+        "elapsed_days": elapsed_days,
+        "days_left": max((target - today).days, 0),
+        "all_done_days": all_done_days,
+        "days": days,
+    }
+
+
 def _habit_streaks(habit_ids, as_of):
     """Whole-habit current streak per habit, as of `as_of`: the run of consecutive
     days ending on `as_of` where the habit read COMPLETED (any version counts). A
@@ -3063,7 +3143,7 @@ def aspiration(request, aspiration_id):
     """One aspiration: its text fields, the ids of its attached habits, and each
     attached habit's recent completion (for the per-habit progress rows)."""
     asp = get_object_or_404(Aspiration, id=aspiration_id)
-    habits = asp.habits.order_by("name")
+    habits = list(asp.habits.order_by("name"))
     today = timezone.localdate()
     return JsonResponse({
         "id": asp.id,
@@ -3073,8 +3153,11 @@ def aspiration(request, aspiration_id):
         "notes": asp.notes,
         "color": asp.color,   # chosen bloom index, or null for the id default
         "created_at": asp.created_at,
+        "target_date": asp.target_date,   # null = open-ended; a date = dated goal
         "habit_ids": [h.id for h in habits],
         "habits": _aspiration_habit_progress(habits, today),
+        # The countdown + completion heatmap, only for a dated aspiration.
+        "goal": _aspiration_heatmap(asp, habits, today) if asp.target_date else None,
         "progress_days": ASPIRATION_PROGRESS_DAYS,
     })
 
@@ -3095,12 +3178,26 @@ def _color_error(value):
     return None
 
 
+def _parse_target_date(value):
+    """(date_or_None, error_response_or_None) from a `target_date` body value.
+    null/'' clears it (an open-ended aspiration); otherwise it must be an ISO
+    'YYYY-MM-DD' string."""
+    if value in (None, ""):
+        return None, None
+    if not isinstance(value, str) or parse_date(value) is None:
+        return None, JsonResponse(
+            {"error": "'target_date' must be null or a YYYY-MM-DD date."}, status=400
+        )
+    return parse_date(value), None
+
+
 @csrf_exempt
 @require_POST
 def create_aspiration(request):
     """Create an aspiration. Body: {name, reason?, motivation?, notes?, color?,
-    habit_ids?}. habit_ids attaches existing habits to it; color is a bloom index
-    (0..5) or null for the id-based default."""
+    target_date?, habit_ids?}. habit_ids attaches existing habits to it; color is
+    a bloom index (0..5) or null for the id-based default; target_date (YYYY-MM-DD
+    or null) turns it into a dated goal with a countdown + heatmap."""
     try:
         body = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
@@ -3114,12 +3211,17 @@ def create_aspiration(request):
     if color_error:
         return color_error
 
+    target_date, td_error = _parse_target_date(body.get("target_date"))
+    if td_error:
+        return td_error
+
     asp = Aspiration.objects.create(
         name=name,
         reason=(body.get("reason") or "").strip(),
         motivation=(body.get("motivation") or "").strip(),
         notes=(body.get("notes") or "").strip(),
         color=body.get("color"),
+        target_date=target_date,
     )
     habit_ids = body.get("habit_ids")
     if habit_ids:
@@ -3131,8 +3233,10 @@ def create_aspiration(request):
 @require_POST
 def edit_aspiration(request, aspiration_id):
     """Update an aspiration. Body may carry any of name, reason, motivation,
-    notes, color, habit_ids; absent keys are left unchanged. A present habit_ids
-    REPLACES the whole attached-habit set (the edit form always sends it)."""
+    notes, color, target_date, habit_ids; absent keys are left unchanged. A
+    present habit_ids REPLACES the whole attached-habit set (the edit form always
+    sends it); a present target_date (YYYY-MM-DD or null) sets or clears the
+    deadline."""
     asp = get_object_or_404(Aspiration, id=aspiration_id)
     try:
         body = json.loads(request.body or b"{}")
@@ -3155,6 +3259,11 @@ def edit_aspiration(request, aspiration_id):
         if color_error:
             return color_error
         asp.color = body.get("color")
+    if "target_date" in body:
+        target_date, td_error = _parse_target_date(body.get("target_date"))
+        if td_error:
+            return td_error
+        asp.target_date = target_date
     asp.save()
 
     if "habit_ids" in body:

@@ -2805,3 +2805,90 @@ class AspirationColorTests(TestCase):
         rows = json.loads(self.client.get(reverse("habits:habits_list")).content)
         row = next(r for r in rows if r["id"] == habit.id)
         self.assertEqual(row["aspirations"], [{"id": asp.id, "color": 2}])
+
+
+class AspirationGoalTests(TestCase):
+    """An aspiration can carry an optional target_date, turning it into a dated
+    goal. When set, the detail endpoint emits a `goal` block: a countdown
+    (days_left) plus a per-day completion heatmap over [created_at, target_date].
+    null target_date = an open-ended aspiration and `goal` is null."""
+
+    def _create(self, **body):
+        return self.client.post(
+            reverse("habits:create_aspiration"),
+            data=json.dumps(body), content_type="application/json",
+        )
+
+    def _edit(self, asp_id, **body):
+        return self.client.post(
+            reverse("habits:edit_aspiration", args=[asp_id]),
+            data=json.dumps(body), content_type="application/json",
+        )
+
+    def _detail(self, asp_id):
+        return json.loads(
+            self.client.get(reverse("habits:aspiration", args=[asp_id])).content
+        )
+
+    def test_create_with_target_date_stores_it_and_detail_returns_goal(self):
+        target = timezone.localdate() + timedelta(days=10)
+        resp = self._create(name="First home", target_date=target.isoformat())
+        self.assertEqual(resp.status_code, 201)
+        asp_id = json.loads(resp.content)["id"]
+        self.assertEqual(Aspiration.objects.get(id=asp_id).target_date, target)
+        detail = self._detail(asp_id)
+        self.assertEqual(detail["target_date"], target.isoformat())
+        self.assertIsNotNone(detail["goal"])
+        self.assertEqual(detail["goal"]["target_date"], target.isoformat())
+
+    def test_open_ended_aspiration_has_no_goal(self):
+        asp_id = json.loads(self._create(name="Sleep better").content)["id"]
+        detail = self._detail(asp_id)
+        self.assertIsNone(detail["target_date"])
+        self.assertIsNone(detail["goal"])
+
+    def test_edit_sets_then_clears_target_date(self):
+        asp = Aspiration.objects.create(name="First home")
+        target = timezone.localdate() + timedelta(days=30)
+        self.assertEqual(self._edit(asp.id, target_date=target.isoformat()).status_code, 200)
+        asp.refresh_from_db()
+        self.assertEqual(asp.target_date, target)
+        self._edit(asp.id, target_date=None)      # clear it -> open-ended again
+        asp.refresh_from_db()
+        self.assertIsNone(asp.target_date)
+
+    def test_invalid_target_date_is_rejected(self):
+        self.assertEqual(self._create(name="Bad", target_date="not-a-date").status_code, 400)
+        self.assertFalse(Aspiration.objects.filter(name="Bad").exists())
+
+    def test_heatmap_counts_completion_and_days_left(self):
+        today = timezone.localdate()
+        start = today - timedelta(days=4)
+        target = today + timedelta(days=5)
+        backdated = timezone.now() - timedelta(days=4)
+
+        habit = Habit.objects.create(name="Walk")
+        # Backdate existence so the habit "applies" across the whole window
+        # (date_added is auto_now_add = now in tests).
+        Habit.objects.filter(id=habit.id).update(date_added=backdated)
+        HabitLog.objects.create(habit=habit, date=start, status=HabitLog.Status.COMPLETED)
+        HabitLog.objects.create(habit=habit, date=today, status=HabitLog.Status.COMPLETED)
+
+        asp = Aspiration.objects.create(name="First home", target_date=target)
+        Aspiration.objects.filter(id=asp.id).update(created_at=backdated)
+        asp.habits.add(habit)
+
+        goal = self._detail(asp.id)["goal"]
+        self.assertEqual(goal["start_date"], start.isoformat())
+        self.assertEqual(goal["target_date"], target.isoformat())
+        self.assertEqual(goal["total_days"], 10)       # start..target inclusive
+        self.assertEqual(len(goal["days"]), 10)
+        self.assertEqual(goal["days_left"], 5)
+        self.assertEqual(goal["elapsed_days"], 5)      # start..today inclusive
+        self.assertEqual(goal["all_done_days"], 2)     # start + today fully done
+        # First day (the start) was completed: 1 of 1.
+        self.assertEqual(goal["days"][0], {"d": start.isoformat(), "done": 1, "total": 1})
+        # The last day is in the future -> hollow (done is null), still counts total.
+        self.assertEqual(goal["days"][-1]["d"], target.isoformat())
+        self.assertIsNone(goal["days"][-1]["done"])
+        self.assertEqual(goal["days"][-1]["total"], 1)
