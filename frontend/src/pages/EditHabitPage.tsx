@@ -186,8 +186,7 @@ function EditHabitPage() {
           notes: data.notes,
           area: data.area,
           is_support: data.is_support,
-          // Single-select dropdown: show the first aspiration it belongs to.
-          aspiration_id: (data.aspirations ?? [])[0] ?? null,
+          aspiration_ids: data.aspirations ?? [],
         });
         setEndedOn(data.ended_on ?? null);
         setRungs(
@@ -258,18 +257,12 @@ function EditHabitPage() {
   }, []);
 
   async function saveHabit(values: HabitValues) {
-    // The dropdown is single-select; the endpoint takes the full id list, so
-    // send [] or a one-item list. aspiration_id itself isn't a habit field.
-    const { aspiration_id, ...rest } = values;
     const res = await fetch(
       `${import.meta.env.VITE_API_URL}/habits/${id}/edit/`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...rest,
-          aspiration_ids: aspiration_id != null ? [aspiration_id] : [],
-        }),
+        body: JSON.stringify(values),
       },
     );
     const data = await res.json();
