@@ -2738,6 +2738,11 @@ def habits_list(request):
     # habit_id -> [aspiration ids] in one query (bloom dots on the Habits page).
     asp_map = _aspirations_by_habit()
 
+    # Evaluate the queryset once so the streak id-list and the loop below share a
+    # single query; then the current streak per habit, as of the viewed day.
+    habits = list(habits)
+    streaks = _habit_streaks([h.id for h in habits], target_date)
+
     data = []
     for habit in habits:
         bucket = day_logs.get(habit.id)
@@ -2761,6 +2766,7 @@ def habits_list(request):
             # whole-habit status: done if any version done, else skip/missed/pending
             "status": _version_status(specific, fallback, None, is_past),
             "aspirations": asp_map.get(habit.id, []),  # aspiration ids this habit serves
+            "streak": streaks.get(habit.id, 0),        # consecutive completed days
         })
 
     return JsonResponse(data, safe=False)
@@ -2923,6 +2929,48 @@ def _aspiration_habit_progress(habits, today):
                 **progress(h.id, None),
             })
     return rows
+
+
+def _habit_streaks(habit_ids, as_of):
+    """Whole-habit current streak per habit, as of `as_of`: the run of consecutive
+    days ending on `as_of` where the habit read COMPLETED (any version counts). A
+    still-pending `as_of` doesn't break it — the count just starts the day before
+    (same rule as the aspiration streaks). One windowed query, so the Habits list
+    stays a fixed number of queries instead of one per habit.
+    """
+    if not habit_ids:
+        return {}
+    earliest = as_of - timedelta(days=ASPIRATION_STREAK_LOOKBACK)
+    # (habit_id, date) -> {specific: {level: status}, fallback: status|None},
+    # one pass over every log in the window (mirrors _day_logs, range-wide).
+    buckets = defaultdict(lambda: {"specific": {}, "fallback": None})
+    for hid, d, level, status in HabitLog.objects.filter(
+        habit_id__in=habit_ids,
+        date__gte=earliest,
+        date__lte=as_of,
+    ).values_list("habit_id", "date", "version__level", "status"):
+        b = buckets[(hid, d)]
+        if level is None:
+            b["fallback"] = status
+        else:
+            b["specific"][level] = status
+
+    def done_on(hid, day):
+        b = buckets.get((hid, day))
+        specific = b["specific"] if b else {}
+        fallback = b["fallback"] if b else None
+        status = _version_status(specific, fallback, None, is_past=day < as_of)
+        return status == HabitLog.Status.COMPLETED
+
+    streaks = {}
+    for hid in habit_ids:
+        streak = 0
+        cursor = as_of if done_on(hid, as_of) else as_of - timedelta(days=1)
+        while cursor >= earliest and done_on(hid, cursor):
+            streak += 1
+            cursor -= timedelta(days=1)
+        streaks[hid] = streak
+    return streaks
 
 
 def aspirations(request):

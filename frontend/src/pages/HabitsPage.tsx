@@ -67,6 +67,9 @@ type HabitRow = {
   // Aspiration ids this habit serves — rendered as bloom dots in the
   // aspiration's bed color next to the name.
   aspirations: number[];
+  // Current streak: consecutive days completed, ending on the viewed day. 0
+  // when there's no active run (the 🔥 chip is hidden then).
+  streak: number;
 };
 
 // A routine group (id + name) from GET /routines/, for the "Add to routine"
@@ -177,11 +180,15 @@ function HabitTierRow({
   level,
   onLog,
   expander,
+  primary,
 }: {
   habit: HabitRow;
   level: number | null;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
   expander?: ReactNode;
+  // True only for the habit's top row, so a per-habit chip (the streak) shows
+  // once instead of on every version row.
+  primary?: boolean;
 }) {
   const navigate = useNavigate();
   const tier =
@@ -236,6 +243,14 @@ function HabitTierRow({
           >
             {habit.name}
           </span>
+          {/* Streak: consecutive completed days. Once per habit (top row) and
+              only when there's an active run. Same 🔥 pill as the Aspirations
+              page. */}
+          {primary && habit.streak > 0 && (
+            <span className="whitespace-nowrap rounded-full bg-petal px-2 py-0.5 text-[11px] font-semibold text-calm-700">
+              🔥 {habit.streak}
+            </span>
+          )}
           {/* Direct link to the habit's own page (skips the status sheet).
               Marked data-no-menu so tapping it navigates instead of opening
               the menu. */}
@@ -315,6 +330,7 @@ function HabitRowWithMenu({
   level,
   onLog,
   expander,
+  primary,
   routines,
   habitRoutine,
   onSetRoutine,
@@ -323,6 +339,7 @@ function HabitRowWithMenu({
   level: number | null;
   onLog: (habitId: number, status: HabitStatus, tier?: number) => void;
   expander?: ReactNode;
+  primary?: boolean;
   routines: Routine[];
   habitRoutine?: HabitRoutine;
   onSetRoutine: (habitId: number, routineId: number | null) => void;
@@ -338,7 +355,13 @@ function HabitRowWithMenu({
       }}
       className="cursor-pointer"
     >
-      <HabitTierRow habit={habit} level={level} onLog={onLog} expander={expander} />
+      <HabitTierRow
+        habit={habit}
+        level={level}
+        onLog={onLog}
+        expander={expander}
+        primary={primary}
+      />
 
       <HabitStatusSheet
         open={menuOpen}
@@ -648,6 +671,7 @@ function HabitCard({
             level={level}
             onLog={onLog}
             expander={i === 0 ? expander : undefined}
+            primary={i === 0}
             routines={routines}
             habitRoutine={habitRoutine}
             onSetRoutine={onSetRoutine}

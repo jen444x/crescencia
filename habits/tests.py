@@ -896,6 +896,12 @@ class HabitsListTests(TestCase):
     def _by_id(self, data):
         return {h["id"]: h for h in data}
 
+    def _complete(self, habit, day, *, version=None):
+        HabitLog.objects.create(
+            habit=habit, date=day,
+            status=HabitLog.Status.COMPLETED, version=version,
+        )
+
     def test_returns_all_habits_with_correct_shape(self):
         data = self._get()
         self.assertEqual(len(data), 2)
@@ -903,13 +909,44 @@ class HabitsListTests(TestCase):
         self.assertEqual(
             set(row.keys()),
             {"id", "name", "area", "area_name", "is_support",
-             "ended_on", "tiers", "status", "aspirations"},
+             "ended_on", "tiers", "status", "aspirations", "streak"},
         )
         self.assertEqual(row["id"], self.meditate.id)
         self.assertEqual(row["name"], "Meditate")
         self.assertEqual(row["area"], self.mind.id)
         self.assertEqual(row["area_name"], "Mind")
         self.assertFalse(row["is_support"])  # a main habit, not a helper
+
+    def test_streak_zero_when_never_completed(self):
+        self.assertEqual(self._by_id(self._get())[self.run.id]["streak"], 0)
+
+    def test_streak_counts_consecutive_completed_days(self):
+        for n in (0, 1, 2):
+            self._complete(self.run, self.today - timedelta(days=n))
+        self.assertEqual(self._by_id(self._get())[self.run.id]["streak"], 3)
+
+    def test_streak_ignores_pending_today(self):
+        # Completed the last two days; today untouched. Today's pending state
+        # doesn't break the run — it still counts through yesterday.
+        self._complete(self.run, self.today - timedelta(days=1))
+        self._complete(self.run, self.today - timedelta(days=2))
+        self.assertEqual(self._by_id(self._get())[self.run.id]["streak"], 2)
+
+    def test_streak_breaks_on_a_skipped_day(self):
+        self._complete(self.run, self.today)
+        HabitLog.objects.create(
+            habit=self.run, date=self.today - timedelta(days=1),
+            status=HabitLog.Status.SKIPPED,
+        )
+        self._complete(self.run, self.today - timedelta(days=2))
+        self.assertEqual(self._by_id(self._get())[self.run.id]["streak"], 1)
+
+    def test_streak_counts_a_completed_version_for_the_whole_habit(self):
+        # Completing the Growth rung (higher) marks the habit done that day via
+        # the cascade, so the whole-habit streak counts it.
+        growth = Version.objects.get(habit=self.meditate, level=2)
+        self._complete(self.meditate, self.today, version=growth)
+        self.assertEqual(self._by_id(self._get())[self.meditate.id]["streak"], 1)
 
     def test_untiered_habit_has_empty_tiers(self):
         row = self._by_id(self._get())[self.run.id]
