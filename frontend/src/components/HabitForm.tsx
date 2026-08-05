@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { CARD, F_LABEL, F_INPUT, BTN_PRIMARY } from "./ui";
+import { CARD, F_LABEL, F_INPUT, BTN_PRIMARY, SEG } from "./ui";
 
 export type HabitValues = {
   name: string;
@@ -9,6 +9,10 @@ export type HabitValues = {
   // The aspirations this habit works toward (a habit can support several).
   // Empty on pages that don't offer the picker (the Add page passes no options).
   aspiration_ids: number[];
+  // The Roots(1)/Growth(2) tag the habit's first ladder rung wears. Only sent by
+  // pages that show the tier picker (the Add page); undefined elsewhere, since
+  // the Edit page's ladder editor owns the tags after creation.
+  label?: number;
 };
 
 type Area = {
@@ -31,6 +35,7 @@ function HabitForm({
   submitLabel,
   onSubmit,
   aspirationOptions,
+  tierPicker,
 }: {
   initial?: HabitValues;
   submitLabel: string;
@@ -38,6 +43,9 @@ function HabitForm({
   // When provided, an "Aspiration" dropdown is shown (non-helper habits only).
   // Omit it to hide the field entirely (e.g. the Add page).
   aspirationOptions?: AspirationOption[];
+  // True shows the Roots/Growth picker that tags the habit's first ladder rung.
+  // Add page only — on Edit, the ladder editor owns the tags.
+  tierPicker?: boolean;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
@@ -46,6 +54,9 @@ function HabitForm({
   const [aspirationIds, setAspirationIds] = useState<number[]>(
     initial?.aspiration_ids ?? [],
   );
+  // New habits start at Roots — the everyday minimum, and the rung most habits
+  // only ever have.
+  const [label, setLabel] = useState<number>(initial?.label ?? 1);
   // The aspiration dropdown is a checklist popover; track its open state and a
   // ref so a click outside closes it.
   const [aspOpen, setAspOpen] = useState(false);
@@ -101,6 +112,7 @@ function HabitForm({
         area,
         is_support: isSupport,
         aspiration_ids: aspirationIds,
+        ...(tierPicker ? { label } : {}),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -128,6 +140,40 @@ function HabitForm({
           className={fieldClass}
         />
       </div>
+
+      {/* Which rung the habit starts on. A new habit gets exactly one ladder
+          rung wearing this tag, so it shows on the Habits page straight away;
+          more rungs (and amounts) come later in the edit page's ladder editor.
+          Same colors as the Habits page picker: Roots clay-on-blush, Growth
+          leaf-on-mint. */}
+      {tierPicker && (
+        <div>
+          <span className={F_LABEL}>Tier</span>
+          <div className={SEG} role="group" aria-label="Tier">
+            {([1, 2] as const).map((level) => (
+              <button
+                key={level}
+                type="button"
+                onClick={() => setLabel(level)}
+                aria-pressed={label === level}
+                className={`rounded-full px-4 py-1 text-xs transition-colors ${
+                  label === level
+                    ? level === 1
+                      ? "bg-blush font-semibold text-clay"
+                      : "bg-mint font-semibold text-calm-700"
+                    : "font-medium text-stone-400 hover:text-stone-600"
+                }`}
+              >
+                {level === 1 ? "Roots" : "Growth"}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-stone-400">
+            Roots is the everyday minimum. Add more versions (and amounts like
+            "2000 steps") later on the habit's edit page.
+          </p>
+        </div>
+      )}
 
       <div>
         <label className={F_LABEL}>

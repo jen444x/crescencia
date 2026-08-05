@@ -2892,3 +2892,37 @@ class AspirationGoalTests(TestCase):
         self.assertEqual(goal["days"][-1]["d"], target.isoformat())
         self.assertIsNone(goal["days"][-1]["done"])
         self.assertEqual(goal["days"][-1]["total"], 1)
+
+
+class CreateHabitTests(TestCase):
+    """A new habit is born with ONE ladder rung, tagged Roots by default, so it
+    shows on the Habits page (which lists habits by their rungs) right away."""
+
+    def _create(self, **body):
+        res = self.client.post(
+            reverse("habits:create_habit"),
+            data=json.dumps({"name": "Drink water", **body}),
+            content_type="application/json",
+        )
+        return res, res.json()
+
+    def test_defaults_to_a_roots_rung(self):
+        res, data = self._create()
+        self.assertEqual(res.status_code, 201)
+        version = Version.objects.get(habit_id=data["id"])
+        self.assertEqual(version.level, 1)
+        self.assertEqual(version.value, "")          # no amount yet
+        self.assertEqual(version.label.level, Tier.objects.get(level=1).level)
+
+    def test_growth_can_be_picked(self):
+        _, data = self._create(label=2)
+        self.assertEqual(Version.objects.get(habit_id=data["id"]).label.level, 2)
+
+    def test_null_label_leaves_the_habit_plain(self):
+        _, data = self._create(label=None)
+        self.assertFalse(Version.objects.filter(habit_id=data["id"]).exists())
+
+    def test_bad_label_is_rejected_and_nothing_is_created(self):
+        res, _ = self._create(label=9)
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(Habit.objects.exists())

@@ -12,7 +12,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Aspiration, Routine, Habit, Chain, ChainDay, ChainTime, Schedule, ScheduleDay, HabitLog, HabitPause, Note, JournalEntry, Tier, HabitTier, TierValue, Version
+from .models import Area, Aspiration, Routine, Habit, Chain, ChainDay, ChainTime, Schedule, ScheduleDay, HabitLog, HabitPause, Note, JournalEntry, Tier, TierChoices, HabitTier, TierValue, Version
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -2002,10 +2002,16 @@ def habit(request, habit_id):
 @csrf_exempt
 @require_POST
 def create_habit(request):
-    """Create a habit. Body: {"name", "notes"?, "area"?, "is_support"?}.
+    """Create a habit. Body: {"name", "notes"?, "area"?, "is_support"?, "label"?}.
 
     A new habit starts unscheduled (no chain/time), so it appears in the
     "unscheduled" group of /chains/ until it's placed on the timeline.
+
+    `label` is the Roots/Growth tag (1|2|3, default 1=Roots) the habit's FIRST
+    ladder rung wears. We create that one rung here — value "" (no amount yet;
+    the row just reads as the habit name) — because the Habits page lists habits
+    by their rungs, so a habit with none would be invisible there until someone
+    opened the ladder editor. Pass null for a plain, untagged habit.
     """
     try:
         body = json.loads(request.body or b"{}")
@@ -2032,9 +2038,21 @@ def create_habit(request):
     if not isinstance(is_support, bool):
         return JsonResponse({"error": "'is_support' must be true or false."}, status=400)
 
-    habit = Habit.objects.create(
-        name=name, notes=notes.strip(), area_id=area_id, is_support=is_support
-    )
+    label = body.get("label", TierChoices.ROOTS)
+    if label not in (None, 1, 2, 3):
+        return JsonResponse({"error": "'label' must be 1, 2, 3, or null."}, status=400)
+
+    with transaction.atomic():
+        habit = Habit.objects.create(
+            name=name, notes=notes.strip(), area_id=area_id, is_support=is_support
+        )
+        if label is not None:
+            Version.objects.create(
+                habit=habit,
+                level=1,
+                value="",
+                label=Tier.objects.get_or_create(level=label)[0],
+            )
     return JsonResponse(_habit_detail(habit), status=201)
 
 

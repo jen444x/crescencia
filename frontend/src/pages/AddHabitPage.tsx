@@ -57,7 +57,7 @@ function AddHabitPage() {
     <>
       <Header title="Add habit" eyebrow="Your practice" />
       <div className="max-w-md mx-auto">
-        <HabitForm submitLabel="Add habit" onSubmit={createHabit} />
+        <HabitForm submitLabel="Add habit" onSubmit={createHabit} tierPicker />
       </div>
     </>
   );

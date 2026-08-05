@@ -901,8 +901,14 @@ function HabitsPage() {
   const [isLoading, setIsLoading] = useState(false);
   // "Show helpers" — off by default, so the page lists only the main habits she
   // cares about (helper/support habits hidden, like her old app). On reveals the
-  // helpers too, each tagged "helper".
-  const [showHelpers, setShowHelpers] = useState(false);
+  // helpers too, each tagged "helper". Persisted, like the tier picker: it's a
+  // standing preference, not a per-visit choice. Same "1"/"0" codec as
+  // showStreak (and the Plan page's mainOnly), so the two read the same on disk.
+  const [showHelpers, setShowHelpers] = usePersistentState<boolean>(
+    "habitsShowHelpers",
+    false,
+    { parse: (raw) => raw === "1", serialize: (v) => (v ? "1" : "0") },
+  );
   // Which tier sits on top (both always show). Roots on top by default; pick
   // Growth to put Growth above Roots.
   const [focus, setFocus] = usePersistentState<TierFocus>("habitsFocus", "GROWTH", {
