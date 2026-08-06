@@ -93,6 +93,89 @@ class Habit(models.Model):
         return f"{self.name}"
 
 
+class Step(models.Model):
+    """One thing you actually DO inside a habit — "cat cow", "toe touches".
+
+    A level BELOW the habit, and not to be confused with its neighbours:
+    - a Version is HOW MUCH of the habit (1 min / 3 mins),
+    - a Routine groups whole habits together ("Morning routine"),
+    - a support habit is a separate habit that helps ("get on the mat"),
+    - a Step is the habit's own CONTENT.
+
+    The step's name lives here once, on the habit, so renaming "cat cow" fixes it
+    on every rung. How much of it each rung asks for lives on VersionStep, so the
+    same step can appear at 1 min on the Roots rung and 3 mins on Growth.
+
+    A habit with no steps is the normal case — most habits aren't a recipe.
+    """
+    habit = models.ForeignKey(Habit, on_delete=models.CASCADE, related_name="steps")
+    name = models.CharField(max_length=120)
+    # Position in the habit's step list (1..N), renumbered on save like Version.
+    order = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        ordering = ["habit_id", "order"]
+
+    def __str__(self):
+        return f"{self.habit.name}: {self.name}"
+
+
+class VersionStep(models.Model):
+    """A step's presence and amount ON one version — the cell in the step x
+    version grid.
+
+    A row means "this rung includes this step, this much of it" ("cat cow",
+    "3 mins"). NO row means the rung doesn't include the step at all, which is
+    what makes a higher rung "the lower one plus another step". `amount` is free
+    text like Version.value ("1 min", "10 reps") and may be blank when the step
+    needs no number.
+    """
+    # String ref: Version is defined further down this file.
+    version = models.ForeignKey("Version", on_delete=models.CASCADE, related_name="version_steps")
+    step = models.ForeignKey(Step, on_delete=models.CASCADE, related_name="version_steps")
+    amount = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        # The step's position comes from Step.order, so a rung's list always
+        # reads in the habit's own step order.
+        ordering = ["version_id", "step__order"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["version", "step"], name="one_amount_per_version_step"
+            )
+        ]
+
+    def __str__(self):
+        return f"v{self.version_id} {self.step.name} ({self.amount or '—'})"
+
+
+class StepLog(models.Model):
+    """One step ticked off on one day, for one version.
+
+    Keyed on VersionStep (not Step) so it matches how HabitLog keys on version:
+    ticking "cat cow" while working the 3-min rung records the 3-min cat cow.
+
+    A row exists only once the step has been acted on; no row = not done yet.
+    The HABIT's completion is still a HabitLog — these never replace it. The two
+    stay in sync by fan-out, exactly like Routine (views.log_routine): completing
+    the habit writes a row for each of that version's steps, and ticking the last
+    step writes the version's HabitLog. See views.sync_steps_to_habit.
+    """
+    version_step = models.ForeignKey(VersionStep, on_delete=models.CASCADE, related_name="logs")
+    date = models.DateField()
+    done = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["version_step", "date"], name="one_step_log_per_day"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.version_step} on {self.date}"
+
+
 class HabitPause(models.Model):
     """One pause window for a habit: it was stopped on `start_date` and, if
     `end_date` is set, resumed on `end_date` (end is EXCLUSIVE — active again ON

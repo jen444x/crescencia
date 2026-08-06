@@ -49,6 +49,9 @@ type HabitTier = {
   version: number; // the rung's id — what a completion sends
   status?: HabitStatus;
   done?: boolean;
+  // What you actually DO at this rung ([] unless the habit is a recipe).
+  // `id` is the VersionStep row — that's what a tick is keyed on.
+  steps: { id: number; step: number; name: string; amount: string; done: boolean }[];
 };
 
 // A habit from GET /habits/ : the habit plus today's tracking state. `tiers` is
@@ -99,11 +102,15 @@ type HabitsExpandInfo = {
   expandAll: boolean;
   showStreak: boolean;
   aspirationNames: Map<number, string>;
+  // Tick a step of a rung. Lives here rather than as a prop so it doesn't have
+  // to be drilled through HabitGroup and the sortable wrapper.
+  onLogStep: (habitId: number, versionStep: number, done: boolean) => void;
 };
 const HabitsExpandContext = createContext<HabitsExpandInfo>({
   expandAll: false,
   showStreak: true,
   aspirationNames: new Map(),
+  onLogStep: () => {},
 });
 
 
@@ -184,6 +191,70 @@ function GripIcon() {
       <circle cx="9" cy="18" r="1.6" />
       <circle cx="15" cy="18" r="1.6" />
     </svg>
+  );
+}
+
+// The steps of one rung, listed under its row when the card is expanded: what
+// she actually does at that level ("cat cow — 3 mins"). Ticking them one by one
+// is the other half of the sync — the backend completes the rung once they're
+// all ticked, so the row above closes itself.
+function StepList({
+  habitId,
+  steps,
+  onLogStep,
+}: {
+  habitId: number;
+  steps: HabitTier["steps"];
+  onLogStep: (habitId: number, versionStep: number, done: boolean) => void;
+}) {
+  if (steps.length === 0) return null;
+  return (
+    <div className="bg-white px-4 pb-2.5 pl-11">
+      <ul className="space-y-1.5 border-l-2 border-calm-300 pl-3">
+        {steps.map((step) => (
+          <li key={step.id}>
+            <button
+              type="button"
+              data-no-menu
+              aria-pressed={step.done}
+              onClick={() => onLogStep(habitId, step.id, !step.done)}
+              className="flex w-full items-center gap-2 text-left"
+            >
+              <span
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border-[1.5px] transition ${
+                  step.done
+                    ? "border-calm-600 bg-calm-600 text-white"
+                    : "border-calm-300 bg-white text-transparent"
+                }`}
+              >
+                <svg
+                  className="h-2.5 w-2.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={4}
+                  aria-hidden
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              </span>
+              <span
+                className={`min-w-0 flex-1 truncate text-[13px] ${
+                  step.done ? "text-calm-400 line-through" : "text-ink"
+                }`}
+              >
+                {step.name}
+              </span>
+              {step.amount && (
+                <span className="shrink-0 text-[11.5px] text-stone-400">
+                  {step.amount}
+                </span>
+              )}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -626,7 +697,7 @@ function HabitCard({
   // version (focused first) plus a detail block (area + aspirations). Expansion
   // comes from this card's own chevron OR the page's "Expand all". [null] = the
   // untiered single row (kept as a guard).
-  const { expandAll, aspirationNames } = useContext(HabitsExpandContext);
+  const { expandAll, aspirationNames, onLogStep } = useContext(HabitsExpandContext);
   const [localExpanded, setLocalExpanded] = useState(false);
   const expanded = expandAll || localExpanded;
   // Which rung sits on top: the one wearing the focused TAG (Roots/Growth), so a
@@ -690,17 +761,27 @@ function HabitCard({
             expanded = every version at or below the focused tier. The chevron
             (on the top row) toggles this card. */}
         {shown.map((level, i) => (
-          <HabitRowWithMenu
-            key={level ?? "solo"}
-            habit={habit}
-            level={level}
-            onLog={onLog}
-            expander={i === 0 ? expander : undefined}
-            primary={i === 0}
-            routines={routines}
-            habitRoutine={habitRoutine}
-            onSetRoutine={onSetRoutine}
-          />
+          <div key={level ?? "solo"}>
+            <HabitRowWithMenu
+              habit={habit}
+              level={level}
+              onLog={onLog}
+              expander={i === 0 ? expander : undefined}
+              primary={i === 0}
+              routines={routines}
+              habitRoutine={habitRoutine}
+              onSetRoutine={onSetRoutine}
+            />
+            {/* This rung's steps, revealed with the card so a plain habit's row
+                stays a single line. */}
+            {expanded && (
+              <StepList
+                habitId={habit.id}
+                steps={habit.tiers.find((t) => t.level === level)?.steps ?? []}
+                onLogStep={onLogStep}
+              />
+            )}
+          </div>
         ))}
 
         {/* Expanded: the habit's area and the aspirations it serves, below its
@@ -1098,6 +1179,31 @@ function HabitsPage() {
     }
   }
 
+  // Tick one step of a rung on/off. The backend rolls this UP — ticking the
+  // last step completes the rung — so we just reload and let the server's
+  // answer be the truth, same as logHabit.
+  async function logStep(habitId: number, versionStep: number, done: boolean) {
+    try {
+      const body: { version_step: number; done: boolean; date?: string } = {
+        version_step: versionStep,
+        done,
+      };
+      if (!isViewingToday) body.date = toYMD(viewedDate);
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/habits/${habitId}/steps/log/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      await reloadHabits();
+    } catch {
+      toast("Couldn't update that step", { variant: "error" });
+    }
+  }
+
   // Mouse keeps a tiny 6px threshold so a tap (to complete) isn't misread as a
   // drag. Touch needs a ~450ms press-and-HOLD (close to native iOS), and any
   // finger drift over 5px during that hold cancels into a scroll, so a
@@ -1181,7 +1287,9 @@ function HabitsPage() {
   const helpers = visible.filter((habit) => habit.is_support);
 
   return (
-    <HabitsExpandContext.Provider value={{ expandAll, showStreak, aspirationNames }}>
+    <HabitsExpandContext.Provider
+      value={{ expandAll, showStreak, aspirationNames, onLogStep: logStep }}
+    >
       <Header
         title="Habits"
         eyebrow="Your practice"

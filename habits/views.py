@@ -13,7 +13,7 @@ from django.utils.dateparse import parse_date, parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .models import Area, Aspiration, Routine, Habit, Chain, ChainDay, ChainTime, Schedule, ScheduleDay, HabitLog, HabitPause, Note, JournalEntry, Tier, TierChoices, HabitTier, TierValue, Version
+from .models import Area, Aspiration, Routine, Habit, Chain, ChainDay, ChainTime, Schedule, ScheduleDay, HabitLog, HabitPause, Note, JournalEntry, Tier, TierChoices, HabitTier, TierValue, Version, Step, VersionStep, StepLog
 
 # Derived (never stored) status: once a day is over, a habit that was never
 # completed or skipped reads as "missed". It's computed at read time, so there's
@@ -99,15 +99,113 @@ def _habit_tiers(habit):
     called `tiers` on the wire for now — same shape the frontend already reads,
     plus the `version` id and a possibly-empty `name`."""
     rungs = []
-    for v in habit.versions.select_related("label").order_by("level"):
+    versions = (habit.versions.select_related("label")
+                .prefetch_related("version_steps__step").order_by("level"))
+    for v in versions:
         rungs.append({
             "level": v.level,
             "name": v.label.get_level_display() if v.label_id else "",
             "label": v.label.level if v.label_id else None,  # tag level 1/2/3, or null
             "value": v.value,
             "version": v.id,
+            # What you actually DO at this rung, in the habit's step order. []
+            # for the normal case of a habit that isn't a recipe. `done` is
+            # filled in per-day by callers that have the day's StepLogs.
+            "steps": [
+                {"id": vs.id, "step": vs.step_id, "name": vs.step.name,
+                 "amount": vs.amount, "order": vs.step.order}
+                for vs in sorted(v.version_steps.all(), key=lambda x: x.step.order)
+            ],
         })
     return rungs
+
+
+def _step_done_map(target_date, version_ids=None):
+    """{version_step_id: True} for steps ticked off on `target_date`.
+
+    One query for the whole day, so a list page can fill in every habit's steps
+    without going back per rung. No row = not done.
+    """
+    logs = StepLog.objects.filter(date=target_date, done=True)
+    if version_ids is not None:
+        logs = logs.filter(version_step__version_id__in=version_ids)
+    return {vs_id: True for vs_id in logs.values_list("version_step_id", flat=True)}
+
+
+def _fan_out_steps(version, target_date, status):
+    """Habit-level status pushes DOWN onto that rung's steps.
+
+    Completing "Yoga / stretch" ticks every step of the rung you completed;
+    anything else (undo, skip, miss) clears them, because the rung wasn't done.
+    Mirrors log_routine's fan-out: the group action just writes the members'
+    rows, it never stores a separate "done" of its own.
+    """
+    if version is None:
+        return
+    version_step_ids = list(
+        VersionStep.objects.filter(version=version).values_list("id", flat=True)
+    )
+    if not version_step_ids:
+        return
+
+    if status == HabitLog.Status.COMPLETED:
+        existing = set(
+            StepLog.objects.filter(
+                version_step_id__in=version_step_ids, date=target_date
+            ).values_list("version_step_id", flat=True)
+        )
+        StepLog.objects.filter(
+            version_step_id__in=version_step_ids, date=target_date
+        ).update(done=True)
+        StepLog.objects.bulk_create([
+            StepLog(version_step_id=vs_id, date=target_date, done=True)
+            for vs_id in version_step_ids if vs_id not in existing
+        ])
+    else:
+        StepLog.objects.filter(
+            version_step_id__in=version_step_ids, date=target_date
+        ).delete()
+
+
+def _roll_up_steps(habit, version, target_date):
+    """Ticking steps rolls UP into the rung's own HabitLog.
+
+    All of the rung's steps done -> the rung reads COMPLETED. Any step un-ticked
+    while it was complete -> back to PENDING. Returns the rung's resulting status,
+    or None when the rung has no steps (nothing to roll up).
+    """
+    version_step_ids = list(
+        VersionStep.objects.filter(version=version).values_list("id", flat=True)
+    )
+    if not version_step_ids:
+        return None
+
+    done_count = StepLog.objects.filter(
+        version_step_id__in=version_step_ids, date=target_date, done=True
+    ).count()
+    all_done = done_count == len(version_step_ids)
+
+    log = HabitLog.objects.filter(
+        habit=habit, date=target_date, version=version
+    ).first()
+
+    if all_done:
+        if log is None:
+            log = HabitLog(habit=habit, date=target_date, version=version,
+                           tier_id=version.label_id)
+        log.status = HabitLog.Status.COMPLETED
+        log.time = timezone.localtime().time()
+        log.save()
+        return log.status
+
+    # Not all done: only walk BACK a completion we would have implied. A skip or
+    # a miss she set on purpose is left alone.
+    if log is not None and log.status == HabitLog.Status.COMPLETED:
+        log.status = HabitLog.Status.PENDING
+        log.time = None
+        log.save()
+        return log.status
+    return log.status if log else HabitLog.Status.PENDING
 
 
 def _aspirations_by_habit():
@@ -767,6 +865,12 @@ def log_habit(request, habit_id):
             log.notes = body["notes"].strip()
         log.save()
 
+        # Completing the habit completes what's inside it: tapping "Yoga /
+        # stretch" ticks that rung's steps, and undoing clears them. Only a
+        # status change fans out — jotting a note must not tick anything off.
+        if has_status:
+            _fan_out_steps(version_obj, target_date, log.status)
+
     # Return the saved state so the UI can reconcile against the truth.
     return JsonResponse({
         "habit_id": habit.id,
@@ -849,6 +953,174 @@ def save_habit_versions(request, habit_id):
                 # rung instead of deleting it to keep its history.
                 HabitLog.objects.filter(version=v).delete()
                 v.delete()
+
+    return JsonResponse({"tiers": _habit_tiers(habit)})
+
+
+@csrf_exempt
+@require_POST
+def log_step(request, habit_id):
+    """Tick ONE step of a rung on or off for a day.
+
+    Body: {"version_step": id, "done": true|false, "date"?: "YYYY-MM-DD"}.
+
+    The other half of the two-way sync: this rolls UP, so ticking the last step
+    of a rung completes the rung, and un-ticking one walks that completion back.
+    (log_habit going the other way fans a completion DOWN onto the steps.)
+    Returns the rung's resulting status so the UI can reconcile.
+    """
+    habit = get_object_or_404(Habit, id=habit_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    raw = body.get("version_step")
+    version_step = (
+        VersionStep.objects.filter(id=raw, version__habit=habit)
+        .select_related("version").first()
+        if raw is not None else None
+    )
+    if version_step is None:
+        return JsonResponse(
+            {"error": f"This habit has no step {raw!r}."}, status=400
+        )
+
+    done = body.get("done", True)
+    if not isinstance(done, bool):
+        return JsonResponse({"error": "'done' must be true or false."}, status=400)
+
+    target_date, date_error = _resolve_date(body.get("date"))
+    if date_error:
+        return date_error
+
+    with transaction.atomic():
+        if done:
+            StepLog.objects.update_or_create(
+                version_step=version_step, date=target_date,
+                defaults={"done": True},
+            )
+        else:
+            # No row = not done, so un-ticking removes it rather than storing a
+            # false (keeps "what happened that day" free of noise rows).
+            StepLog.objects.filter(
+                version_step=version_step, date=target_date
+            ).delete()
+        status = _roll_up_steps(habit, version_step.version, target_date)
+
+    version_step_ids = list(
+        VersionStep.objects.filter(version=version_step.version)
+        .values_list("id", flat=True)
+    )
+    done_ids = sorted(_step_done_map(target_date, [version_step.version_id]))
+    return JsonResponse({
+        "habit_id": habit.id,
+        "date": target_date,
+        "version": version_step.version_id,
+        "version_step": version_step.id,
+        "done": done,
+        "steps_done": len(done_ids),
+        "steps_total": len(version_step_ids),
+        "done_step_ids": done_ids,
+        "status": status,          # the rung's status after rolling up
+    })
+
+
+@csrf_exempt
+@require_POST
+def save_habit_steps(request, habit_id):
+    """Save a habit's whole step grid in one shot (the steps editor's Save).
+
+    Body: {"steps":    [{"id"?: step_id, "name": "Cat cow"}, ...],
+           "amounts":  [{"version": version_id, "step": <id or index>,
+                         "amount": "3 mins"}, ...]}
+
+    `steps` is the habit's step list in order — position becomes Step.order, so
+    she never types a number. A step with an `id` is renamed in place (keeping
+    its history); one without is created. Any step not listed is deleted.
+
+    `amounts` is the grid: one entry per filled cell. `step` is either an
+    existing step id or, for a step being created in this same save, its INDEX
+    in `steps` (as {"new": 0}) — so a brand-new step can get amounts immediately.
+    A cell that isn't listed means that rung doesn't include that step.
+    """
+    habit = get_object_or_404(Habit, id=habit_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    steps = body.get("steps")
+    amounts = body.get("amounts", [])
+    if not isinstance(steps, list):
+        return JsonResponse({"error": "'steps' must be a list."}, status=400)
+    if not isinstance(amounts, list):
+        return JsonResponse({"error": "'amounts' must be a list."}, status=400)
+
+    cleaned = []
+    for i, s in enumerate(steps):
+        if not isinstance(s, dict):
+            return JsonResponse({"error": "each step must be an object."}, status=400)
+        name = s.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return JsonResponse({"error": "each step needs a 'name'."}, status=400)
+        if len(name.strip()) > 120:
+            return JsonResponse(
+                {"error": "a step name must be at most 120 characters."}, status=400
+            )
+        cleaned.append({"id": s.get("id"), "name": name.strip(), "order": i + 1})
+
+    version_ids = set(habit.versions.values_list("id", flat=True))
+
+    with transaction.atomic():
+        existing = {s.id: s for s in habit.steps.all()}
+        # Park orders out of 1..N first so re-seating can't trip a future unique
+        # constraint mid-reconcile (same trick as save_habit_versions).
+        habit.steps.update(order=F("order") + 1000)
+
+        kept, by_index = set(), {}
+        for i, c in enumerate(cleaned):
+            step = existing.get(c["id"]) if c["id"] is not None else None
+            if step is None:
+                step = Step(habit=habit)
+            step.name, step.order = c["name"], c["order"]
+            step.save()
+            kept.add(step.id)
+            by_index[i] = step.id
+
+        for sid, step in existing.items():
+            if sid not in kept:
+                step.delete()          # cascades its VersionSteps and their logs
+
+        # Rebuild the grid: simplest correct thing, and it makes "this rung no
+        # longer includes that step" fall out for free. StepLogs for a removed
+        # cell go with it — that day's tick meant "I did this rung's step", and
+        # the rung no longer has it.
+        VersionStep.objects.filter(version__habit=habit).delete()
+        rows = []
+        for a in amounts:
+            if not isinstance(a, dict):
+                return JsonResponse({"error": "each amount must be an object."}, status=400)
+            vid = a.get("version")
+            if vid not in version_ids:
+                return JsonResponse(
+                    {"error": f"This habit has no version {vid!r}."}, status=400
+                )
+            raw_step = a.get("step")
+            if isinstance(raw_step, dict) and "new" in raw_step:
+                step_id = by_index.get(raw_step["new"])
+            else:
+                step_id = raw_step if raw_step in kept else None
+            if step_id is None:
+                return JsonResponse(
+                    {"error": f"Unknown step in amounts: {raw_step!r}."}, status=400
+                )
+            amount = a.get("amount", "")
+            if not isinstance(amount, str):
+                return JsonResponse({"error": "'amount' must be a string."}, status=400)
+            rows.append(VersionStep(version_id=vid, step_id=step_id,
+                                    amount=amount.strip()[:100]))
+        VersionStep.objects.bulk_create(rows)
 
     return JsonResponse({"tiers": _habit_tiers(habit)})
 
@@ -2762,6 +3034,8 @@ def habits_list(request):
     # single query; then the current streak per habit, as of the viewed day.
     habits = list(habits)
     streaks = _habit_streaks([h.id for h in habits], target_date)
+    # Which steps were ticked that day, for the whole page in one query.
+    step_done = _step_done_map(target_date)
 
     data = []
     for habit in habits:
@@ -2774,6 +3048,11 @@ def habits_list(request):
             st = _version_status(specific, fallback, t["level"], is_past)
             t["status"] = st
             t["done"] = st == HabitLog.Status.COMPLETED
+            # A completed rung reads its steps done even if they were never
+            # ticked one by one (she tapped the habit, or a HIGHER rung cascaded
+            # down) — otherwise an expanded card would contradict its own row.
+            for s in t["steps"]:
+                s["done"] = t["done"] or step_done.get(s["id"], False)
 
         data.append({
             "id": habit.id,

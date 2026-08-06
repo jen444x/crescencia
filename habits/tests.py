@@ -10,7 +10,8 @@ from django.utils import timezone
 
 from .models import (
     Area, Aspiration, BASE_VALID_FROM, Habit, HabitLog, HabitPause, HabitTier,
-    Note, Chain, ChainDay, ChainTime, Routine, Schedule, ScheduleDay, Tier,
+    Note, Chain, ChainDay, ChainTime, Routine, Schedule, ScheduleDay, Step,
+    StepLog, Tier, VersionStep,
     TierValue, Version,
 )
 from .views import FREEZE_CATCHUP_DAYS, freeze_day
@@ -959,10 +960,11 @@ class HabitsListTests(TestCase):
         self.assertEqual(
             got,
             [
+                # `steps` is [] for a habit that isn't a recipe — the normal case.
                 {"level": 1, "name": "Roots", "label": 1, "value": "2 min",
-                 "status": "PENDING", "done": False},
+                 "steps": [], "status": "PENDING", "done": False},
                 {"level": 2, "name": "Growth", "label": 2, "value": "10 min",
-                 "status": "PENDING", "done": False},
+                 "steps": [], "status": "PENDING", "done": False},
             ],
         )
         # every rung carries its version id (what a completion keys on)
@@ -3017,3 +3019,152 @@ class HabitHistoryTests(TestCase):
         url = reverse("habits:habit_history", args=[self.habit.id])
         self.assertEqual(self.client.get(f"{url}?month=2026-13").status_code, 400)
         self.assertEqual(self.client.get(f"{url}?month=nope").status_code, 400)
+
+
+class StepTests(TestCase):
+    """Steps inside a habit, and the two-way sync she asked for: tapping the
+    habit completes its steps, and ticking the last step completes the habit."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.habit = Habit.objects.create(name="Yoga / stretch")
+        roots = Tier.objects.get_or_create(level=1)[0]
+        growth = Tier.objects.get_or_create(level=2)[0]
+        self.v1 = Version.objects.create(habit=self.habit, level=1, value="1 min", label=roots)
+        self.v3 = Version.objects.create(habit=self.habit, level=2, value="3 mins", label=growth)
+        self.cat = Step.objects.create(habit=self.habit, name="Cat cow", order=1)
+        self.toe = Step.objects.create(habit=self.habit, name="Toe touches", order=2)
+        # v1 = cat cow only; v3 = cat cow (longer) + toe touches
+        self.v1_cat = VersionStep.objects.create(version=self.v1, step=self.cat, amount="1 min")
+        self.v3_cat = VersionStep.objects.create(version=self.v3, step=self.cat, amount="3 mins")
+        self.v3_toe = VersionStep.objects.create(version=self.v3, step=self.toe, amount="1 min")
+
+    def _tick(self, version_step, done=True):
+        res = self.client.post(
+            reverse("habits:log_step", args=[self.habit.id]),
+            data=json.dumps({"version_step": version_step.id, "done": done}),
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()
+
+    def _log(self, version, status):
+        res = self.client.post(
+            reverse("habits:log_habit", args=[self.habit.id]),
+            data=json.dumps({"status": status, "version": version.id}),
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()
+
+    # --- rolling UP: steps -> habit -------------------------------------
+    def test_ticking_every_step_completes_the_rung(self):
+        out = self._tick(self.v3_cat)
+        self.assertEqual(out["status"], "PENDING")      # 1 of 2, not done yet
+        out = self._tick(self.v3_toe)
+        self.assertEqual(out["status"], "COMPLETED")    # last one closes it
+        self.assertTrue(
+            HabitLog.objects.filter(habit=self.habit, date=self.today,
+                                    version=self.v3, status="COMPLETED").exists()
+        )
+
+    def test_unticking_a_step_walks_the_completion_back(self):
+        self._tick(self.v3_cat)
+        self._tick(self.v3_toe)
+        out = self._tick(self.v3_toe, done=False)
+        self.assertEqual(out["status"], "PENDING")
+
+    def test_rolling_up_does_not_overwrite_a_deliberate_skip(self):
+        # She SKIPPED the rung on purpose; a half-tick must not silently undo it.
+        self._log(self.v3, "SKIPPED")
+        out = self._tick(self.v3_cat)
+        self.assertEqual(out["status"], "SKIPPED")
+
+    # --- fanning OUT: habit -> steps ------------------------------------
+    def test_completing_the_habit_ticks_that_rungs_steps(self):
+        self._log(self.v3, "COMPLETED")
+        done = set(StepLog.objects.filter(date=self.today, done=True)
+                   .values_list("version_step_id", flat=True))
+        self.assertEqual(done, {self.v3_cat.id, self.v3_toe.id})
+        # ...and NOT the other rung's cell, which is a different amount.
+        self.assertNotIn(self.v1_cat.id, done)
+
+    def test_undoing_the_habit_clears_its_steps(self):
+        self._log(self.v3, "COMPLETED")
+        self._log(self.v3, "PENDING")
+        self.assertFalse(StepLog.objects.filter(date=self.today).exists())
+
+    def test_notes_alone_do_not_tick_steps(self):
+        self.client.post(
+            reverse("habits:log_habit", args=[self.habit.id]),
+            data=json.dumps({"notes": "felt tight", "version": self.v3.id}),
+            content_type="application/json",
+        )
+        self.assertFalse(StepLog.objects.filter(date=self.today).exists())
+
+    # --- reads -----------------------------------------------------------
+    def test_habits_list_reports_steps_and_their_done_state(self):
+        self._tick(self.v3_cat)
+        rows = self.client.get(reverse("habits:habits_list")).json()
+        row = next(r for r in rows if r["id"] == self.habit.id)
+        v3 = next(t for t in row["tiers"] if t["version"] == self.v3.id)
+        self.assertEqual([s["name"] for s in v3["steps"]], ["Cat cow", "Toe touches"])
+        self.assertEqual([s["done"] for s in v3["steps"]], [True, False])
+        self.assertEqual([s["amount"] for s in v3["steps"]], ["3 mins", "1 min"])
+
+    def test_a_completed_rung_reads_its_steps_done(self):
+        # Completed via the habit, never step-by-step: the card must not show
+        # the rung done with its steps unticked.
+        self._log(self.v1, "COMPLETED")
+        rows = self.client.get(reverse("habits:habits_list")).json()
+        row = next(r for r in rows if r["id"] == self.habit.id)
+        v1 = next(t for t in row["tiers"] if t["version"] == self.v1.id)
+        self.assertTrue(all(s["done"] for s in v1["steps"]))
+
+    # --- the editor ------------------------------------------------------
+    def test_save_steps_rebuilds_the_grid(self):
+        res = self.client.post(
+            reverse("habits:save_habit_steps", args=[self.habit.id]),
+            data=json.dumps({
+                "steps": [{"id": self.cat.id, "name": "Cat-cow"},
+                          {"name": "Hamstring"}],
+                "amounts": [
+                    {"version": self.v1.id, "step": self.cat.id, "amount": "1 min"},
+                    {"version": self.v3.id, "step": self.cat.id, "amount": "5 mins"},
+                    {"version": self.v3.id, "step": {"new": 1}, "amount": "30 sec"},
+                ],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.cat.refresh_from_db()
+        self.assertEqual(self.cat.name, "Cat-cow")            # renamed in place
+        self.assertFalse(Step.objects.filter(id=self.toe.id).exists())  # dropped
+        v3 = next(t for t in res.json()["tiers"] if t["version"] == self.v3.id)
+        self.assertEqual([(s["name"], s["amount"]) for s in v3["steps"]],
+                         [("Cat-cow", "5 mins"), ("Hamstring", "30 sec")])
+
+    def test_save_steps_rejects_a_version_from_another_habit(self):
+        other = Version.objects.create(
+            habit=Habit.objects.create(name="Other"), level=1, value="x")
+        res = self.client.post(
+            reverse("habits:save_habit_steps", args=[self.habit.id]),
+            data=json.dumps({
+                "steps": [{"name": "A"}],
+                "amounts": [{"version": other.id, "step": {"new": 0}, "amount": ""}],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_log_step_rejects_a_step_from_another_habit(self):
+        other_habit = Habit.objects.create(name="Other")
+        ov = Version.objects.create(habit=other_habit, level=1, value="x")
+        ostep = Step.objects.create(habit=other_habit, name="Nope", order=1)
+        ovs = VersionStep.objects.create(version=ov, step=ostep, amount="")
+        res = self.client.post(
+            reverse("habits:log_step", args=[self.habit.id]),
+            data=json.dumps({"version_step": ovs.id}),
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 400)

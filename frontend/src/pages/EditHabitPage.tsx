@@ -9,6 +9,7 @@ import HabitForm, {
 } from "../components/HabitForm";
 import ConfirmDialog from "../components/ConfirmDialog";
 import HabitHistory from "../components/HabitHistory";
+import HabitSteps, { type StepRung } from "../components/HabitSteps";
 
 // The bottom sheet offering the two ways to remove a habit, modeled on Google
 // Calendar's recurring-event delete. "Stop going forward" retires it from today
@@ -121,6 +122,8 @@ type Tier = {
   label: number | null; // tag level 1=Roots / 2=Growth, null = untagged
   value: string;
   version: number; // the rung's id
+  // What you DO at this rung ([] for a habit that isn't a recipe).
+  steps: { id: number; step: number; name: string; amount: string }[];
 };
 // A rung while editing: `id` present = an existing Version, absent = a new one.
 type EditRung = { id?: number; value: string; label: number | null };
@@ -162,6 +165,10 @@ function EditHabitPage() {
   // in a single POST. Each rung is a value + an OPTIONAL Roots/Growth tag; order
   // is the rung's position (the cascade runs low->high).
   const [rungs, setRungs] = useState<EditRung[]>([]);
+  // The saved ladder as the server sees it (rung ids + their steps), which is
+  // what the steps editor hangs off. Kept alongside `rungs` because that one is
+  // a local draft of the ladder and may hold rungs that don't exist yet.
+  const [tiers, setTiers] = useState<StepRung[]>([]);
   const [tiersSaving, setTiersSaving] = useState(false);
   const [tiersError, setTiersError] = useState("");
 
@@ -197,6 +204,7 @@ function EditHabitPage() {
             label: t.label ?? null,
           })),
         );
+        setTiers(data.tiers ?? []);
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "An unknown error occurred",
@@ -336,6 +344,9 @@ function EditHabitPage() {
           label: t.label ?? null,
         })),
       );
+      // Rungs may have been added/removed/renumbered, so the steps editor needs
+      // the fresh list (a deleted rung takes its steps with it).
+      setTiers(data.tiers as StepRung[]);
     } catch (err) {
       setTiersError(
         err instanceof Error ? err.message : "An unknown error occurred",
@@ -520,6 +531,16 @@ function EditHabitPage() {
               </div>
             </div>
           </section>
+        )}
+
+        {/* What you DO inside this habit, per rung — "cat cow, 3 mins". Sits
+            under the Ladder because a step's amount belongs to a rung. */}
+        {initial && id && (
+          <HabitSteps
+            habitId={Number(id)}
+            rungs={tiers}
+            onSaved={(t) => setTiers(t as StepRung[])}
+          />
         )}
 
         {/* Per-day notes for this habit. Pick a day to browse its notes. */}
