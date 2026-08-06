@@ -1,6 +1,7 @@
+import calendar
 import json
 from collections import defaultdict
-from datetime import time as dt_time, timedelta
+from datetime import date as dt_date, time as dt_time, timedelta
 
 from django.core.exceptions import MultipleObjectsReturned
 from django.db import transaction
@@ -2789,6 +2790,113 @@ def habits_list(request):
         })
 
     return JsonResponse(data, safe=False)
+
+
+# A day the habit did NOT apply: before it was created, or inside a pause window.
+# It is NOT a miss — the habit wasn't part of your life yet (or was stopped), so
+# the calendar must render it differently or the history lies about your record.
+# Derived at read time like MISSED_STATUS, never stored.
+ABSENT_STATUS = "ABSENT"
+
+
+def habit_history(request, habit_id):
+    """One habit's day-by-day history for a month — powers the habit calendar.
+
+    `?month=YYYY-MM` picks the month (defaults to the current one). Returns one
+    entry per day of that month:
+
+        {"d": "2026-08-04", "state": "COMPLETED", "reached": {...}|null}
+
+    `state` is the whole-habit view for that day, from the SAME rules the Habits
+    and Plan pages use (`_version_status`): done if any version was completed,
+    else the explicit skip/miss, else MISSED once the day is over, else PENDING.
+    On top of those four, a day the habit didn't apply reads ABSENT (see above).
+
+    `reached` is the highest version completed that day ({value, label, name}),
+    so the calendar can show HOW FAR you got, not just that you showed up —
+    null when nothing was completed or the habit has no ladder.
+
+    Scoped to one habit and one month in two queries (logs + pause windows)
+    rather than calling the per-day helpers, which scan every habit per day.
+    """
+    habit = get_object_or_404(Habit, id=habit_id)
+    today = timezone.localdate()
+
+    raw_month = request.GET.get("month")
+    if raw_month is None:
+        year, month = today.year, today.month
+    else:
+        try:
+            year, month = (int(part) for part in raw_month.split("-", 1))
+            first = dt_date(year, month, 1)     # rejects month 0/13 etc.
+        except (ValueError, TypeError):
+            return JsonResponse(
+                {"error": f"'month' must be 'YYYY-MM', got {raw_month!r}."}, status=400
+            )
+    first = dt_date(year, month, 1)
+    last = dt_date(year, month, calendar.monthrange(year, month)[1])
+
+    # The day the habit came into existence (date_added is a DateTimeField, so
+    # localtime it — the same conversion the `date_added__date` lookup does).
+    created = timezone.localtime(habit.date_added).date()
+
+    # Pause windows overlapping this month (end is EXCLUSIVE — active again ON
+    # end_date). Reading windows, not Habit.ended_on, is what keeps a resumed
+    # habit's stopped days from resurrecting as misses.
+    pauses = list(
+        HabitPause.objects.filter(habit=habit, start_date__lte=last)
+        .filter(Q(end_date__isnull=True) | Q(end_date__gt=first))
+        .values_list("start_date", "end_date")
+    )
+
+    # This month's logs, bucketed per day into the shape _version_status needs.
+    buckets = defaultdict(lambda: {"specific": {}, "fallback": None})
+    for day, level, status in HabitLog.objects.filter(
+        habit=habit, date__gte=first, date__lte=last
+    ).values_list("date", "version__level", "status"):
+        bucket = buckets[day]
+        if level is None:
+            bucket["fallback"] = status
+        else:
+            bucket["specific"][level] = status
+
+    # level -> that rung, so a completed day can report how far it got.
+    rungs = {t["level"]: t for t in _habit_tiers(habit)}
+
+    days, counts = [], defaultdict(int)
+    for offset in range((last - first).days + 1):
+        day = first + timedelta(days=offset)
+        bucket = buckets.get(day)
+        specific = bucket["specific"] if bucket else {}
+        fallback = bucket["fallback"] if bucket else None
+
+        applies = day >= created and not any(
+            start <= day and (end is None or day < end) for start, end in pauses
+        )
+        if applies:
+            state = _version_status(specific, fallback, None, day < today)
+        else:
+            state = ABSENT_STATUS
+
+        # How far she got: the highest rung completed that day. A whole-habit
+        # completion (untiered habit, or a habit logged before it had a ladder)
+        # has no rung to point at, so it stays null.
+        reached = None
+        if state == HabitLog.Status.COMPLETED:
+            completed = [lv for lv, st in specific.items()
+                         if st == HabitLog.Status.COMPLETED]
+            if completed:
+                reached = rungs.get(max(completed))
+
+        counts[state] += 1
+        days.append({"d": day.isoformat(), "state": state, "reached": reached})
+
+    return JsonResponse({
+        "habit": {"id": habit.id, "name": habit.name},
+        "month": f"{year:04d}-{month:02d}",
+        "days": days,
+        "counts": dict(counts),
+    })
 
 
 @csrf_exempt

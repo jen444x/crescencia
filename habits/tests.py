@@ -2926,3 +2926,94 @@ class CreateHabitTests(TestCase):
         res, _ = self._create(label=9)
         self.assertEqual(res.status_code, 400)
         self.assertFalse(Habit.objects.exists())
+
+
+class HabitHistoryTests(TestCase):
+    """The per-habit month calendar. The states that matter are the DERIVED ones:
+    a past untouched day is MISSED, but a day before the habit existed (or inside
+    a pause window) is ABSENT — rendering those the same would lie about her
+    record."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.first = self.today.replace(day=1)
+        self.habit = Habit.objects.create(name="Walk")
+        # Born on the 1st, so most of the month "applies".
+        Habit.objects.filter(id=self.habit.id).update(
+            date_added=timezone.make_aware(
+                timezone.datetime.combine(self.first, time(6, 0))
+            )
+        )
+
+    def _history(self, month=None):
+        url = reverse("habits:habit_history", args=[self.habit.id])
+        res = self.client.get(url if month is None else f"{url}?month={month}")
+        self.assertEqual(res.status_code, 200)
+        return {d["d"]: d for d in res.json()["days"]}
+
+    def test_spans_the_whole_month(self):
+        res = self.client.get(reverse("habits:habit_history", args=[self.habit.id]))
+        days = res.json()["days"]
+        import calendar as _cal
+        self.assertEqual(len(days), _cal.monthrange(self.today.year, self.today.month)[1])
+        self.assertEqual(days[0]["d"], self.first.isoformat())
+
+    def test_days_before_the_habit_existed_are_absent_not_missed(self):
+        # Run this against LAST month, where every day is in the past regardless
+        # of what today's date is — so the ABSENT/MISSED split is always exercised
+        # (asserting it only when today happens to fall late in the month would
+        # let the most important case silently skip).
+        prev_end = self.first - timedelta(days=1)
+        prev_first = prev_end.replace(day=1)
+        born = prev_first + timedelta(days=10)
+        Habit.objects.filter(id=self.habit.id).update(
+            date_added=timezone.make_aware(timezone.datetime.combine(born, time(6, 0)))
+        )
+        days = self._history(f"{prev_first.year:04d}-{prev_first.month:02d}")
+        self.assertEqual(days[(born - timedelta(days=1)).isoformat()]["state"], "ABSENT")
+        # ...while a past day AFTER it existed, untouched, is a real miss.
+        self.assertEqual(days[born.isoformat()]["state"], "MISSED")
+
+    def test_paused_days_are_absent(self):
+        start = self.first + timedelta(days=1)
+        if start >= self.today:
+            self.skipTest("needs a month with room before today")
+        HabitPause.objects.create(
+            habit=self.habit, start_date=start, end_date=start + timedelta(days=2)
+        )
+        days = self._history()
+        self.assertEqual(days[start.isoformat()]["state"], "ABSENT")
+        # end_date is EXCLUSIVE — active again ON that day.
+        self.assertEqual(days[(start + timedelta(days=2)).isoformat()]["state"], "MISSED")
+
+    def test_completed_and_skipped_are_reported(self):
+        HabitLog.objects.create(habit=self.habit, date=self.today,
+                                status=HabitLog.Status.COMPLETED)
+        days = self._history()
+        self.assertEqual(days[self.today.isoformat()]["state"], "COMPLETED")
+
+    def test_future_days_are_pending_not_missed(self):
+        last_day = max(self._history())
+        if last_day == self.today.isoformat():
+            self.skipTest("today is the last day of the month")
+        self.assertEqual(self._history()[last_day]["state"], "PENDING")
+
+    def test_reached_reports_the_highest_completed_rung(self):
+        roots = Version.objects.create(
+            habit=self.habit, level=1, value="1000 steps",
+            label=Tier.objects.get_or_create(level=1)[0])
+        growth = Version.objects.create(
+            habit=self.habit, level=2, value="6000 steps",
+            label=Tier.objects.get_or_create(level=2)[0])
+        HabitLog.objects.create(habit=self.habit, date=self.today, version=roots,
+                                tier=roots.label, status=HabitLog.Status.COMPLETED)
+        HabitLog.objects.create(habit=self.habit, date=self.today, version=growth,
+                                tier=growth.label, status=HabitLog.Status.COMPLETED)
+        day = self._history()[self.today.isoformat()]
+        self.assertEqual(day["state"], "COMPLETED")
+        self.assertEqual(day["reached"]["value"], "6000 steps")   # the higher rung
+
+    def test_bad_month_is_rejected(self):
+        url = reverse("habits:habit_history", args=[self.habit.id])
+        self.assertEqual(self.client.get(f"{url}?month=2026-13").status_code, 400)
+        self.assertEqual(self.client.get(f"{url}?month=nope").status_code, 400)

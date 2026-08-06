@@ -8,6 +8,7 @@ import HabitForm, {
   type AspirationOption,
 } from "../components/HabitForm";
 import ConfirmDialog from "../components/ConfirmDialog";
+import HabitHistory from "../components/HabitHistory";
 
 // The bottom sheet offering the two ways to remove a habit, modeled on Google
 // Calendar's recurring-event delete. "Stop going forward" retires it from today
@@ -407,6 +408,10 @@ function EditHabitPage() {
             aspirationOptions={allAspirations}
           />
         )}
+
+        {/* This habit's month-by-month record — which days she completed,
+            skipped, missed, hasn't reached yet, or the habit wasn't active for. */}
+        {initial && id && <HabitHistory habitId={Number(id)} />}
 
         {/* Ladder: this habit's rungs, easiest -> hardest. Each is a value + an
             optional Roots/Growth tag; order is the rung's position (cascade runs
