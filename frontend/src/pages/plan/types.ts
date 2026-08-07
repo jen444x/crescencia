@@ -78,6 +78,8 @@ export type Habit = {
     label?: number | null;       // the tag level (1=Roots, 2=Growth), null = untagged
     value: string;
     version?: number;            // the rung's id — what a completion/log keys on
+    target_time?: string | null; // "HH:MM" deadline — slot completion acts on it
+    duration?: number | null;    // minutes, tracked for insights
     status?: ReadStatus;
     done?: boolean;
   }[];

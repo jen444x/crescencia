@@ -122,11 +122,20 @@ type Tier = {
   label: number | null; // tag level 1=Roots / 2=Growth, null = untagged
   value: string;
   version: number; // the rung's id
+  target_time: string | null; // "HH:MM" deadline, or null
+  duration: number | null; // minutes, or null
   // What you DO at this rung ([] for a habit that isn't a recipe).
   steps: { id: number; step: number; name: string; amount: string }[];
 };
 // A rung while editing: `id` present = an existing Version, absent = a new one.
-type EditRung = { id?: number; value: string; label: number | null };
+// target_time/duration are kept as input strings ("" = unset).
+type EditRung = {
+  id?: number;
+  value: string;
+  label: number | null;
+  target_time: string;
+  duration: string;
+};
 
 // Local "YYYY-MM-DD" for a Date — built from local parts (not toISOString,
 // which is UTC and can land on the wrong day). Matches how the rest of the app
@@ -165,6 +174,14 @@ function EditHabitPage() {
   // in a single POST. Each rung is a value + an OPTIONAL Roots/Growth tag; order
   // is the rung's position (the cascade runs low->high).
   const [rungs, setRungs] = useState<EditRung[]>([]);
+  // For the retag prompt: how many base-level "did it" completions the habit
+  // has, and whether it was rung-less when the page loaded — the prompt shows
+  // only when a FIRST ladder lands on real history.
+  const [baseCompletions, setBaseCompletions] = useState(0);
+  const [hadNoRungs, setHadNoRungs] = useState(false);
+  const [retagOpen, setRetagOpen] = useState(false);
+  const [retagChoice, setRetagChoice] = useState<number | null>(null);
+  const [retagBusy, setRetagBusy] = useState(false);
   // The saved ladder as the server sees it (rung ids + their steps), which is
   // what the steps editor hangs off. Kept alongside `rungs` because that one is
   // a local draft of the ladder and may hold rungs that don't exist yet.
@@ -202,9 +219,13 @@ function EditHabitPage() {
             id: t.version,
             value: t.value,
             label: t.label ?? null,
+            target_time: t.target_time ?? "",
+            duration: t.duration != null ? String(t.duration) : "",
           })),
         );
         setTiers(data.tiers ?? []);
+        setBaseCompletions(data.base_completions ?? 0);
+        setHadNoRungs((data.tiers ?? []).length === 0);
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "An unknown error occurred",
@@ -276,13 +297,44 @@ function EditHabitPage() {
     );
     const data = await res.json();
     if (!res.ok) throw new Error(data.error ?? "Could not save habit.");
+    // The habit card's Save is ONE action: fields + version rows together.
+    const ladderOk = await saveLadder();
+    if (!ladderOk) throw new Error("Could not save the versions.");
+    // A FIRST ladder landing on real base-level history: ask which rung those
+    // old completions were, instead of guessing. Otherwise, leave the page.
+    if (hadNoRungs && rungs.length > 0 && baseCompletions > 0) {
+      setRetagOpen(true);
+      return;
+    }
     // Back to wherever they opened this from (usually the Plan page).
     navigate(-1);
   }
 
+  // Answer the "which rung were they?" prompt: retag old base completions onto
+  // the chosen rung (null = keep as plain "did it"), then leave the page.
+  async function submitRetag() {
+    setRetagBusy(true);
+    try {
+      await fetch(`${import.meta.env.VITE_API_URL}/habits/${id}/history/retag/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: retagChoice }),
+      });
+    } catch {
+      // Retag is best-effort; the ladder itself is already saved.
+    } finally {
+      setRetagBusy(false);
+      setRetagOpen(false);
+      navigate(-1);
+    }
+  }
+
   // --- ladder editing (local until "Save ladder") ------------------------
   function addRung() {
-    setRungs((rs) => [...rs, { value: "", label: null }]);
+    setRungs((rs) => [
+      ...rs,
+      { value: "", label: null, target_time: "", duration: "" },
+    ]);
   }
   function removeRung(i: number) {
     setRungs((rs) => rs.filter((_, j) => j !== i));
@@ -299,6 +351,12 @@ function EditHabitPage() {
   function setRungValue(i: number, value: string) {
     setRungs((rs) => rs.map((r, j) => (j === i ? { ...r, value } : r)));
   }
+  function setRungTime(i: number, target_time: string) {
+    setRungs((rs) => rs.map((r, j) => (j === i ? { ...r, target_time } : r)));
+  }
+  function setRungDuration(i: number, duration: string) {
+    setRungs((rs) => rs.map((r, j) => (j === i ? { ...r, duration } : r)));
+  }
   function setRungLabel(i: number, label: number | null) {
     // A tag (Roots/Growth) can sit on only ONE rung: setting it here clears it
     // off whatever had it, mirroring the DB rule.
@@ -313,8 +371,10 @@ function EditHabitPage() {
     );
   }
 
-  // Save the whole ladder in one POST (position = level, low->high).
-  async function saveLadder() {
+  // Save the whole ladder in one POST (position = level, low->high). Returns
+  // whether it stuck — the form's single Save calls this alongside the field
+  // save, and the retag prompt only makes sense after a successful write.
+  async function saveLadder(): Promise<boolean> {
     setTiersSaving(true);
     setTiersError("");
     try {
@@ -328,6 +388,8 @@ function EditHabitPage() {
               id: r.id,
               value: r.value.trim(),
               label: r.label,
+              target_time: r.target_time || null,
+              duration: r.duration ? Number(r.duration) : null,
             })),
           }),
         },
@@ -335,22 +397,26 @@ function EditHabitPage() {
       const data = await res.json();
       if (!res.ok) {
         setTiersError(data.error ?? "Could not save the ladder.");
-        return;
+        return false;
       }
       setRungs(
         (data.tiers as Tier[]).map((t) => ({
           id: t.version,
           value: t.value,
           label: t.label ?? null,
+          target_time: t.target_time ?? "",
+          duration: t.duration != null ? String(t.duration) : "",
         })),
       );
       // Rungs may have been added/removed/renumbered, so the steps editor needs
       // the fresh list (a deleted rung takes its steps with it).
       setTiers(data.tiers as StepRung[]);
+      return true;
     } catch (err) {
       setTiersError(
         err instanceof Error ? err.message : "An unknown error occurred",
       );
+      return false;
     } finally {
       setTiersSaving(false);
     }
@@ -403,6 +469,128 @@ function EditHabitPage() {
     }
   }
 
+  // The version rows, rendered INSIDE the habit card (name + versions are one
+  // thing — her call). Saved by the form's single Save button via saveLadder.
+  const ladderEditor = (
+    <div>
+      <p className="text-xs text-stone-400">
+        Versions from easiest to hardest — each can carry a complete-by time and a
+        length. Finishing a higher one fills in the ones below.
+      </p>
+    <div className="mt-3">
+      {tiersError && (
+        <p className="mb-2 text-center text-sm text-red-500">
+          {tiersError}
+        </p>
+      )}
+
+      {rungs.length === 0 ? (
+        <p className="text-center text-sm text-stone-400">
+          No rungs yet — add one below.
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {rungs.map((r, i) => (
+            <li
+              key={r.id ?? `new-${i}`}
+              className="flex flex-wrap items-center gap-2 border-t border-whisper py-2 first:border-t-0 first:pt-0"
+            >
+              {/* position + reorder (order = the rung's level) */}
+              <div className="flex shrink-0 flex-col items-center leading-none">
+                <button
+                  type="button"
+                  aria-label="Move rung up"
+                  disabled={i === 0 || tiersSaving}
+                  onClick={() => moveRung(i, -1)}
+                  className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
+                >
+                  ▲
+                </button>
+                <span className="my-0.5 text-[10px] font-bold text-calm-700">
+                  {i + 1}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Move rung down"
+                  disabled={i === rungs.length - 1 || tiersSaving}
+                  onClick={() => moveRung(i, 1)}
+                  className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
+                >
+                  ▼
+                </button>
+              </div>
+              <input
+                type="text"
+                value={r.value}
+                onChange={(e) => setRungValue(i, e.target.value)}
+                placeholder="value (e.g. 1000 steps)"
+                className="min-w-0 flex-1 rounded-xl border border-mist bg-whisper px-2.5 py-1.5 text-sm text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
+              />
+              <select
+                value={r.label ?? 0}
+                onChange={(e) =>
+                  setRungLabel(i, Number(e.target.value) || null)
+                }
+                aria-label="Tag"
+                className="shrink-0 rounded-xl border border-mist bg-whisper px-2 py-1.5 text-sm text-ink focus:border-calm-400 focus:outline-none"
+              >
+                <option value={0}>— none —</option>
+                <option value={1}>Roots</option>
+                <option value={2}>Growth</option>
+              </select>
+              <button
+                type="button"
+                aria-label="Remove rung"
+                onClick={() => removeRung(i)}
+                disabled={tiersSaving}
+                className="shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
+              >
+                Remove
+              </button>
+              {/* The rung's typed meaning: a "by" deadline (slot
+                  completion acts on it) and a length in minutes. */}
+              <div className="flex w-full flex-wrap items-center gap-x-4 gap-y-1.5 pl-7 pt-1.5">
+                <label className="flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
+                  Complete by
+                  <input
+                    type="time"
+                    value={r.target_time}
+                    onChange={(e) => setRungTime(i, e.target.value)}
+                    className="rounded-lg border border-mist bg-whisper px-2 py-1 text-[13px] text-ink focus:border-calm-400 focus:outline-none"
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
+                  Duration
+                  <input
+                    type="number"
+                    min={1}
+                    value={r.duration}
+                    onChange={(e) => setRungDuration(i, e.target.value)}
+                    placeholder="—"
+                    className="w-16 rounded-lg border border-mist bg-whisper px-2 py-1 text-right text-[13px] text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
+                  />
+                  <span className="text-[11px] text-stone-300">min</span>
+                </label>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="mt-3">
+        <button
+          type="button"
+          onClick={addRung}
+          disabled={tiersSaving}
+          className="rounded-full border border-mist bg-whisper px-3.5 py-1.5 text-sm font-semibold text-calm-700 transition-colors hover:border-calm-400 disabled:opacity-50"
+        >
+          + Add rung
+        </button>
+      </div>
+    </div>
+    </div>
+  );
+
   return (
     <>
       <Header title={initial?.name ?? "Edit habit"} eyebrow="Edit habit" />
@@ -417,121 +605,13 @@ function EditHabitPage() {
             submitLabel="Save changes"
             onSubmit={saveHabit}
             aspirationOptions={allAspirations}
+            ladder={ladderEditor}
           />
         )}
 
         {/* This habit's month-by-month record — which days she completed,
             skipped, missed, hasn't reached yet, or the habit wasn't active for. */}
         {initial && id && <HabitHistory habitId={Number(id)} />}
-
-        {/* Ladder: this habit's rungs, easiest -> hardest. Each is a value + an
-            optional Roots/Growth tag; order is the rung's position (cascade runs
-            low->high). Edited locally, saved in one "Save ladder" POST. */}
-        {initial && (
-          <section className={`mt-4 p-4 ${CARD}`}>
-            <h2 className={CARD_TITLE}>Ladder</h2>
-            <p className="mt-1 text-xs text-stone-400">
-              Rungs from easiest to hardest — the number on the left is just the
-              position. The Roots/Growth tag is optional and sits on one rung.
-              Finishing a higher rung fills in the ones below.
-            </p>
-
-            <div className="mt-3">
-              {tiersError && (
-                <p className="mb-2 text-center text-sm text-red-500">
-                  {tiersError}
-                </p>
-              )}
-
-              {rungs.length === 0 ? (
-                <p className="text-center text-sm text-stone-400">
-                  No rungs yet — add one below.
-                </p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {rungs.map((r, i) => (
-                    <li
-                      key={r.id ?? `new-${i}`}
-                      className="flex items-center gap-2 border-t border-whisper py-2 first:border-t-0 first:pt-0"
-                    >
-                      {/* position + reorder (order = the rung's level) */}
-                      <div className="flex shrink-0 flex-col items-center leading-none">
-                        <button
-                          type="button"
-                          aria-label="Move rung up"
-                          disabled={i === 0 || tiersSaving}
-                          onClick={() => moveRung(i, -1)}
-                          className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
-                        >
-                          ▲
-                        </button>
-                        <span className="my-0.5 text-[10px] font-bold text-calm-700">
-                          {i + 1}
-                        </span>
-                        <button
-                          type="button"
-                          aria-label="Move rung down"
-                          disabled={i === rungs.length - 1 || tiersSaving}
-                          onClick={() => moveRung(i, 1)}
-                          className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
-                        >
-                          ▼
-                        </button>
-                      </div>
-                      <input
-                        type="text"
-                        value={r.value}
-                        onChange={(e) => setRungValue(i, e.target.value)}
-                        placeholder="value (e.g. 1000 steps)"
-                        className="min-w-0 flex-1 rounded-xl border border-mist bg-whisper px-2.5 py-1.5 text-sm text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
-                      />
-                      <select
-                        value={r.label ?? 0}
-                        onChange={(e) =>
-                          setRungLabel(i, Number(e.target.value) || null)
-                        }
-                        aria-label="Tag"
-                        className="shrink-0 rounded-xl border border-mist bg-whisper px-2 py-1.5 text-sm text-ink focus:border-calm-400 focus:outline-none"
-                      >
-                        <option value={0}>— none —</option>
-                        <option value={1}>Roots</option>
-                        <option value={2}>Growth</option>
-                      </select>
-                      <button
-                        type="button"
-                        aria-label="Remove rung"
-                        onClick={() => removeRung(i)}
-                        disabled={tiersSaving}
-                        className="shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
-                      >
-                        Remove
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              <div className="mt-3 flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={addRung}
-                  disabled={tiersSaving}
-                  className="rounded-full border border-mist bg-whisper px-3.5 py-1.5 text-sm font-semibold text-calm-700 transition-colors hover:border-calm-400 disabled:opacity-50"
-                >
-                  + Add rung
-                </button>
-                <button
-                  type="button"
-                  onClick={saveLadder}
-                  disabled={tiersSaving}
-                  className="rounded-full bg-calm-600 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-50"
-                >
-                  {tiersSaving ? "Saving…" : "Save ladder"}
-                </button>
-              </div>
-            </div>
-          </section>
-        )}
 
         {/* What you DO inside this habit, per rung — "cat cow, 3 mins". Sits
             under the Ladder because a step's amount belongs to a rung. */}
@@ -647,6 +727,89 @@ function EditHabitPage() {
         }}
         onCancel={() => setConfirmForever(false)}
       />
+
+      {/* "Your past completions — which rung were they?" Shown once, when a
+          first ladder is saved onto base-level history. Portaled like the
+          other sheets so nothing clips it. */}
+      {retagOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-6"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Assign past completions"
+          >
+            <div className="w-full max-w-sm rounded-[18px] border border-mist bg-white p-5 shadow-[0_12px_32px_rgba(27,46,42,0.16)]">
+              <h2 className="font-heading text-lg text-ink">
+                Your {baseCompletions} past{" "}
+                {baseCompletions === 1 ? "completion" : "completions"}
+              </h2>
+              <p className="mt-1 text-xs leading-relaxed text-stone-400">
+                This habit was one thing before it had versions. Which version
+                were those days? They'll be recorded as that amount — or leave
+                them as "did it" if you're not sure.
+              </p>
+              <div className="mt-3 space-y-2">
+                {rungs
+                  .filter((r) => r.id != null)
+                  .map((r, i) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => setRetagChoice(r.id ?? null)}
+                      aria-pressed={retagChoice === r.id}
+                      className={`flex w-full items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left text-sm transition-colors ${
+                        retagChoice === r.id
+                          ? "border-calm-600 bg-mint text-calm-700"
+                          : "border-mist text-ink hover:bg-whisper"
+                      }`}
+                    >
+                      <span
+                        className={`h-4 w-4 shrink-0 rounded-full border-2 ${
+                          retagChoice === r.id
+                            ? "border-calm-600 bg-calm-600 shadow-[inset_0_0_0_3px_#fff]"
+                            : "border-calm-300"
+                        }`}
+                      />
+                      {r.value ||
+                        (r.target_time ? `by ${r.target_time}` : `Version ${i + 1}`)}
+                    </button>
+                  ))}
+                <button
+                  type="button"
+                  onClick={() => setRetagChoice(null)}
+                  aria-pressed={retagChoice === null}
+                  className={`flex w-full items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left text-sm transition-colors ${
+                    retagChoice === null
+                      ? "border-calm-600 bg-mint text-calm-700"
+                      : "border-mist text-ink hover:bg-whisper"
+                  }`}
+                >
+                  <span
+                    className={`h-4 w-4 shrink-0 rounded-full border-2 ${
+                      retagChoice === null
+                        ? "border-calm-600 bg-calm-600 shadow-[inset_0_0_0_3px_#fff]"
+                        : "border-calm-300"
+                    }`}
+                  />
+                  Keep as "did it"
+                  <span className="ml-auto text-[11px] text-stone-400">
+                    not sure
+                  </span>
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={submitRetag}
+                disabled={retagBusy}
+                className="mt-4 w-full rounded-full bg-calm-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-calm-700 disabled:opacity-60"
+              >
+                {retagBusy ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )}
     </>
   );
 }

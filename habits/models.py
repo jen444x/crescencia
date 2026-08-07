@@ -510,6 +510,16 @@ class Version(models.Model):
     level = models.PositiveIntegerField()      # 1 = lowest rung; per-habit position
     value = models.CharField(max_length=100)   # "2000 steps", "cold water", "by 8am"
     label = models.ForeignKey(Tier, on_delete=models.SET_NULL, null=True, blank=True)
+    # Typed meaning, both optional ("one, both, or none" — her words). `value`
+    # stays the display text; these are what the app can ACT on:
+    # - target_time: a deadline ("by 7:30am"). Powers slot-based completion —
+    #   completing from a time slot credits the hardest rung whose deadline the
+    #   slot meets. A habit is "time-based" iff some rung has one; there's no
+    #   separate flag to keep in sync.
+    # - duration: a length in minutes ("5 mins"). No mechanic yet — it exists so
+    #   the insights layer can chart "how long" as a number instead of prose.
+    target_time = models.TimeField(null=True, blank=True)
+    duration = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         ordering = ["habit_id", "level"]

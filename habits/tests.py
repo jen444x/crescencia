@@ -960,10 +960,14 @@ class HabitsListTests(TestCase):
         self.assertEqual(
             got,
             [
-                # `steps` is [] for a habit that isn't a recipe — the normal case.
+                # `steps` is [] for a habit that isn't a recipe — the normal
+                # case; target_time/duration null until a rung is given typed
+                # meaning.
                 {"level": 1, "name": "Roots", "label": 1, "value": "2 min",
+                 "target_time": None, "duration": None,
                  "steps": [], "status": "PENDING", "done": False},
                 {"level": 2, "name": "Growth", "label": 2, "value": "10 min",
+                 "target_time": None, "duration": None,
                  "steps": [], "status": "PENDING", "done": False},
             ],
         )
@@ -3168,3 +3172,246 @@ class StepTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(res.status_code, 400)
+
+
+class SlotCompletionTests(TestCase):
+    """Time on the ladder: rungs carry deadlines, and completing from a slot
+    picks the version for her — the slot IS the record of when it happened."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.habit = Habit.objects.create(name="Wake up")
+        roots = Tier.objects.get_or_create(level=1)[0]
+        growth = Tier.objects.get_or_create(level=2)[0]
+        # Easiest -> hardest: by 8am (Roots), by 7am (Growth).
+        self.by8 = Version.objects.create(
+            habit=self.habit, level=1, value="8am", label=roots, target_time=time(8, 0))
+        self.by7 = Version.objects.create(
+            habit=self.habit, level=2, value="7am", label=growth, target_time=time(7, 0))
+
+    def _log(self, **body):
+        res = self.client.post(
+            reverse("habits:log_habit", args=[self.habit.id]),
+            data=json.dumps(body), content_type="application/json")
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()
+
+    def _statuses(self):
+        rows = self.client.get(reverse("habits:habits_list")).json()
+        row = next(r for r in rows if r["id"] == self.habit.id)
+        return {t["version"]: t["status"] for t in row["tiers"]}
+
+    def test_early_slot_completes_everything(self):
+        out = self._log(status="COMPLETED", slot="06:30")
+        self.assertEqual(out["version"], self.by7.id)      # hardest met
+        st = self._statuses()
+        self.assertEqual(st[self.by7.id], "COMPLETED")
+        self.assertEqual(st[self.by8.id], "COMPLETED")     # cascade down
+
+    def test_late_slot_credits_the_met_rung_and_misses_the_blown_one(self):
+        out = self._log(status="COMPLETED", slot="07:30")
+        self.assertEqual(out["version"], self.by8.id)
+        self.assertEqual(out["missed"], [self.by7.id])
+        st = self._statuses()
+        self.assertEqual(st[self.by8.id], "COMPLETED")
+        self.assertEqual(st[self.by7.id], "MISSED")        # closed immediately
+
+    def test_slot_time_is_stored_as_the_completion_time(self):
+        # The log's time = the SLOT, never the wall-clock tap moment.
+        self._log(status="COMPLETED", slot="07:30")
+        log = HabitLog.objects.get(habit=self.habit, date=self.today, version=self.by8)
+        self.assertEqual(log.time, time(7, 30))
+
+    def test_slot_past_every_deadline_lands_on_the_base(self):
+        out = self._log(status="COMPLETED", slot="15:00")
+        self.assertIsNone(out["version"])
+        base = HabitLog.objects.get(habit=self.habit, date=self.today,
+                                    version__isnull=True)
+        self.assertEqual(base.status, "COMPLETED")         # "I woke up"
+        st = self._statuses()
+        self.assertEqual(st[self.by7.id], "MISSED")        # no rung claims it
+        self.assertEqual(st[self.by8.id], "MISSED")
+        # ...but the whole-habit view still counts the day.
+        rows = self.client.get(reverse("habits:habits_list")).json()
+        row = next(r for r in rows if r["id"] == self.habit.id)
+        self.assertEqual(row["status"], "COMPLETED")
+
+    def test_undo_walks_the_whole_write_back(self):
+        self._log(status="COMPLETED", slot="07:30")
+        self._log(status="PENDING", slot="07:30")
+        st = self._statuses()
+        self.assertEqual(st[self.by7.id], "PENDING")
+        self.assertEqual(st[self.by8.id], "PENDING")
+
+    def test_slot_never_downgrades_a_real_completion(self):
+        # She really did complete "by 7am" earlier; a later slot-complete of the
+        # easier rung must not stamp MISSED over it.
+        self._log(status="COMPLETED", version=self.by7.id)
+        self._log(status="COMPLETED", slot="07:30")
+        self.assertEqual(self._statuses()[self.by7.id], "COMPLETED")
+
+    def test_slot_is_ignored_for_untimed_habits(self):
+        plain = Habit.objects.create(name="Wash face")
+        v = Version.objects.create(habit=plain, level=1, value="Cleanse")
+        res = self.client.post(
+            reverse("habits:log_habit", args=[plain.id]),
+            data=json.dumps({"status": "COMPLETED", "slot": "07:30",
+                             "version": v.id}),
+            content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        # Normal single-rung write, no fan-out of missed rows.
+        self.assertEqual(HabitLog.objects.filter(habit=plain).count(), 1)
+
+
+class ScopedBaseCompletionTests(TestCase):
+    """'The base should not light up every rung' — a whole-habit completion
+    counts for the habit, never for its versions."""
+
+    def setUp(self):
+        self.habit = Habit.objects.create(name="Work out")
+        self.v3 = Version.objects.create(habit=self.habit, level=1, value="3 mins")
+        self.v5 = Version.objects.create(habit=self.habit, level=2, value="5 mins")
+
+    def _row(self):
+        rows = self.client.get(reverse("habits:habits_list")).json()
+        return next(r for r in rows if r["id"] == self.habit.id)
+
+    def test_base_completion_counts_for_the_habit_not_the_rungs(self):
+        HabitLog.objects.create(habit=self.habit, date=timezone.localdate(),
+                                status=HabitLog.Status.COMPLETED)
+        row = self._row()
+        self.assertEqual(row["status"], "COMPLETED")
+        self.assertEqual([t["status"] for t in row["tiers"]],
+                         ["PENDING", "PENDING"])
+
+    def test_blanket_skip_still_covers_every_rung(self):
+        HabitLog.objects.create(habit=self.habit, date=timezone.localdate(),
+                                status=HabitLog.Status.SKIPPED)
+        row = self._row()
+        self.assertEqual([t["status"] for t in row["tiers"]],
+                         ["SKIPPED", "SKIPPED"])
+
+
+class RetagHistoryTests(TestCase):
+    """'Your past completions — which rung were they?'"""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.habit = Habit.objects.create(name="Work out")
+        # Backdate existence so browsing past days still lists the habit.
+        Habit.objects.filter(id=self.habit.id).update(
+            date_added=timezone.now() - timedelta(days=30))
+        # 3 old base completions from before the ladder existed.
+        for d in range(3):
+            HabitLog.objects.create(habit=self.habit,
+                                    date=self.today - timedelta(days=d + 1),
+                                    status=HabitLog.Status.COMPLETED)
+        self.v3 = Version.objects.create(habit=self.habit, level=1, value="3 mins")
+        self.v5 = Version.objects.create(habit=self.habit, level=2, value="5 mins")
+        self.v10 = Version.objects.create(habit=self.habit, level=3, value="10 mins")
+
+    def _retag(self, version):
+        res = self.client.post(
+            reverse("habits:retag_history", args=[self.habit.id]),
+            data=json.dumps({"version": version}),
+            content_type="application/json")
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()
+
+    def test_retag_turns_base_rows_into_rung_completions(self):
+        out = self._retag(self.v5.id)
+        self.assertEqual(out["retagged"], 3)
+        self.assertEqual(
+            HabitLog.objects.filter(habit=self.habit, version=self.v5).count(), 3)
+        # A retagged day now reads 3 ✓ 5 ✓ 10 ✗ (derived missed, day is past).
+        day = self.today - timedelta(days=1)
+        url = reverse("habits:habits_list")
+        rows = self.client.get(f"{url}?date={day.isoformat()}").json()
+        row = next(r for r in rows if r["id"] == self.habit.id)
+        by_id = {t["version"]: t["status"] for t in row["tiers"]}
+        self.assertEqual(by_id[self.v3.id], "COMPLETED")
+        self.assertEqual(by_id[self.v5.id], "COMPLETED")
+        self.assertEqual(by_id[self.v10.id], "MISSED")
+
+    def test_null_keeps_them_as_base(self):
+        out = self._retag(None)
+        self.assertEqual(out["retagged"], 0)
+        self.assertEqual(
+            HabitLog.objects.filter(habit=self.habit, version__isnull=True).count(), 3)
+
+    def test_a_day_the_rung_already_has_is_skipped_not_collided(self):
+        clash = self.today - timedelta(days=1)
+        HabitLog.objects.create(habit=self.habit, date=clash, version=self.v5,
+                                status=HabitLog.Status.MISSED)
+        out = self._retag(self.v5.id)
+        self.assertEqual(out["retagged"], 2)   # the clashing day left alone
+        self.assertEqual(HabitLog.objects.filter(
+            habit=self.habit, date=clash, version=self.v5).get().status, "MISSED")
+
+
+class RoutineLowestRungTests(TestCase):
+    """Block-complete credits a tiered member's lowest rung, not the base."""
+
+    def setUp(self):
+        self.routine = Routine.objects.create(name="Morning")
+        self.habit = Habit.objects.create(name="Meditate")
+        self.v1 = Version.objects.create(habit=self.habit, level=1, value="1 min")
+        self.v5 = Version.objects.create(habit=self.habit, level=2, value="5 mins")
+        chain = Chain.objects.create(start_time=time(7, 0))
+        Schedule.objects.create(habit=self.habit, chain=chain, order=1,
+                                routine=self.routine)
+
+    def test_block_complete_credits_the_lowest_rung(self):
+        res = self.client.post(
+            reverse("habits:log_routine", args=[self.routine.id]),
+            data=json.dumps({"status": "COMPLETED"}),
+            content_type="application/json")
+        self.assertEqual(res.status_code, 200, res.content)
+        log = HabitLog.objects.get(habit=self.habit, date=timezone.localdate())
+        self.assertEqual(log.version_id, self.v1.id)
+        # Display: 1 min done, 5 mins honestly still open.
+        rows = self.client.get(reverse("habits:habits_list")).json()
+        row = next(r for r in rows if r["id"] == self.habit.id)
+        by_id = {t["version"]: t["status"] for t in row["tiers"]}
+        self.assertEqual(by_id[self.v1.id], "COMPLETED")
+        self.assertEqual(by_id[self.v5.id], "PENDING")
+
+
+class TypedRungFieldTests(TestCase):
+    """target_time / duration round-trip through the ladder editor and create."""
+
+    def test_save_versions_stores_and_returns_them(self):
+        habit = Habit.objects.create(name="Wake up")
+        res = self.client.post(
+            reverse("habits:save_habit_versions", args=[habit.id]),
+            data=json.dumps({"rungs": [
+                {"value": "8am", "label": 1, "target_time": "08:00"},
+                {"value": "7am", "label": 2, "target_time": "07:00", "duration": 5},
+            ]}),
+            content_type="application/json")
+        self.assertEqual(res.status_code, 200, res.content)
+        tiers = res.json()["tiers"]
+        self.assertEqual([t["target_time"] for t in tiers], ["08:00", "07:00"])
+        self.assertEqual([t["duration"] for t in tiers], [None, 5])
+
+    def test_create_habit_fills_the_starter_rung(self):
+        res = self.client.post(
+            reverse("habits:create_habit"),
+            data=json.dumps({"name": "Wake up", "target_time": "07:00",
+                             "duration": 10}),
+            content_type="application/json")
+        self.assertEqual(res.status_code, 201, res.content)
+        v = Version.objects.get(habit_id=res.json()["id"])
+        self.assertEqual(v.target_time, time(7, 0))
+        self.assertEqual(v.duration, 10)
+
+    def test_bad_values_rejected(self):
+        habit = Habit.objects.create(name="X")
+        for rung in ({"value": "a", "target_time": "not a time"},
+                     {"value": "a", "duration": -3},
+                     {"value": "a", "duration": "5"}):
+            res = self.client.post(
+                reverse("habits:save_habit_versions", args=[habit.id]),
+                data=json.dumps({"rungs": [rung]}),
+                content_type="application/json")
+            self.assertEqual(res.status_code, 400, rung)

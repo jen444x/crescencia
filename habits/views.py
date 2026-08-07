@@ -108,6 +108,10 @@ def _habit_tiers(habit):
             "label": v.label.level if v.label_id else None,  # tag level 1/2/3, or null
             "value": v.value,
             "version": v.id,
+            # Typed meaning (optional): the deadline that slot-completion acts
+            # on, and the length in minutes tracked for insights.
+            "target_time": v.target_time.strftime("%H:%M") if v.target_time else None,
+            "duration": v.duration,
             # What you actually DO at this rung, in the habit's step order. []
             # for the normal case of a habit that isn't a recipe. `done` is
             # filled in per-day by callers that have the day's StepLogs.
@@ -256,8 +260,15 @@ def _version_status(specific, fallback, level, is_past):
 
     Rules (docs/contracts/per-version-status.md): completing a HIGHER version
     cascades DOWN (lower ones read done); completing a LOWER one never touches a
-    higher one; a whole-habit row (e.g. a blanket skip) applies to every version;
-    an untouched past day derives MISSED.
+    higher one; a whole-habit SKIP/MISS applies to every version; an untouched
+    past day derives MISSED.
+
+    A whole-habit COMPLETION, though, no longer lights up rungs (her call: "the
+    base should not light up every rung"). It means "I did the habit" — the
+    habit-level view reads done, streaks count it — but rung credit only ever
+    comes from real rung completions, so "woke up at 3pm" can't claim "by
+    7:30am". Old base-level history can be retagged onto a rung instead
+    (retag_history).
     """
     completed = [lv for lv, st in specific.items()
                  if st == HabitLog.Status.COMPLETED]
@@ -274,11 +285,11 @@ def _version_status(specific, fallback, level, is_past):
         return MISSED_STATUS if is_past else HabitLog.Status.PENDING
 
     # A specific version.
-    if whole_completed or (max_completed is not None and max_completed >= level):
+    if max_completed is not None and max_completed >= level:
         return HabitLog.Status.COMPLETED          # cascade down from a higher win
     if level in specific:
         return specific[level]                    # its own SKIPPED / MISSED / PENDING
-    if fallback is not None:
+    if fallback is not None and not whole_completed:
         return fallback                           # e.g. a blanket skip covers it
     return MISSED_STATUS if is_past else HabitLog.Status.PENDING
 
@@ -773,13 +784,78 @@ def plan(request):
     return JsonResponse(data, safe=False)
 
 
+def _slot_complete(habit, timed, slot, target_date, status):
+    """Complete (or undo) a time-based habit FROM its slot — the slot picks the
+    version, one tap closes the whole ladder.
+
+    `timed` = the habit's deadline rungs, low->high. A rung is MET when the slot
+    is at or before its deadline (you woke at 7:20, "by 7:30" is met). Credit
+    goes to the HARDEST met rung — its log's `time` is the SLOT time, the time
+    the habit actually happened, never the tap moment. Deadlines the slot
+    already blew past get marked MISSED immediately (7:31 can never become "by
+    7:30" later today), so ✓/✗ land together. No rung met -> the completion
+    lands on the implicit base: "I did it, hit no target" (whole-habit row,
+    which no longer lights up rungs).
+
+    PENDING walks the whole write back: base + every timed rung reset. Rungs
+    with an untimed value and real completions on other rungs are left alone.
+    """
+    def upsert(version, new_status, time=None, clobber=True):
+        log, _ = HabitLog.objects.get_or_create(
+            habit=habit, date=target_date, version=version,
+            defaults={"tier_id": version.label_id if version else None},
+        )
+        # Never downgrade a rung she really completed to MISSED.
+        if not clobber and log.status == HabitLog.Status.COMPLETED:
+            return log
+        log.status = new_status
+        log.time = time
+        log.save()
+        return log
+
+    with transaction.atomic():
+        if status == HabitLog.Status.PENDING:
+            for v in timed:
+                upsert(v, HabitLog.Status.PENDING)
+                _fan_out_steps(v, target_date, HabitLog.Status.PENDING)
+            if HabitLog.objects.filter(
+                habit=habit, date=target_date, version__isnull=True
+            ).exists():
+                upsert(None, HabitLog.Status.PENDING)
+            credited = None
+        else:
+            met = [v for v in timed if slot <= v.target_time]
+            credited = met[-1] if met else None    # hardest met (highest level)
+            if credited is not None:
+                upsert(credited, HabitLog.Status.COMPLETED, time=slot)
+                _fan_out_steps(credited, target_date, HabitLog.Status.COMPLETED)
+            else:
+                # "I did it" on the habit itself — no rung claims it.
+                upsert(None, HabitLog.Status.COMPLETED, time=slot)
+            for v in timed:
+                if slot > v.target_time:
+                    upsert(v, HabitLog.Status.MISSED, clobber=False)
+
+    return JsonResponse({
+        "habit_id": habit.id,
+        "date": target_date,
+        "version": credited.id if credited else None,
+        "tier": credited.level if credited else None,
+        "status": status,
+        "done_today": status == HabitLog.Status.COMPLETED,
+        "slot": slot.strftime("%H:%M"),
+        "missed": [v.id for v in timed
+                   if status == HabitLog.Status.COMPLETED and slot > v.target_time],
+    })
+
+
 @csrf_exempt
 @require_POST
 def log_habit(request, habit_id):
     """Set a habit's status and/or notes for a given day (defaults to today).
 
-    Body: {"status"?, "notes"?, "version"?: id, "tier"?: 1|2|3, "date"?: "..."} —
-    send at least one of `status` / `notes`.
+    Body: {"status"?, "notes"?, "version"?: id, "tier"?: 1|2|3, "date"?: "...",
+           "slot"?: "HH:MM"} — send at least one of `status` / `notes`.
       - status: COMPLETED (complete) | PENDING (undo) | SKIPPED (skip) | MISSED.
       - version: WHICH rung this log is for (its id). Omit for a plain habit or a
         whole-habit action; a rung id writes that rung's row, so each rung is
@@ -787,6 +863,10 @@ def log_habit(request, habit_id):
         still accepted and mapped to the rung with that label, for back-compat.
       - notes: free text for the day; settable WITHOUT a status, so jotting a note
         doesn't mark the habit done. Send "" to clear it.
+      - slot: the time block the habit sits in (Plan page sends it). For a habit
+        whose rungs carry deadlines, a slotted COMPLETED picks the version FOR
+        her — see _slot_complete — and a slotted PENDING undoes that whole write.
+        Ignored for habits with no timed rungs, so the Plan page can always send it.
     """
     habit = get_object_or_404(Habit, id=habit_id)
 
@@ -840,6 +920,23 @@ def log_habit(request, habit_id):
     target_date, date_error = _resolve_date(body.get("date"))
     if date_error:
         return date_error
+
+    # Slot-based completion: the slot picks the version, she never does. Only
+    # for habits with timed rungs, and only for COMPLETED/PENDING — a skip or a
+    # miss is about the whole attempt, not a deadline.
+    raw_slot = body.get("slot")
+    if raw_slot is not None and has_status and body["status"] in (
+        HabitLog.Status.COMPLETED, HabitLog.Status.PENDING
+    ):
+        slot = parse_time(raw_slot) if isinstance(raw_slot, str) else None
+        if slot is None:
+            return JsonResponse({"error": "'slot' must be 'HH:MM'."}, status=400)
+        timed = list(
+            habit.versions.filter(target_time__isnull=False)
+            .select_related("label").order_by("level")
+        )
+        if timed:
+            return _slot_complete(habit, timed, slot, target_date, body["status"])
 
     # One log per (habit, date, version); create it the first time it's touched.
     # version=None is the untiered/"whole habit" row; a rung is that one version.
@@ -925,8 +1022,26 @@ def save_habit_versions(request, habit_id):
                     {"error": "A tag (Roots/Growth) can sit on only one rung."}, status=400
                 )
             seen_labels.add(label)
+        # Optional typed fields: a "by" deadline and a length in minutes.
+        raw_tt = r.get("target_time")
+        target_time = None
+        if raw_tt is not None:
+            target_time = parse_time(raw_tt) if isinstance(raw_tt, str) else None
+            if target_time is None:
+                return JsonResponse(
+                    {"error": "'target_time' must be 'HH:MM' or null."}, status=400
+                )
+        duration = r.get("duration")
+        if duration is not None and (
+            isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0
+        ):
+            return JsonResponse(
+                {"error": "'duration' must be a positive number of minutes or null."},
+                status=400,
+            )
         cleaned.append({"id": r.get("id"), "value": value.strip(),
-                        "label": label, "level": i + 1})
+                        "label": label, "level": i + 1,
+                        "target_time": target_time, "duration": duration})
 
     with transaction.atomic():
         existing = {v.id: v for v in habit.versions.all()}
@@ -941,6 +1056,7 @@ def save_habit_versions(request, habit_id):
             if v is None:
                 v = Version(habit=habit)
             v.level, v.value, v.label = c["level"], c["value"], tier
+            v.target_time, v.duration = c["target_time"], c["duration"]
             v.save()
             kept.add(v.id)
 
@@ -955,6 +1071,47 @@ def save_habit_versions(request, habit_id):
                 v.delete()
 
     return JsonResponse({"tiers": _habit_tiers(habit)})
+
+
+@csrf_exempt
+@require_POST
+def retag_history(request, habit_id):
+    """Move a habit's base-level completions onto one of its rungs.
+
+    Body: {"version": rung_id | null}. Answers the ladder editor's "your past
+    completions — which rung were they?" prompt. The knowledge only she has
+    ("my old 'Work out' days were the 5-min amount") is applied ONCE: those
+    whole-habit COMPLETED rows get the rung's id, becoming real 5-min
+    completions — so the cascade lights 3 ✓ 5 ✓ 10 ✗ with no display tricks.
+
+    null = "keep as did-it" (not sure): a no-op, the honest default. Days where
+    that rung ALREADY has a row are skipped rather than collided with.
+    """
+    habit = get_object_or_404(Habit, id=habit_id)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    raw = body.get("version")
+    if raw is None:
+        return JsonResponse({"habit_id": habit.id, "retagged": 0})
+
+    version = Version.objects.filter(habit=habit, id=raw).first()
+    if version is None:
+        return JsonResponse({"error": f"This habit has no version {raw!r}."}, status=400)
+
+    with transaction.atomic():
+        taken = HabitLog.objects.filter(habit=habit, version=version) \
+                                .values_list("date", flat=True)
+        retagged = (
+            HabitLog.objects
+            .filter(habit=habit, version__isnull=True,
+                    status=HabitLog.Status.COMPLETED)
+            .exclude(date__in=taken)
+            .update(version=version, tier=version.label)
+        )
+    return JsonResponse({"habit_id": habit.id, "retagged": retagged})
 
 
 @csrf_exempt
@@ -2254,6 +2411,12 @@ def _habit_detail(habit):
         "aspirations": list(
             habit.aspirations.order_by("id").values_list("id", flat=True)
         ),
+        # Base-level "did it" completions (no rung). When a ladder is first
+        # saved onto a habit that has these, the editor offers to retag them
+        # onto a rung — see retag_history.
+        "base_completions": HabitLog.objects.filter(
+            habit=habit, version__isnull=True, status=HabitLog.Status.COMPLETED
+        ).count(),
     }
 
 
@@ -2315,6 +2478,22 @@ def create_habit(request):
     if label not in (None, 1, 2, 3):
         return JsonResponse({"error": "'label' must be 1, 2, 3, or null."}, status=400)
 
+    # Optional typed fields for the starter rung — the Add form's By/For inputs.
+    # Together with the name they ARE the habit at birth; more rungs come later.
+    raw_tt = body.get("target_time")
+    target_time = None
+    if raw_tt is not None:
+        target_time = parse_time(raw_tt) if isinstance(raw_tt, str) else None
+        if target_time is None:
+            return JsonResponse({"error": "'target_time' must be 'HH:MM' or null."}, status=400)
+    duration = body.get("duration")
+    if duration is not None and (
+        isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0
+    ):
+        return JsonResponse(
+            {"error": "'duration' must be a positive number of minutes or null."}, status=400
+        )
+
     with transaction.atomic():
         habit = Habit.objects.create(
             name=name, notes=notes.strip(), area_id=area_id, is_support=is_support
@@ -2325,6 +2504,8 @@ def create_habit(request):
                 level=1,
                 value="",
                 label=Tier.objects.get_or_create(level=label)[0],
+                target_time=target_time,
+                duration=duration,
             )
     return JsonResponse(_habit_detail(habit), status=201)
 
@@ -2947,18 +3128,40 @@ def log_routine(request, routine_id):
     # Only a completion has a meaningful "time done".
     log_time = timezone.localtime().time() if status == HabitLog.Status.COMPLETED else None
 
+    # Which row "block done" credits: the LOWEST rung for a tiered member
+    # (conservative — the block says you did at least the base amount; tap up if
+    # you did more), the whole-habit row for an untiered one. A base completion
+    # no longer lights up rungs, so writing base rows for tiered members would
+    # complete the block while every visible rung stayed pending.
+    lowest = {}
+    for v in Version.objects.filter(habit_id__in=habit_ids).order_by("habit_id", "level"):
+        lowest.setdefault(v.habit_id, v)
+
     with transaction.atomic():
-        existing_ids = set(
-            HabitLog.objects.filter(habit_id__in=habit_ids, date=target_date)
-            .values_list("habit_id", flat=True)
-        )
-        HabitLog.objects.filter(habit_id__in=habit_ids, date=target_date).update(
-            status=status, time=log_time
-        )
-        HabitLog.objects.bulk_create([
-            HabitLog(habit_id=hid, date=target_date, status=status, time=log_time)
-            for hid in habit_ids if hid not in existing_ids
-        ])
+        if status == HabitLog.Status.COMPLETED:
+            for hid in habit_ids:
+                v = lowest.get(hid)
+                log, _ = HabitLog.objects.get_or_create(
+                    habit_id=hid, date=target_date, version=v,
+                    defaults={"tier_id": v.label_id if v else None},
+                )
+                log.status = status
+                log.time = log_time
+                log.save()
+        else:
+            # SKIPPED blankets every rung via the whole-habit row; PENDING
+            # resets every row the block (or she) may have written that day.
+            existing_ids = set(
+                HabitLog.objects.filter(habit_id__in=habit_ids, date=target_date)
+                .values_list("habit_id", flat=True)
+            )
+            HabitLog.objects.filter(habit_id__in=habit_ids, date=target_date).update(
+                status=status, time=log_time
+            )
+            HabitLog.objects.bulk_create([
+                HabitLog(habit_id=hid, date=target_date, status=status, time=log_time)
+                for hid in habit_ids if hid not in existing_ids
+            ])
 
     return JsonResponse({
         "routine_id": routine.id,
