@@ -6,6 +6,8 @@ import {
   rowCompleteTier,
   slotStatus,
   tagChipClasses,
+  typedGoal,
+  rungGoal,
 } from "../tier";
 import { DashIcon, XIcon, CheckIcon } from "../../../components/icons";
 import type { Habit, HabitStatus } from "../types";
@@ -42,11 +44,18 @@ export function HabitChip({
   const tierToSend = caseBInline
     ? (caseBDisplayLevel(habit, dayTier) ?? undefined)
     : rowCompleteTier(habit, dayTier);
-  const tierValue =
+  // Same display rule as HabitCard: a typed goal reads as part of the name
+  // ("Wake up by 7:30am") in normal text; only free-text values keep the
+  // lighter "· value" suffix.
+  const shownRung =
     tierToSend != null
-      ? (habit.tiers?.find((t) => t.level === tierToSend)?.value ??
-        habit.tier_value ??
-        null)
+      ? habit.tiers?.find((t) => t.level === tierToSend)
+      : undefined;
+  const goalText = typedGoal(shownRung);
+  const tierValue = goalText
+    ? null
+    : tierToSend != null
+      ? shownRung?.value || habit.tier_value || null
       : rowDisplayValue(habit, dayTier);
   const cardStatus = slotStatus(habit, tierToSend);
   const done = cardStatus === "COMPLETED";
@@ -127,6 +136,7 @@ export function HabitChip({
         </button>
 
         {habit.name}
+        {goalText && ` ${goalText}`}
         {tierValue && (
           <span
             className={`font-normal ${done ? "text-calm-300" : "text-stone-400"}`}
@@ -197,7 +207,7 @@ export function HabitChip({
                     {t.name}
                   </span>
                 )}
-                {t.value || habit.name}
+                {rungGoal(t) || habit.name}
               </span>
             </Fragment>
           );
