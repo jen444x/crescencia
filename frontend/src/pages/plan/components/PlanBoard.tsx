@@ -24,6 +24,7 @@ export function PlanBoard({
   inlineTierByHabit,
   mainOnly,
   planView,
+  inlineAdd,
   onStatus,
   onOpenNote,
   onRoutineLog,
@@ -53,6 +54,9 @@ export function PlanBoard({
   // glance-only layout, so it skips the drag list, the collapsed done-tray, and
   // the routine blocks — every shown habit is just a chip, in order.
   planView: "rows" | "chips";
+  // Chips view only: an add control that flows inline after the last chip
+  // (undefined = none, e.g. past days / the Anytime group / rows view).
+  inlineAdd?: ReactNode;
 }) {
   const chainId = chain.id;
   // Register this block as a drop target so a row dragged out of another block
@@ -82,7 +86,9 @@ export function PlanBoard({
   // Generous line-height so the boxed lines don't overlap. No drag / done-tray /
   // routine grouping — it's a dense glance; Rows stays the view for arranging.
   if (planView === "chips") {
-    if (habits.length === 0) return null;
+    // An empty block still shows the inline add, so a fresh time slot isn't a
+    // dead end in this view.
+    if (habits.length === 0 && !inlineAdd) return null;
     return (
       <div className="text-sm leading-[2.35]">
         {habits.map((habit, i) => (
@@ -96,6 +102,12 @@ export function PlanBoard({
             />
           </Fragment>
         ))}
+        {inlineAdd && (
+          <>
+            {habits.length > 0 && " "}
+            {inlineAdd}
+          </>
+        )}
       </div>
     );
   }

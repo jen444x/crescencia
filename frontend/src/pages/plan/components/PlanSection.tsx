@@ -73,6 +73,23 @@ export function PlanSection({
   // tier-filtered chain if no full match (can't happen, but keeps the type
   // non-null).
   const fullChain = visibleChains.find((p) => p.id === chain.id) ?? chain;
+  // In the dense chips view the add control flows INSIDE the chip line, right
+  // after the last habit, instead of taking a full row of its own (her call —
+  // the block-level button only renders in the rows view).
+  const inlineAdd =
+    planView === "chips" && !isPastDay && chain.id != null ? (
+      <button
+        type="button"
+        onClick={() =>
+          navigate(
+            `/habits/new?chain=${chain.id}&order=${fullChain.habits.length + 1}`,
+          )
+        }
+        className="inline-flex items-center rounded-md px-2 py-1 align-middle text-sm font-medium text-calm-500 transition-colors hover:bg-calm-50 hover:text-calm-700"
+      >
+        ＋ Add habit
+      </button>
+    ) : undefined;
   // The habit list is identical whether or not the block is retime-able; build it
   // once and drop it into the right wrapper below.
   const planBoard = (
@@ -86,6 +103,7 @@ export function PlanSection({
       onOpenNote={onOpenNote}
       onRoutineLog={onRoutineLog}
       onEditRoutine={onEditRoutine}
+      inlineAdd={inlineAdd}
       // Drag works on any viewed day — it writes the per-day layer
       // (/days/arrange/), not the recurring template.
       interactive
@@ -183,7 +201,7 @@ export function PlanSection({
           {collapsed ? null : (
             <>
               {planBoard}
-              {!isPastDay && chain.id != null && (
+              {planView === "rows" && !isPastDay && chain.id != null && (
                 <AddHabitButton
                   onClick={() =>
                     navigate(
@@ -228,7 +246,7 @@ export function PlanSection({
           {!collapsed && (
             <>
               {planBoard}
-              {!isPastDay && chain.id != null && (
+              {planView === "rows" && !isPastDay && chain.id != null && (
                 <AddHabitButton
                   onClick={() =>
                     navigate(
