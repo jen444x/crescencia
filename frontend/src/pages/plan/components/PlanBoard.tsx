@@ -7,7 +7,7 @@ import type { Chain, Habit, HabitStatus, Segment } from "../types";
 import { slotPlacement } from "../tier";
 import { isDone } from "../status";
 import { buildSegments } from "../segments";
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import { RowLayout } from "./RowLayout";
 import { SortableRow } from "./SortableRow";
 import { CompletedTray, RoutineBlock } from "./PlanBlocks";
