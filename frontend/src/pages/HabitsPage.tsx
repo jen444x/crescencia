@@ -33,6 +33,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { DateNav } from "./plan/components/DateNav";
 import PlantWidget from "./plan/components/PlantWidget";
 import { startOfDay, toYMD, addDays, isSameDay } from "./plan/dates";
+import { typedGoal } from "./plan/tier";
 
 // The statuses for a habit's day (matches the backend HabitLog). MISSED is now
 // settable too (not just derived for past days).
@@ -47,6 +48,8 @@ type HabitTier = {
   label: number | null; // tag level 1=Roots / 2=Growth, null = untagged
   value: string;
   version: number; // the rung's id — what a completion sends
+  target_time?: string | null; // "HH:MM" deadline
+  duration?: number | null; // minutes
   status?: HabitStatus;
   done?: boolean;
   // What you actually DO at this rung ([] unless the habit is a recipe).
@@ -330,6 +333,7 @@ function HabitTierRow({
             }`}
           >
             {habit.name}
+            {tier && typedGoal(tier) && ` ${typedGoal(tier)}`}
           </span>
           {/* Streak: consecutive completed days. Once per habit (top row) and
               only when there's an active run. Same 🔥 pill as the Aspirations
@@ -365,7 +369,7 @@ function HabitTierRow({
             </svg>
           </button>
         </span>
-        {tier?.value && (
+        {tier && !typedGoal(tier) && tier.value && (
           <span
             className={`block text-xs ${done ? "text-calm-300" : "text-stone-400"}`}
           >
@@ -581,6 +585,7 @@ function HabitStatusSheet({
         >
           <span className="min-w-0 truncate text-lg font-semibold text-calm-900 group-hover:text-calm-700">
             {habit.name}
+            {tier && typedGoal(tier) && ` ${typedGoal(tier)}`}
           </span>
           <svg
             aria-hidden

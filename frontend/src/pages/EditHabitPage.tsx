@@ -519,20 +519,13 @@ function EditHabitPage() {
                   ▼
                 </button>
               </div>
-              <input
-                type="text"
-                value={r.value}
-                onChange={(e) => setRungValue(i, e.target.value)}
-                placeholder="value (e.g. 1000 steps)"
-                className="min-w-0 flex-1 rounded-xl border border-mist bg-whisper px-2.5 py-1.5 text-sm text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
-              />
               <select
                 value={r.label ?? 0}
                 onChange={(e) =>
                   setRungLabel(i, Number(e.target.value) || null)
                 }
                 aria-label="Tag"
-                className="shrink-0 rounded-xl border border-mist bg-whisper px-2 py-1.5 text-sm text-ink focus:border-calm-400 focus:outline-none"
+                className="min-w-0 flex-1 rounded-xl border border-mist bg-whisper px-2 py-1.5 text-sm text-ink focus:border-calm-400 focus:outline-none"
               >
                 <option value={0}>— none —</option>
                 <option value={1}>Roots</option>
@@ -570,6 +563,20 @@ function EditHabitPage() {
                     className="w-16 rounded-lg border border-mist bg-whisper px-2 py-1 text-right text-[13px] text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
                   />
                   <span className="text-[11px] text-stone-300">min</span>
+                </label>
+                {/* The free-text value ("1000 steps", "Cleanse face") — kept
+                    for rungs that aren't about time, and so old ones stay
+                    visible and editable. Sits under the typed fields now that
+                    those carry the main meaning. */}
+                <label className="flex w-full items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
+                  Value
+                  <input
+                    type="text"
+                    value={r.value}
+                    onChange={(e) => setRungValue(i, e.target.value)}
+                    placeholder="e.g. 1000 steps"
+                    className="min-w-0 flex-1 rounded-lg border border-mist bg-whisper px-2.5 py-1.5 text-[13px] font-normal normal-case tracking-normal text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
+                  />
                 </label>
               </div>
             </li>

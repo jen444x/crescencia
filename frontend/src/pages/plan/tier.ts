@@ -45,6 +45,45 @@ export function tagChipClasses(label: number | null | undefined): string {
   return "bg-calm-50 text-calm-400";
 }
 
+// "07:30" -> "7:30am", "14:00" -> "2pm" — the compact clock the app's values
+// already use, so derived goals read like the hand-typed ones.
+function fmtClock(hhmm: string): string {
+  const [h = 0, m = 0] = hhmm.split(":").map(Number);
+  const ap = h >= 12 ? "pm" : "am";
+  const h12 = h % 12 || 12;
+  return m ? `${h12}:${String(m).padStart(2, "0")}${ap}` : `${h12}${ap}`;
+}
+
+// A rung's TYPED goal as plain prose — "by 7:30am", "for 5 min", or "by 7:30am
+// for 5 min" — reading as a natural continuation of the habit's name ("Wake up
+// by 7:30am"). "" when the rung has no typed fields.
+export function typedGoal(
+  t?: {
+    target_time?: string | null;
+    duration?: number | null;
+  } | null,
+): string {
+  if (!t) return "";
+  const parts: string[] = [];
+  if (t.target_time) parts.push(`by ${fmtClock(t.target_time)}`);
+  if (t.duration) parts.push(`for ${t.duration} min`);
+  return parts.join(" ");
+}
+
+// A rung's goal as display text: the typed fields when it has them, else the
+// free-text value. This is what makes a habit created as just name + Complete
+// by still SHOW its goal — its value is "" there, so the row would read bare.
+export function rungGoal(
+  t?: {
+    value?: string | null;
+    target_time?: string | null;
+    duration?: number | null;
+  } | null,
+): string {
+  if (!t) return "";
+  return typedGoal(t) || (t.value ?? "");
+}
+
 // True when a row carries no tiers at all — a plain habit that renders and
 // completes exactly as it always has (no tier label, no tier sent).
 export function isUntiered(habit: Habit): boolean {
@@ -74,13 +113,13 @@ export function caseBInlineLevel(habit: Habit, dayTier: number): number | null {
 //   untiered: none.
 export function rowDisplayValue(habit: Habit, dayTier: number): string | null {
   if (habit.tier != null) {
-    if (habit.tier_value) return habit.tier_value;
-    return habit.tiers?.find((t) => t.level === habit.tier)?.value ?? null;
+    const rung = habit.tiers?.find((t) => t.level === habit.tier);
+    return rungGoal(rung) || habit.tier_value || null;
   }
   if (isCaseB(habit)) {
     const level = caseBInlineLevel(habit, dayTier);
     if (level == null) return null;
-    return habit.tiers?.find((t) => t.level === level)?.value ?? null;
+    return rungGoal(habit.tiers?.find((t) => t.level === level)) || null;
   }
   return null;
 }

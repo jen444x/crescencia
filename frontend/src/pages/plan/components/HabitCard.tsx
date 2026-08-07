@@ -6,6 +6,8 @@ import {
   rowCompleteTier,
   slotStatus,
   tagChipClasses,
+  rungGoal,
+  typedGoal,
 } from "../tier";
 import { DashIcon, XIcon, CheckIcon } from "../../../components/icons";
 import type { Habit, HabitStatus } from "../types";
@@ -53,11 +55,17 @@ export function HabitCard({
     (caseBInline
       ? (caseBDisplayLevel(habit, dayTier) ?? undefined)
       : rowCompleteTier(habit, dayTier));
-  const tierValue =
+  // A rung with typed fields reads as part of the name ("Wake up by 7:30am"),
+  // normal text — her call. Only free-text values keep the lighter "· value".
+  const shownRung =
     tierToSend != null
-      ? (habit.tiers?.find((t) => t.level === tierToSend)?.value ??
-        habit.tier_value ??
-        null)
+      ? habit.tiers?.find((t) => t.level === tierToSend)
+      : undefined;
+  const goalText = typedGoal(shownRung);
+  const tierValue = goalText
+    ? null
+    : tierToSend != null
+      ? shownRung?.value || habit.tier_value || null
       : rowDisplayValue(habit, dayTier);
   // Per-version state: this card shows ITS rung's status (cascade already folded
   // in by the backend), so completing the easy version never ticks the harder one.
@@ -128,6 +136,7 @@ export function HabitCard({
             }`}
           >
             {habit.name}
+            {goalText && ` ${goalText}`}
             {tierValue && (
               <span
                 className={`font-normal ${
@@ -245,7 +254,7 @@ export function HabitCard({
                         : "text-stone-500"
                 }`}
               >
-                {t.value || habit.name}
+                {rungGoal(t) || habit.name}
               </span>
               <button
                 type="button"
