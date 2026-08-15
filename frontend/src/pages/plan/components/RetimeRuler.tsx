@@ -16,12 +16,20 @@ export function RetimeRuler({
   previewMin,
   blockLabel,
   otherBlocks,
+  hint = "Drag to a time · release to set · today only",
+  showOrigin = true,
 }: {
   anchorY: number;
   startMin: number;
   previewMin: number;
   blockLabel: string;
   otherBlocks: { min: number; name: string }[];
+  // The strip of text across the top. A habit dropped into empty time uses the
+  // ruler to CHOOSE a time rather than change one, so it says something else.
+  hint?: string;
+  // The dotted "you started here" guide. A habit being given its first time has
+  // no original time to go back to, so it hides the line.
+  showOrigin?: boolean;
 }) {
   // Screen Y for a minute, anchored so startMin sits at the press point — the
   // chip then tracks your finger while the other chains stay put as context.
@@ -38,7 +46,7 @@ export function RetimeRuler({
 
       <div className="relative mx-auto h-full max-w-md overflow-hidden bg-white/60">
         <p className="absolute inset-x-0 top-0 z-10 bg-white/70 py-2 text-center text-[11px] font-medium uppercase tracking-wide text-calm-500">
-          Drag to a time · release to set · today only
+          {hint}
         </p>
 
         {/* Hour gridlines + labels. */}
@@ -80,7 +88,7 @@ export function RetimeRuler({
         })}
 
         {/* Dotted guide at the block's original time — drag back here to undo. */}
-        {onScreen(yForMin(startMin)) && (
+        {showOrigin && onScreen(yForMin(startMin)) && (
           <div
             className="absolute inset-x-0 -translate-y-1/2 px-4"
             style={{ top: yForMin(startMin) }}

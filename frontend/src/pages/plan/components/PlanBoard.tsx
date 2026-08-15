@@ -30,6 +30,7 @@ export function PlanBoard({
   onRoutineLog,
   onEditRoutine,
   interactive,
+  dropPreview,
 }: {
   chain: Chain;
   // The day's chosen tier (Roots=1 / Growth=2). Tiered habits with no rung at or
@@ -57,6 +58,12 @@ export function PlanBoard({
   // Chips view only: an add control that flows inline after the last chip
   // (undefined = none, e.g. past days / the Anytime group / rows view).
   inlineAdd?: ReactNode;
+  // Live drop preview while a habit is being dragged in from ANOTHER block: the
+  // block it would land in, and the row it would land above (null = the end).
+  // Set by the page from the drag's current target; null when this isn't it.
+  // Without it a cross-block drop gave no warning at all — you only found out
+  // where the habit went after letting go.
+  dropPreview?: { chainId: number; overRid: number | null } | null;
 }) {
   const chainId = chain.id;
   // Register this block as a drop target so a row dragged out of another block
@@ -193,9 +200,27 @@ export function PlanBoard({
     habit.row_id != null ? habit.row_id : `new-${habit.id}`,
   );
 
+  // Is the habit currently in the air headed for THIS block?
+  const isDropTarget =
+    dropPreview != null && chainId != null && dropPreview.chainId === chainId;
+  // The exact landing spot. Zero-height so showing it never nudges the rows —
+  // the line draws over the gap that's already between two cards.
+  const insertionLine = (
+    <li aria-hidden="true" className="relative h-0">
+      <span className="absolute inset-x-0 -top-0.5 block h-0.5 rounded-full bg-calm-600" />
+    </li>
+  );
+
   return (
     <SortableContext items={activeIds} strategy={verticalListSortingStrategy}>
-      <ul ref={setDropRef} className="space-y-1.5">
+      <ul
+        ref={setDropRef}
+        // Constant padding + matching negative margin, so switching the ring on
+        // tints the block without shifting a single row.
+        className={`-m-1.5 space-y-1.5 rounded-xl p-1.5 ring-2 transition-colors ${
+          isDropTarget ? "bg-calm-50 ring-calm-500" : "ring-transparent"
+        }`}
+      >
         {segments.length === 0 && (
           // A freshly-added (empty) block: a tall dashed target so it's easy to
           // drop a habit onto, with a hint of what to do.
@@ -203,24 +228,32 @@ export function PlanBoard({
             Drag a habit here
           </li>
         )}
-        {segments.map((seg) =>
-          seg.kind === "done" ? (
-            doneItem(seg)
-          ) : seg.kind === "routine" ? (
-            routineItem(seg)
-          ) : (
-            <li key={seg.row.habit.row_id ?? `new-${seg.row.habit.id}`}>
-              <SortableRow
-                habit={seg.row.habit}
-                dayTier={dayTier}
-                stepNumber={seg.row.stepNumber}
-                connectBelow={seg.row.connectBelow}
-                onStatus={onStatus}
-                onOpenNote={onOpenNote}
-              />
-            </li>
-          ),
-        )}
+        {segments.map((seg) => {
+          if (seg.kind === "done") return doneItem(seg);
+          if (seg.kind === "routine") return routineItem(seg);
+          const key = seg.row.habit.row_id ?? `new-${seg.row.habit.id}`;
+          // The incoming habit lands ABOVE this row — draw the line here.
+          const landsHere =
+            isDropTarget && dropPreview.overRid === seg.row.habit.row_id;
+          return (
+            <Fragment key={key}>
+              {landsHere && insertionLine}
+              <li>
+                <SortableRow
+                  habit={seg.row.habit}
+                  dayTier={dayTier}
+                  stepNumber={seg.row.stepNumber}
+                  connectBelow={seg.row.connectBelow}
+                  onStatus={onStatus}
+                  onOpenNote={onOpenNote}
+                />
+              </li>
+            </Fragment>
+          );
+        })}
+        {/* Hovering the block's empty space rather than a row: it goes last,
+          which is exactly where the drop handler puts it. */}
+        {isDropTarget && dropPreview.overRid == null && insertionLine}
       </ul>
     </SortableContext>
   );

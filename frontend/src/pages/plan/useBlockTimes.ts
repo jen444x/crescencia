@@ -31,8 +31,14 @@ export function useBlockTimes({
   // Add a new timed block at `timeStr` (creates the chain, then inserts it in
   // time order). Optimistic: the empty block appears immediately so a habit can be
   // dropped into it; a reused existing block is a no-op.
-  async function addTime(timeStr: string) {
-    if (!timeStr) return;
+  //
+  // Returns the block so a caller that needs to put something IN it can — a
+  // habit dropped on empty time creates its block and lands in it in one go.
+  // Null means the create failed (already toasted).
+  async function addTime(
+    timeStr: string,
+  ): Promise<{ id: number; time: string } | null> {
+    if (!timeStr) return null;
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/chains/create/`, {
         method: "POST",
@@ -57,8 +63,10 @@ export function useBlockTimes({
         );
         return [...merged, ...anytime];
       });
+      return { id: data.id, time: data.time };
     } catch {
       toast("Couldn't add that time", { variant: "error" });
+      return null;
     }
   }
 

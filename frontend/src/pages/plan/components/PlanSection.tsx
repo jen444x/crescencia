@@ -35,6 +35,7 @@ export function PlanSection({
   onRetime,
   onShift,
   onRename,
+  dropPreview,
 }: {
   chain: Chain;
   collapsed: boolean;
@@ -55,6 +56,9 @@ export function PlanSection({
   onRetime: (chainId: number, time: string) => void;
   onShift: (chainId: number, minutes: number) => void;
   onRename: (chainId: number, name: string) => void;
+  // Where a habit dragged in from another block would land — passed straight
+  // through to PlanBoard, which draws the highlight + insertion line.
+  dropPreview?: { chainId: number; overRid: number | null } | null;
 }) {
   const navigate = useNavigate();
   const isNow =
@@ -104,6 +108,7 @@ export function PlanSection({
       onRoutineLog={onRoutineLog}
       onEditRoutine={onEditRoutine}
       inlineAdd={inlineAdd}
+      dropPreview={dropPreview}
       // Drag works on any viewed day — it writes the per-day layer
       // (/days/arrange/), not the recurring template.
       interactive
@@ -113,6 +118,10 @@ export function PlanSection({
   return (
     <section
       ref={sectionRef}
+      // The block's time, readable from the DOM. useDropRuler needs to know
+      // which blocks sit above and below a drop point to seed the ruler, and a
+      // data attribute keeps that lookup out of the page's props.
+      data-chain-time={chain.time ?? undefined}
       // Leave a little breathing room above the block when we scroll to it.
       className="scroll-mt-6"
     >
