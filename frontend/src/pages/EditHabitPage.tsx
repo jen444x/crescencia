@@ -123,7 +123,7 @@ type Tier = {
   value: string;
   version: number; // the rung's id
   target_time: string | null; // "HH:MM" deadline, or null
-  duration: number | null; // minutes, or null
+  duration: string; // how long, free text ("" = unset)
   // What you DO at this rung ([] for a habit that isn't a recipe).
   steps: { id: number; step: number; name: string; amount: string }[];
 };
@@ -220,7 +220,7 @@ function EditHabitPage() {
             value: t.value,
             label: t.label ?? null,
             target_time: t.target_time ?? "",
-            duration: t.duration != null ? String(t.duration) : "",
+            duration: t.duration ?? "",
           })),
         );
         setTiers(data.tiers ?? []);
@@ -389,7 +389,7 @@ function EditHabitPage() {
               value: r.value.trim(),
               label: r.label,
               target_time: r.target_time || null,
-              duration: r.duration ? Number(r.duration) : null,
+              duration: r.duration.trim(),
             })),
           }),
         },
@@ -405,7 +405,7 @@ function EditHabitPage() {
           value: t.value,
           label: t.label ?? null,
           target_time: t.target_time ?? "",
-          duration: t.duration != null ? String(t.duration) : "",
+          duration: t.duration ?? "",
         })),
       );
       // Rungs may have been added/removed/renumbered, so the steps editor needs
@@ -540,11 +540,13 @@ function EditHabitPage() {
               >
                 Remove
               </button>
-              {/* The rung's typed meaning: a "by" deadline (slot
-                  completion acts on it) and a length in minutes. */}
-              <div className="flex w-full flex-wrap items-center gap-x-4 gap-y-1.5 pl-7 pt-1.5">
-                <label className="flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
-                  Complete by
+              {/* What this rung asks of you, phrased as the three questions it
+                  answers. "Done by?" is a DEADLINE, not an appointment —
+                  finishing early still counts, which is what slot completion
+                  acts on. All three are optional; a rung can be just a name. */}
+              <div className="flex w-full flex-wrap items-end gap-x-4 gap-y-2 pl-7 pt-1.5">
+                <label className="flex flex-col gap-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
+                  Done by?
                   <input
                     type="time"
                     value={r.target_time}
@@ -552,24 +554,23 @@ function EditHabitPage() {
                     className="rounded-lg border border-mist bg-whisper px-2 py-1 text-[13px] text-ink focus:border-calm-400 focus:outline-none"
                   />
                 </label>
-                <label className="flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
-                  Duration
+                {/* Free text, not a minute count — "10 mins", "one song", "a
+                    whole episode". She writes the unit herself. */}
+                <label className="flex min-w-[8rem] flex-1 flex-col gap-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
+                  How long?
                   <input
-                    type="number"
-                    min={1}
+                    type="text"
                     value={r.duration}
                     onChange={(e) => setRungDuration(i, e.target.value)}
-                    placeholder="—"
-                    className="w-16 rounded-lg border border-mist bg-whisper px-2 py-1 text-right text-[13px] text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
+                    placeholder="e.g. 10 mins"
+                    className="min-w-0 rounded-lg border border-mist bg-whisper px-2.5 py-1.5 text-[13px] font-normal normal-case tracking-normal text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
                   />
-                  <span className="text-[11px] text-stone-300">min</span>
                 </label>
-                {/* The free-text value ("1000 steps", "Cleanse face") — kept
-                    for rungs that aren't about time, and so old ones stay
-                    visible and editable. Sits under the typed fields now that
-                    those carry the main meaning. */}
-                <label className="flex w-full items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
-                  Value
+                {/* The amount ("1000 steps", "3 pages") — reads in front of the
+                    habit's name on the row, so it's what you're doing, not a
+                    footnote. Was labelled "Value". */}
+                <label className="flex w-full flex-col gap-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
+                  How much?
                   <input
                     type="text"
                     value={r.value}

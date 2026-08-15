@@ -516,10 +516,12 @@ class Version(models.Model):
     #   completing from a time slot credits the hardest rung whose deadline the
     #   slot meets. A habit is "time-based" iff some rung has one; there's no
     #   separate flag to keep in sync.
-    # - duration: a length in minutes ("5 mins"). No mechanic yet — it exists so
-    #   the insights layer can chart "how long" as a number instead of prose.
+    # - duration: how long to do it for, as free text ("10 mins", "one song",
+    #   "a whole episode"). It was a minutes integer; she wanted to type it in
+    #   her own words, so the number is gone and "" means unset. The insights
+    #   layer will have to parse it if it ever wants to chart length.
     target_time = models.TimeField(null=True, blank=True)
-    duration = models.PositiveIntegerField(null=True, blank=True)
+    duration = models.CharField(max_length=50, blank=True, default="")
 
     class Meta:
         ordering = ["habit_id", "level"]

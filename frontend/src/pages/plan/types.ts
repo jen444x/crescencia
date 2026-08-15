@@ -79,7 +79,7 @@ export type Habit = {
     value: string;
     version?: number;            // the rung's id — what a completion/log keys on
     target_time?: string | null; // "HH:MM" deadline — slot completion acts on it
-    duration?: number | null;    // minutes, tracked for insights
+    duration?: string | null;    // how long, in her words ("10 mins")
     status?: ReadStatus;
     done?: boolean;
   }[];

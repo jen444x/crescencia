@@ -961,13 +961,13 @@ class HabitsListTests(TestCase):
             got,
             [
                 # `steps` is [] for a habit that isn't a recipe — the normal
-                # case; target_time/duration null until a rung is given typed
-                # meaning.
+                # case; target_time null and duration "" until a rung is
+                # given typed meaning.
                 {"level": 1, "name": "Roots", "label": 1, "value": "2 min",
-                 "target_time": None, "duration": None,
+                 "target_time": None, "duration": "",
                  "steps": [], "status": "PENDING", "done": False},
                 {"level": 2, "name": "Growth", "label": 2, "value": "10 min",
-                 "target_time": None, "duration": None,
+                 "target_time": None, "duration": "",
                  "steps": [], "status": "PENDING", "done": False},
             ],
         )
@@ -3386,30 +3386,32 @@ class TypedRungFieldTests(TestCase):
             reverse("habits:save_habit_versions", args=[habit.id]),
             data=json.dumps({"rungs": [
                 {"value": "8am", "label": 1, "target_time": "08:00"},
-                {"value": "7am", "label": 2, "target_time": "07:00", "duration": 5},
+                {"value": "7am", "label": 2, "target_time": "07:00",
+                 "duration": "5 mins"},
             ]}),
             content_type="application/json")
         self.assertEqual(res.status_code, 200, res.content)
         tiers = res.json()["tiers"]
         self.assertEqual([t["target_time"] for t in tiers], ["08:00", "07:00"])
-        self.assertEqual([t["duration"] for t in tiers], [None, 5])
+        self.assertEqual([t["duration"] for t in tiers], ["", "5 mins"])
 
     def test_create_habit_fills_the_starter_rung(self):
         res = self.client.post(
             reverse("habits:create_habit"),
             data=json.dumps({"name": "Wake up", "target_time": "07:00",
-                             "duration": 10}),
+                             "duration": "10 mins"}),
             content_type="application/json")
         self.assertEqual(res.status_code, 201, res.content)
         v = Version.objects.get(habit_id=res.json()["id"])
         self.assertEqual(v.target_time, time(7, 0))
-        self.assertEqual(v.duration, 10)
+        self.assertEqual(v.duration, "10 mins")
 
     def test_bad_values_rejected(self):
         habit = Habit.objects.create(name="X")
+        # duration is free text now, so only NON-text (and over-long) is bad.
         for rung in ({"value": "a", "target_time": "not a time"},
-                     {"value": "a", "duration": -3},
-                     {"value": "a", "duration": "5"}):
+                     {"value": "a", "duration": 5},
+                     {"value": "a", "duration": "x" * 51}):
             res = self.client.post(
                 reverse("habits:save_habit_versions", args=[habit.id]),
                 data=json.dumps({"rungs": [rung]}),

@@ -60,14 +60,28 @@ function fmtClock(hhmm: string): string {
 export function typedGoal(
   t?: {
     target_time?: string | null;
-    duration?: number | null;
+    duration?: string | null;
   } | null,
 ): string {
   if (!t) return "";
   const parts: string[] = [];
   if (t.target_time) parts.push(`by ${fmtClock(t.target_time)}`);
-  if (t.duration) parts.push(`for ${t.duration} min`);
+  // Free text now ("10 mins", "one song"), so it's printed as typed — the unit
+  // is hers to write, not ours to append.
+  if (t.duration?.trim()) parts.push(`for ${t.duration.trim()}`);
   return parts.join(" ");
+}
+
+// A rung's AMOUNT — the free-text "how much" — which reads in FRONT of the
+// habit's name ("2000 steps Walk", "3 pages Read"), the way you'd say it out
+// loud. The typed goals trail the name instead ("... by 7:30am for 10 mins"),
+// so a fully filled rung reads "2000 steps Walk by 7:30am for 10 mins".
+export function rungAmount(
+  t?: {
+    value?: string | null;
+  } | null,
+): string {
+  return t?.value?.trim() ?? "";
 }
 
 // A rung's goal as display text: the typed fields when it has them, else the
@@ -77,7 +91,7 @@ export function rungGoal(
   t?: {
     value?: string | null;
     target_time?: string | null;
-    duration?: number | null;
+    duration?: string | null;
   } | null,
 ): string {
   if (!t) return "";

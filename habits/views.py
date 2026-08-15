@@ -109,7 +109,7 @@ def _habit_tiers(habit):
             "value": v.value,
             "version": v.id,
             # Typed meaning (optional): the deadline that slot-completion acts
-            # on, and the length in minutes tracked for insights.
+            # on, and how long to do it for, in her own words ("" = unset).
             "target_time": v.target_time.strftime("%H:%M") if v.target_time else None,
             "duration": v.duration,
             # What you actually DO at this rung, in the habit's step order. []
@@ -980,6 +980,23 @@ def log_habit(request, habit_id):
     })
 
 
+def _clean_duration(raw):
+    """A rung's "how long" — free text since she types it in her own words
+    ("10 mins", "one song"). Returns (text, error): text is "" when unset, and
+    error is a message when the client sent something that isn't text.
+
+    null and "" both mean unset, so clearing the field works either way.
+    """
+    if raw is None:
+        return "", None
+    if not isinstance(raw, str):
+        return None, "'duration' must be text or null."
+    text = raw.strip()
+    if len(text) > 50:
+        return None, "'duration' must be 50 characters or fewer."
+    return text, None
+
+
 @csrf_exempt
 @require_POST
 def save_habit_versions(request, habit_id):
@@ -1031,14 +1048,9 @@ def save_habit_versions(request, habit_id):
                 return JsonResponse(
                     {"error": "'target_time' must be 'HH:MM' or null."}, status=400
                 )
-        duration = r.get("duration")
-        if duration is not None and (
-            isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0
-        ):
-            return JsonResponse(
-                {"error": "'duration' must be a positive number of minutes or null."},
-                status=400,
-            )
+        duration, duration_error = _clean_duration(r.get("duration"))
+        if duration_error:
+            return JsonResponse({"error": duration_error}, status=400)
         cleaned.append({"id": r.get("id"), "value": value.strip(),
                         "label": label, "level": i + 1,
                         "target_time": target_time, "duration": duration})
@@ -2486,13 +2498,9 @@ def create_habit(request):
         target_time = parse_time(raw_tt) if isinstance(raw_tt, str) else None
         if target_time is None:
             return JsonResponse({"error": "'target_time' must be 'HH:MM' or null."}, status=400)
-    duration = body.get("duration")
-    if duration is not None and (
-        isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0
-    ):
-        return JsonResponse(
-            {"error": "'duration' must be a positive number of minutes or null."}, status=400
-        )
+    duration, duration_error = _clean_duration(body.get("duration"))
+    if duration_error:
+        return JsonResponse({"error": duration_error}, status=400)
 
     with transaction.atomic():
         habit = Habit.objects.create(

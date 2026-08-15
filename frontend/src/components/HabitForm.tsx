@@ -17,7 +17,7 @@ export type HabitValues = {
   // "HH:MM", and a length in minutes. Together with the name they ARE the habit
   // at birth; more versions come later on the habit's page.
   target_time?: string | null;
-  duration?: number | null;
+  duration?: string | null;
 };
 
 type Area = {
@@ -69,9 +69,7 @@ function HabitForm({
   const [label, setLabel] = useState<number>(initial?.label ?? 1);
   // The starter rung's By/For (Add page). "" = not set.
   const [targetTime, setTargetTime] = useState(initial?.target_time ?? "");
-  const [durationText, setDurationText] = useState(
-    initial?.duration != null ? String(initial.duration) : "",
-  );
+  const [durationText, setDurationText] = useState(initial?.duration ?? "");
   // The aspiration dropdown is a checklist popover; track its open state and a
   // ref so a click outside closes it.
   const [aspOpen, setAspOpen] = useState(false);
@@ -131,7 +129,7 @@ function HabitForm({
           ? {
               label,
               target_time: targetTime || null,
-              duration: durationText ? Number(durationText) : null,
+              duration: durationText.trim(),
             }
           : {}),
       });
@@ -173,7 +171,7 @@ function HabitForm({
             </p>
             <div className="space-y-3">
               <div>
-                <label className={F_LABEL}>Complete by</label>
+                <label className={F_LABEL}>Done by?</label>
                 <input
                   type="time"
                   value={targetTime}
@@ -182,13 +180,12 @@ function HabitForm({
                 />
               </div>
               <div>
-                <label className={F_LABEL}>Duration (min)</label>
+                <label className={F_LABEL}>How long?</label>
                 <input
-                  type="number"
-                  min={1}
+                  type="text"
                   value={durationText}
                   onChange={(e) => setDurationText(e.target.value)}
-                  placeholder="—"
+                  placeholder="e.g. 10 mins"
                   className={fieldClass}
                 />
               </div>

@@ -1,6 +1,6 @@
 import AspirationDots from "../../../components/AspirationDots";
 import {
-  rowDisplayValue,
+  rungAmount,
   caseBDisplayLevel,
   isCaseB,
   rowCompleteTier,
@@ -62,11 +62,14 @@ export function HabitCard({
       ? habit.tiers?.find((t) => t.level === tierToSend)
       : undefined;
   const goalText = typedGoal(shownRung);
-  const tierValue = goalText
-    ? null
-    : tierToSend != null
-      ? shownRung?.value || habit.tier_value || null
-      : rowDisplayValue(habit, dayTier);
+  // The amount reads in FRONT of the name — "2000 steps Walk", the way you'd say
+  // it — while the typed goals trail it, so a full rung reads "2000 steps Walk by
+  // 7:30am for 10 mins". It used to hang off the end as a dim "· 2000 steps",
+  // which read as a footnote rather than as part of what you're doing.
+  const amountText =
+    tierToSend != null
+      ? rungAmount(shownRung) || habit.tier_value?.trim() || ""
+      : "";
   // Per-version state: this card shows ITS rung's status (cascade already folded
   // in by the backend), so completing the easy version never ticks the harder one.
   const cardStatus = slotStatus(habit, tierToSend);
@@ -135,18 +138,9 @@ export function HabitCard({
                     : "text-calm-900"
             }`}
           >
+            {amountText && `${amountText} `}
             {habit.name}
             {goalText && ` ${goalText}`}
-            {tierValue && (
-              <span
-                className={`font-normal ${
-                  done ? "text-calm-300" : "text-stone-400"
-                }`}
-              >
-                {" · "}
-                {tierValue}
-              </span>
-            )}
             <AspirationDots
               aspirations={habit.aspirations}
               className={`ml-1.5 ${done || skipped || missed ? "opacity-40" : ""}`}

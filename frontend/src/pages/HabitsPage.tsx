@@ -33,7 +33,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { DateNav } from "./plan/components/DateNav";
 import PlantWidget from "./plan/components/PlantWidget";
 import { startOfDay, toYMD, addDays, isSameDay } from "./plan/dates";
-import { typedGoal } from "./plan/tier";
+import { typedGoal, rungAmount } from "./plan/tier";
 
 // The statuses for a habit's day (matches the backend HabitLog). MISSED is now
 // settable too (not just derived for past days).
@@ -49,7 +49,7 @@ type HabitTier = {
   value: string;
   version: number; // the rung's id — what a completion sends
   target_time?: string | null; // "HH:MM" deadline
-  duration?: number | null; // minutes
+  duration?: string | null; // how long, free text ("10 mins")
   status?: HabitStatus;
   done?: boolean;
   // What you actually DO at this rung ([] unless the habit is a recipe).
@@ -332,6 +332,7 @@ function HabitTierRow({
                     : "text-ink"
             }`}
           >
+            {rungAmount(tier) && `${rungAmount(tier)} `}
             {habit.name}
             {tier && typedGoal(tier) && ` ${typedGoal(tier)}`}
           </span>
@@ -369,13 +370,6 @@ function HabitTierRow({
             </svg>
           </button>
         </span>
-        {tier && !typedGoal(tier) && tier.value && (
-          <span
-            className={`block text-xs ${done ? "text-calm-300" : "text-stone-400"}`}
-          >
-            {tier.value}
-          </span>
-        )}
       </div>
 
       {expander}
@@ -584,6 +578,7 @@ function HabitStatusSheet({
           className="group mb-6 flex w-full items-center justify-center gap-1 px-4"
         >
           <span className="min-w-0 truncate text-lg font-semibold text-calm-900 group-hover:text-calm-700">
+            {rungAmount(tier) && `${rungAmount(tier)} `}
             {habit.name}
             {tier && typedGoal(tier) && ` ${typedGoal(tier)}`}
           </span>
