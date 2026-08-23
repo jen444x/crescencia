@@ -30,11 +30,28 @@ import { timeToMinutes } from "./dates";
 //     instead of scrubbing across the day. It is NOT clamped to that gap: the
 //     ruler runs continuously in both directions like any other ruler.
 
+// 23:59 — the day's last valid minute.
+const DAY_END_MIN = 23 * 60 + 59;
+
 // Gesture zones, in px from the list's left edge.
 const ENTER_X = 44;
 const EXIT_X = 84;
 // How far left of its start a drag must travel before the rail will take it.
 const ARM_DX = 28;
+
+// Holding the habit near the top or bottom edge keeps the ruler moving, the way
+// dragging to the edge of a list keeps it scrolling.
+//
+// Without this the reachable times are only ever one screen of finger travel
+// either side of where the ruler opened — and the page can't scroll to extend
+// it, because scrolling mid-scrub is what used to slide the ruler out from under
+// the finger. Grab a habit low on the page and you simply could not reach the
+// morning: you had to drop it at the earliest time you could touch and drag it
+// again. Sliding the ruler itself keeps the whole day reachable without moving
+// the page at all.
+const EDGE_PX = 90;
+const EDGE_STEP_MIN = 15;
+const EDGE_TICK_MS = 110;
 
 // Ruler scale: 15 minutes = ~21px, so every mark is comfortably hittable.
 export const RAIL_PX_PER_MIN = 1.4;
@@ -147,8 +164,44 @@ export function useTimeRail() {
     }
   }
 
+  // The edge-advance timer, and which way it's currently running.
+  const edge = useRef<number | null>(null);
+  const edgeDir = useRef<0 | -1 | 1>(0);
+
+  function stopEdge() {
+    if (edge.current != null) window.clearInterval(edge.current);
+    edge.current = null;
+    edgeDir.current = 0;
+  }
+
+  // Keep sliding the ruler while the finger rests against an edge. Moving
+  // `seedMin` shifts BOTH the pointer->minute mapping and the drawn marks, so
+  // the ruler scrolls under a stationary finger and the time keeps changing.
+  function runEdge(dir: -1 | 1) {
+    if (edgeDir.current === dir) return; // already going this way
+    stopEdge();
+    edgeDir.current = dir;
+    edge.current = window.setInterval(() => {
+      const ruler = openRef.current;
+      const at = pointer.current;
+      if (!ruler || !at) return stopEdge();
+      const seedMin = ruler.seedMin + dir * EDGE_STEP_MIN;
+      // Stop at the ends of the day rather than grinding against the clamp.
+      // One step of slack either side, so midnight and 23:45 are themselves
+      // reachable (snapRetime clamps the last step onto the bound).
+      const raw = seedMin + (at.y - ruler.anchorY) / RAIL_PX_PER_MIN;
+      if (raw < -EDGE_STEP_MIN || raw > DAY_END_MIN + EDGE_STEP_MIN)
+        return stopEdge();
+      const moved: Ruler = { ...ruler, seedMin };
+      openRef.current = moved;
+      setOpen(moved);
+      setPreviewMin(minuteAt(at.y, moved));
+    }, EDGE_TICK_MS);
+  }
+
   // Tear everything down. Called on drop and on cancel.
   function reset() {
+    stopEdge();
     listen(false);
     start.current = null;
     pointer.current = null;
@@ -183,6 +236,7 @@ export function useTimeRail() {
       // Already on the rail: it takes a move all the way back past EXIT_X to
       // hand the drag back to the chains.
       if (relX > EXIT_X) {
+        stopEdge();
         openRef.current = null;
         setOpen(null);
         setPreviewMin(null);
@@ -190,6 +244,12 @@ export function useTimeRail() {
       }
       // Down = later, up = earlier, on the ruler's own scale.
       setPreviewMin(minuteAt(y, openRef.current));
+      // Against an edge? Keep the ruler moving so the rest of the day is
+      // reachable without lifting the habit.
+      const bottom = window.innerHeight - EDGE_PX;
+      if (y < EDGE_PX) runEdge(-1);
+      else if (y > bottom) runEdge(1);
+      else stopEdge();
       return;
     }
 
