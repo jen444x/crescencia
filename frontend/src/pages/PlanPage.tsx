@@ -645,6 +645,27 @@ function PlanPage() {
     toast("Habit placed");
   }
 
+  // Which chain holds row `rid`, and which habit it is — searching EVERY group,
+  // the untimed "Anytime" one included.
+  //
+  // An Anytime habit does not always lack a row. It has no row_id when it has
+  // never been placed, but once it has been un-timed (see clearHabitTime) it
+  // sits in Anytime as a real per-day row WITH a row_id. Every drop path used to
+  // look for the source among timed chains only (`p.id != null`), so dragging
+  // such a habit matched nothing and returned silently: the new time slot got
+  // created and the habit never moved, and dropping it on an existing slot did
+  // nothing at all.
+  function findRow(
+    rid: number,
+    from: Chain[] = chains,
+  ): { chain: Chain; habit: Habit } | null {
+    for (const chain of from) {
+      const habit = chain.habits.find((h) => h.row_id === rid);
+      if (habit) return { chain, habit };
+    }
+    return null;
+  }
+
   // Drop a TIMED habit back into "Anytime" — take its time away for the viewed
   // day, leaving it on the day but unscheduled. The per-day layer already
   // supports this: /days/arrange/ treats `chain: null` as "no block", which is
@@ -742,12 +763,16 @@ function PlanPage() {
     }
     // An already-timed row: move it out of its block into the new one.
     if (activeRid == null) return;
-    const sourcePlan = withNew.find(
-      (p) => p.id != null && p.habits.some((h) => h.row_id === activeRid),
-    );
-    if (!sourcePlan) return;
+    const found = findRow(activeRid, withNew);
+    if (!found) return;
+    // Coming out of Anytime: it's a placement, not a chain-to-chain move (the
+    // source has no chain id to renumber).
+    if (found.chain.id == null) {
+      await placeHabit(found.habit.id, created.id, null, withNew);
+      return;
+    }
     await moveAcrossBlocks(
-      sourcePlan,
+      found.chain,
       { id: created.id, time: created.time, name: "", habits: [] },
       activeRid,
       null,
@@ -783,12 +808,11 @@ function PlanPage() {
           if (newHabitId != null) {
             placeHabit(newHabitId, target.id, null);
           } else if (activeRid != null) {
-            const source = chains.find(
-              (p) =>
-                p.id != null && p.habits.some((h) => h.row_id === activeRid),
-            );
-            if (source && source.id !== target.id)
-              moveAcrossBlocks(source, target, activeRid, null);
+            const found = findRow(activeRid);
+            if (found && found.chain.id == null)
+              placeHabit(found.habit.id, target.id, null);
+            else if (found && found.chain.id !== target.id)
+              moveAcrossBlocks(found.chain, target, activeRid, null);
           }
         }
         return;
@@ -814,15 +838,20 @@ function PlanPage() {
 
     if (activeRid == null) return;
 
-    const sourcePlan = chains.find(
-      (p) => p.id != null && p.habits.some((h) => h.row_id === activeRid),
-    );
-    if (!sourcePlan || sourcePlan.id == null) return;
+    const found = findRow(activeRid);
+    if (!found) return;
+    const sourcePlan = found.chain;
 
     // Dropped on the Anytime group: take the habit's time away for the day. It
-    // stays on the plan, just unscheduled.
+    // stays on the plan, just unscheduled. Already untimed = nothing to do.
     if (targetPlanId == null) {
-      clearHabitTime(sourcePlan, activeRid);
+      if (sourcePlan.id != null) clearHabitTime(sourcePlan, activeRid);
+      return;
+    }
+
+    // Out of Anytime and onto a time: a placement (see findRow).
+    if (sourcePlan.id == null) {
+      placeHabit(found.habit.id, targetPlanId, overRid);
       return;
     }
 
@@ -1144,9 +1173,9 @@ function PlanPage() {
     const dragFromPlanId =
       newHabitId != null
         ? null // came out of Anytime
-        : (chains.find(
-            (p) => p.id != null && p.habits.some((h) => h.row_id === activeRid),
-          )?.id ?? undefined);
+        : (activeRid != null
+            ? (findRow(activeRid)?.chain.id ?? undefined)
+            : undefined);
     // Suppressed while the drag is on the rail: closestCorners still names a
     // nearest block, but the habit is headed for a new time, and a slot opening
     // in a chain she isn't aiming at would contradict the rail.
