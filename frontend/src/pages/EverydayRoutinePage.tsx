@@ -20,6 +20,8 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import Header from "../components/layout/Header";
 import AddHabitButton from "../components/AddHabitButton";
+import { useTimeRail } from "./plan/useTimeRail";
+import { TimeRail, RAIL_WIDTH } from "./plan/components/TimeRail";
 
 type RoutineHabit = {
   habit: number;
@@ -156,6 +158,14 @@ function EverydayRoutinePage() {
   // Latest blocks for use inside async handlers without stale closures.
   const blocksRef = useRef<Block[]>([]);
   blocksRef.current = blocks;
+  // Drag a habit LEFT onto the rail to give it a recurring time — the same
+  // gesture the Plan page uses, so a time no longer has to be created first.
+  const timeRail = useTimeRail();
+  // Blocks added this session that are still empty. /schedules/recurring/ is
+  // built from Schedule rows, so a brand-new (habit-less) chain comes back from
+  // it invisible — "Add time" looked like it did nothing. Holding them here
+  // keeps them on screen until something is dropped in.
+  const [newChains, setNewChains] = useState<{ id: number; time: string }[]>([]);
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
@@ -209,6 +219,16 @@ function EverydayRoutinePage() {
   function handleDragEnd(e: DragEndEvent) {
     setActiveKey(null);
     const { active, over } = e;
+
+    // Released on the rail: this drop is about TIME, whatever block dnd-kit
+    // still reports underneath. Read the hook before resetting it.
+    if (timeRail.isTimeMode) {
+      const minutes = timeRail.joinChainMin ?? timeRail.previewMin;
+      timeRail.reset();
+      if (minutes != null) void dropAtRecurringTime(String(active.id), minutes);
+      return;
+    }
+    timeRail.reset();
     if (!over) return;
     const aKey = String(active.id);
     const oKey = String(over.id);
@@ -313,6 +333,12 @@ function EverydayRoutinePage() {
         body: JSON.stringify({ time: newTime }),
       });
       if (!res.ok) throw new Error("create failed");
+      const data = await res.json(); // { id, time, created }
+      setNewChains((prev) =>
+        prev.some((c) => c.id === data.id)
+          ? prev
+          : [...prev, { id: data.id, time: data.time }],
+      );
       setAddingTime(false);
       setNewTime("");
       await load();
@@ -324,6 +350,85 @@ function EverydayRoutinePage() {
   const activeHabit = activeKey
     ? blocks.flatMap((b) => b.habits).find((h) => keyOf(h) === activeKey)
     : null;
+
+  // What actually renders: the server's blocks plus any block added this session
+  // that hasn't got a habit yet (see newChains), sorted by time with Anytime last.
+  const shown: Block[] = (() => {
+    const extra = newChains
+      .filter((c) => !blocks.some((b) => b.chain === c.id))
+      .map((c) => ({ chain: c.id, name: "", time: c.time, habits: [] }));
+    if (!extra.length) return blocks;
+    return [...blocks, ...extra].sort(
+      (a, b) =>
+        Number(a.time === null) - Number(b.time === null) ||
+        (a.time ?? "").localeCompare(b.time ?? ""),
+    );
+  })();
+
+  // A habit released on the rail: give it a recurring time. Reuse the block at
+  // that minute when one exists, otherwise create it, then write the forward
+  // placement — so one gesture does what "add a time, then drag into it" did.
+  async function dropAtRecurringTime(habitKey: string, minutes: number) {
+    const src = blocksRef.current.find((b) =>
+      b.habits.some((h) => keyOf(h) === habitKey),
+    );
+    const moved = src?.habits.find((h) => keyOf(h) === habitKey);
+    if (!src || !moved) return;
+
+    const hhmm = `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(
+      minutes % 60,
+    ).padStart(2, "0")}`;
+    let chainId = blocksRef.current.find(
+      (b) => b.chain != null && (b.time ?? "").slice(0, 5) === hhmm,
+    )?.chain;
+
+    if (chainId == null) {
+      try {
+        const res = await fetch(
+          `${import.meta.env.VITE_API_URL}/chains/create/`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ time: hhmm }),
+          },
+        );
+        if (!res.ok) throw new Error("create failed");
+        const data = await res.json();
+        chainId = data.id as number;
+      } catch {
+        setError("Couldn't add that time block.");
+        return;
+      }
+    }
+
+    // The habit's new home, plus its old block renumbered without it.
+    const rest = src.habits.filter((h) => keyOf(h) !== habitKey);
+    const target = blocksRef.current.find((b) => b.chain === chainId);
+    const items = [
+      ...rest.map((h, i) => ({
+        habit: h.habit,
+        chain: src.chain,
+        tier: h.tier,
+        order: i + 1,
+        routine: h.routine,
+      })),
+      ...(target?.habits ?? []).map((h, i) => ({
+        habit: h.habit,
+        chain: chainId as number,
+        tier: h.tier,
+        order: i + 1,
+        routine: h.routine,
+      })),
+      {
+        habit: moved.habit,
+        chain: chainId as number,
+        tier: moved.tier,
+        order: (target?.habits.length ?? 0) + 1,
+        routine: moved.routine,
+      },
+    ];
+    await persist(items);
+  }
 
   return (
     <>
@@ -347,14 +452,59 @@ function EverydayRoutinePage() {
         <DndContext
           sensors={sensors}
           collisionDetection={closestCorners}
-          onDragStart={(e: DragStartEvent) => setActiveKey(String(e.active.id))}
-          onDragCancel={() => setActiveKey(null)}
+          onDragStart={(e: DragStartEvent) => {
+            setActiveKey(String(e.active.id));
+            timeRail.onDragStart(e);
+          }}
+          onDragMove={timeRail.onDragMove}
+          // Scrolling mid-scrub slides the ruler out from under the finger.
+          autoScroll={!timeRail.isTimeMode}
+          onDragCancel={() => {
+            setActiveKey(null);
+            timeRail.reset();
+          }}
           onDragEnd={handleDragEnd}
         >
-          <div className="space-y-4">
-            {blocks.map((b) => (
+          {/* data-plan-list: the rail is bounded by this box and measures its
+            gesture zone from the left edge, and the list keeps a permanent
+            gutter for it (see the Plan page). */}
+          <div
+            data-plan-list
+            className="relative"
+            style={{ paddingLeft: RAIL_WIDTH }}
+          >
+            <TimeRail
+              ruler={timeRail.ruler}
+              previewMin={timeRail.previewMin}
+              joinChainMin={timeRail.joinChainMin}
+              names={
+                new Map(
+                  shown.flatMap((b) =>
+                    b.chain != null && b.time
+                      ? [
+                          [
+                            Number(b.time.slice(0, 2)) * 60 +
+                              Number(b.time.slice(3, 5)),
+                            b.name || formatTime(b.time),
+                          ] as [number, string],
+                        ]
+                      : [],
+                  ),
+                )
+              }
+              habitName={activeHabit?.name ?? null}
+            />
+          <div
+            className={`space-y-4 transition-opacity ${
+              timeRail.isTimeMode ? "opacity-40" : ""
+            }`}
+          >
+            {shown.map((b) => (
               <div
                 key={b.chain ?? "anytime"}
+                // Read by the time rail to place its marks against the real
+                // blocks and to seed a new time from the gap being held.
+                data-chain-time={b.time ?? undefined}
                 className="bg-white rounded-xl shadow-sm overflow-hidden"
               >
                 <div className="flex items-center justify-between gap-2 border-b border-calm-100 px-4 py-3">
@@ -432,9 +582,12 @@ function EverydayRoutinePage() {
               </div>
             ))}
           </div>
+          </div>
 
+          {/* Hidden on the rail: it rides the finger at nearly the full width
+            and would cover the very ruler mark it's setting. */}
           <DragOverlay>
-            {activeHabit ? (
+            {activeHabit && !timeRail.isTimeMode ? (
               <div className="flex items-center gap-2 rounded-xl bg-white px-4 py-3 shadow-lg">
                 <HabitRow h={activeHabit} />
               </div>
