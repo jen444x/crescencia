@@ -72,8 +72,9 @@ function DeleteHabitSheet({
               Stop going forward
             </span>
             <span className="mt-0.5 block text-xs text-stone-400">
-              Hides the whole habit (every tier) from today on and stops counting
-              it. Keeps all your past history &mdash; you can resume it later.
+              Hides the whole habit (every tier) from today on and stops
+              counting it. Keeps all your past history &mdash; you can resume it
+              later.
             </span>
           </button>
           <button
@@ -211,6 +212,7 @@ function EditHabitPage() {
           notes: data.notes,
           area: data.area,
           is_support: data.is_support,
+          kind: data.kind ?? "HABIT",
           aspiration_ids: data.aspirations ?? [],
         });
         setEndedOn(data.ended_on ?? null);
@@ -315,11 +317,14 @@ function EditHabitPage() {
   async function submitRetag() {
     setRetagBusy(true);
     try {
-      await fetch(`${import.meta.env.VITE_API_URL}/habits/${id}/history/retag/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ version: retagChoice }),
-      });
+      await fetch(
+        `${import.meta.env.VITE_API_URL}/habits/${id}/history/retag/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version: retagChoice }),
+        },
+      );
     } catch {
       // Retag is best-effort; the ladder itself is already saved.
     } finally {
@@ -474,128 +479,126 @@ function EditHabitPage() {
   const ladderEditor = (
     <div>
       <p className="text-xs text-stone-400">
-        Versions from easiest to hardest — each can carry a complete-by time and a
-        length. Finishing a higher one fills in the ones below.
+        Versions from easiest to hardest — each can carry a complete-by time and
+        a length. Finishing a higher one fills in the ones below.
       </p>
-    <div className="mt-3">
-      {tiersError && (
-        <p className="mb-2 text-center text-sm text-red-500">
-          {tiersError}
-        </p>
-      )}
+      <div className="mt-3">
+        {tiersError && (
+          <p className="mb-2 text-center text-sm text-red-500">{tiersError}</p>
+        )}
 
-      {rungs.length === 0 ? (
-        <p className="text-center text-sm text-stone-400">
-          No rungs yet — add one below.
-        </p>
-      ) : (
-        <ul className="space-y-1.5">
-          {rungs.map((r, i) => (
-            <li
-              key={r.id ?? `new-${i}`}
-              className="flex flex-wrap items-center gap-2 border-t border-whisper py-2 first:border-t-0 first:pt-0"
-            >
-              {/* position + reorder (order = the rung's level) */}
-              <div className="flex shrink-0 flex-col items-center leading-none">
+        {rungs.length === 0 ? (
+          <p className="text-center text-sm text-stone-400">
+            No rungs yet — add one below.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {rungs.map((r, i) => (
+              <li
+                key={r.id ?? `new-${i}`}
+                className="flex flex-wrap items-center gap-2 border-t border-whisper py-2 first:border-t-0 first:pt-0"
+              >
+                {/* position + reorder (order = the rung's level) */}
+                <div className="flex shrink-0 flex-col items-center leading-none">
+                  <button
+                    type="button"
+                    aria-label="Move rung up"
+                    disabled={i === 0 || tiersSaving}
+                    onClick={() => moveRung(i, -1)}
+                    className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
+                  >
+                    ▲
+                  </button>
+                  <span className="my-0.5 text-[10px] font-bold text-calm-700">
+                    {i + 1}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Move rung down"
+                    disabled={i === rungs.length - 1 || tiersSaving}
+                    onClick={() => moveRung(i, 1)}
+                    className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
+                  >
+                    ▼
+                  </button>
+                </div>
+                <select
+                  value={r.label ?? 0}
+                  onChange={(e) =>
+                    setRungLabel(i, Number(e.target.value) || null)
+                  }
+                  aria-label="Tag"
+                  className="min-w-0 flex-1 rounded-xl border border-mist bg-whisper px-2 py-1.5 text-sm text-ink focus:border-calm-400 focus:outline-none"
+                >
+                  <option value={0}>— none —</option>
+                  <option value={1}>Roots</option>
+                  <option value={2}>Growth</option>
+                </select>
                 <button
                   type="button"
-                  aria-label="Move rung up"
-                  disabled={i === 0 || tiersSaving}
-                  onClick={() => moveRung(i, -1)}
-                  className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
+                  aria-label="Remove rung"
+                  onClick={() => removeRung(i)}
+                  disabled={tiersSaving}
+                  className="shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
                 >
-                  ▲
+                  Remove
                 </button>
-                <span className="my-0.5 text-[10px] font-bold text-calm-700">
-                  {i + 1}
-                </span>
-                <button
-                  type="button"
-                  aria-label="Move rung down"
-                  disabled={i === rungs.length - 1 || tiersSaving}
-                  onClick={() => moveRung(i, 1)}
-                  className="text-xs text-stone-400 hover:text-calm-600 disabled:opacity-30"
-                >
-                  ▼
-                </button>
-              </div>
-              <select
-                value={r.label ?? 0}
-                onChange={(e) =>
-                  setRungLabel(i, Number(e.target.value) || null)
-                }
-                aria-label="Tag"
-                className="min-w-0 flex-1 rounded-xl border border-mist bg-whisper px-2 py-1.5 text-sm text-ink focus:border-calm-400 focus:outline-none"
-              >
-                <option value={0}>— none —</option>
-                <option value={1}>Roots</option>
-                <option value={2}>Growth</option>
-              </select>
-              <button
-                type="button"
-                aria-label="Remove rung"
-                onClick={() => removeRung(i)}
-                disabled={tiersSaving}
-                className="shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
-              >
-                Remove
-              </button>
-              {/* What this rung asks of you, phrased as the three questions it
+                {/* What this rung asks of you, phrased as the three questions it
                   answers. "Done by?" is a DEADLINE, not an appointment —
                   finishing early still counts, which is what slot completion
                   acts on. All three are optional; a rung can be just a name. */}
-              <div className="flex w-full flex-wrap items-end gap-x-4 gap-y-2 pl-7 pt-1.5">
-                <label className="flex flex-col gap-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
-                  Done by?
-                  <input
-                    type="time"
-                    value={r.target_time}
-                    onChange={(e) => setRungTime(i, e.target.value)}
-                    className="rounded-lg border border-mist bg-whisper px-2 py-1 text-[13px] text-ink focus:border-calm-400 focus:outline-none"
-                  />
-                </label>
-                {/* Free text, not a minute count — "10 mins", "one song", "a
+                <div className="flex w-full flex-wrap items-end gap-x-4 gap-y-2 pl-7 pt-1.5">
+                  <label className="flex flex-col gap-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
+                    Done by?
+                    <input
+                      type="time"
+                      value={r.target_time}
+                      onChange={(e) => setRungTime(i, e.target.value)}
+                      className="rounded-lg border border-mist bg-whisper px-2 py-1 text-[13px] text-ink focus:border-calm-400 focus:outline-none"
+                    />
+                  </label>
+                  {/* Free text, not a minute count — "10 mins", "one song", "a
                     whole episode". She writes the unit herself. */}
-                <label className="flex min-w-[8rem] flex-1 flex-col gap-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
-                  How long?
-                  <input
-                    type="text"
-                    value={r.duration}
-                    onChange={(e) => setRungDuration(i, e.target.value)}
-                    placeholder="e.g. 10 mins"
-                    className="min-w-0 rounded-lg border border-mist bg-whisper px-2.5 py-1.5 text-[13px] font-normal normal-case tracking-normal text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
-                  />
-                </label>
-                {/* The amount ("1000 steps", "3 pages") — reads in front of the
+                  <label className="flex min-w-[8rem] flex-1 flex-col gap-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
+                    How long to do habit for?
+                    <input
+                      type="text"
+                      value={r.duration}
+                      onChange={(e) => setRungDuration(i, e.target.value)}
+                      placeholder="e.g. 10 mins"
+                      className="min-w-0 rounded-lg border border-mist bg-whisper px-2.5 py-1.5 text-[13px] font-normal normal-case tracking-normal text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
+                    />
+                  </label>
+                  {/* The amount ("1000 steps", "3 pages") — reads in front of the
                     habit's name on the row, so it's what you're doing, not a
                     footnote. Was labelled "Value". */}
-                <label className="flex w-full flex-col gap-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
-                  How much?
-                  <input
-                    type="text"
-                    value={r.value}
-                    onChange={(e) => setRungValue(i, e.target.value)}
-                    placeholder="e.g. 1000 steps"
-                    className="min-w-0 flex-1 rounded-lg border border-mist bg-whisper px-2.5 py-1.5 text-[13px] font-normal normal-case tracking-normal text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
-                  />
-                </label>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+                  <label className="flex w-full flex-col gap-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-calm-600">
+                    How much?
+                    <input
+                      type="text"
+                      value={r.value}
+                      onChange={(e) => setRungValue(i, e.target.value)}
+                      placeholder="e.g. 1000 steps"
+                      className="min-w-0 flex-1 rounded-lg border border-mist bg-whisper px-2.5 py-1.5 text-[13px] font-normal normal-case tracking-normal text-ink placeholder:text-stone-400 focus:border-calm-400 focus:outline-none"
+                    />
+                  </label>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
 
-      <div className="mt-3">
-        <button
-          type="button"
-          onClick={addRung}
-          disabled={tiersSaving}
-          className="rounded-full border border-mist bg-whisper px-3.5 py-1.5 text-sm font-semibold text-calm-700 transition-colors hover:border-calm-400 disabled:opacity-50"
-        >
-          + Add rung
-        </button>
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={addRung}
+            disabled={tiersSaving}
+            className="rounded-full border border-mist bg-whisper px-3.5 py-1.5 text-sm font-semibold text-calm-700 transition-colors hover:border-calm-400 disabled:opacity-50"
+          >
+            + Add rung
+          </button>
+        </div>
       </div>
-    </div>
     </div>
   );
 
@@ -780,7 +783,9 @@ function EditHabitPage() {
                         }`}
                       />
                       {r.value ||
-                        (r.target_time ? `by ${r.target_time}` : `Version ${i + 1}`)}
+                        (r.target_time
+                          ? `by ${r.target_time}`
+                          : `Version ${i + 1}`)}
                     </button>
                   ))}
                 <button

@@ -56,6 +56,12 @@ export type Habit = {
   // True marks a SUPPORT/helper habit (scaffolding for a main habit), vs a main
   // habit she cares about. Drives the "Main only" filter; tracking is unchanged.
   is_support?: boolean;
+  // "TASK" = furniture: a fixed commitment ("Standup") that's on the plan only so
+  // the day's shape is visible and habits can be arranged around it. It is NEVER
+  // completed — the backend pins its status to PENDING and refuses to log it — so
+  // a task row must draw no tick control. NOTE: the Plan page does not honour this
+  // yet (its board is mid-refactor); the Habits page does.
+  kind?: "HABIT" | "TASK";
   // This row is ONE tier-slot of a habit (a habit can have several at different
   // times). Backend derives status/done_today per slot.
   // tier != null  -> Case A: this row IS that tier-slot, at its own time. Show

@@ -203,12 +203,21 @@ export function PlanBoard({
   // Is the habit currently in the air headed for THIS block?
   const isDropTarget =
     dropPreview != null && chainId != null && dropPreview.chainId === chainId;
-  // The exact landing spot. Zero-height so showing it never nudges the rows —
-  // the line draws over the gap that's already between two cards.
-  const insertionLine = (
-    <li aria-hidden="true" className="relative h-0">
-      <span className="absolute inset-x-0 -top-0.5 block h-0.5 rounded-full bg-calm-600" />
-    </li>
+  // The exact landing spot: an empty card-shaped slot, so the chain's habits
+  // physically part and she can see the habit's place before letting go (a
+  // zero-height line used to draw here, which read as decoration rather than as
+  // room being made).
+  //
+  // The rows shifting does NOT move the drop targets under her finger: dnd-kit
+  // measures droppables once at drag start by default, so what the pointer is
+  // over stays keyed to the pre-shift layout. That's deliberate — re-measuring
+  // would let the slot push the row out from under the finger, which moves the
+  // slot, which moves the row, and the preview oscillates.
+  const insertionSlot = (
+    <li
+      aria-hidden="true"
+      className="h-10 rounded-[18px] border border-dashed border-calm-400 bg-calm-600/5"
+    />
   );
 
   return (
@@ -216,9 +225,11 @@ export function PlanBoard({
       <ul
         ref={setDropRef}
         // Constant padding + matching negative margin, so switching the ring on
-        // tints the block without shifting a single row.
-        className={`-m-1.5 space-y-1.5 rounded-xl p-1.5 ring-2 transition-colors ${
-          isDropTarget ? "bg-calm-50 ring-calm-500" : "ring-transparent"
+        // outlines the block without shifting a single row. Deliberately faint:
+        // the open slot already says where the habit is going, so the block only
+        // needs to whisper that it's the one receiving it.
+        className={`-m-1.5 space-y-1.5 rounded-xl p-1.5 ring-1 transition-colors ${
+          isDropTarget ? "ring-mist" : "ring-transparent"
         }`}
       >
         {segments.length === 0 && (
@@ -237,7 +248,7 @@ export function PlanBoard({
             isDropTarget && dropPreview.overRid === seg.row.habit.row_id;
           return (
             <Fragment key={key}>
-              {landsHere && insertionLine}
+              {landsHere && insertionSlot}
               <li>
                 <SortableRow
                   habit={seg.row.habit}
@@ -253,7 +264,7 @@ export function PlanBoard({
         })}
         {/* Hovering the block's empty space rather than a row: it goes last,
           which is exactly where the drop handler puts it. */}
-        {isDropTarget && dropPreview.overRid == null && insertionLine}
+        {isDropTarget && dropPreview.overRid == null && insertionSlot}
       </ul>
     </SortableContext>
   );

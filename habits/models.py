@@ -58,10 +58,33 @@ class Tier(models.Model):
     ) 
 
 class Habit(models.Model):
+    class Kind(models.TextChoices):
+        """What this row IS — a thing you're building, or a thing you just have.
+
+        HABIT is the normal case: something you're growing, so it logs, streaks,
+        carries versions, and shows a tick circle.
+
+        TASK is *furniture*. A fixed commitment ("Standup", "Log hours") that's on
+        the plan only so the day's shape is visible and habits can be arranged
+        around it — "work is at 9" means the morning habits have to be done by 9.
+        A task is NEVER completed: no tick circle, no HabitLog, no streak, no
+        versions, and it never counts toward progress. It stays a Habit row purely
+        so it inherits the scheduling machinery (Schedule/ScheduleDay, per-day
+        arrange, freeze, drag) rather than duplicating all of it.
+
+        NOTE: because a task never logs, anything that treats "no log" as MISSED
+        must exclude it first — see _derive_status.
+        """
+        HABIT = "HABIT", "Habit"
+        TASK = "TASK", "Task"
+
     area = models.ForeignKey(Area, on_delete=models.SET_NULL, null=True)
     name = models.CharField(max_length=200) # length of name
     notes = models.TextField(blank=True)
     date_added = models.DateTimeField(auto_now_add=True)
+    kind = models.CharField(
+        max_length=10, choices=Kind.choices, default=Kind.HABIT
+    )
     # True marks a SUPPORT/helper habit — scaffolding that only exists to help
     # complete a main habit (e.g. "lay out clothes", "phone across the room",
     # "get on the mat"). The Habits page hides these by default, so it lists only

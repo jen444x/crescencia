@@ -27,6 +27,14 @@
   --color-clay: #b07c72;
   --color-clay-soft: #d9a79e;
   --color-blush: #f6eae8;
+  /* The TASK voice. Sky is already the 6th aspiration bloom; it's the only cool
+     hue in the palette, which is exactly why it reads as "not growth" beside the
+     clay and leaf. Used for the task edge, tag and filter well — furniture on the
+     plan, never something you're growing. */
+  --color-sky: #9fb6de;
+  --color-sky-deep: #5d7cae;
+  --color-sky-soft: #eef2f9;
+  --color-sky-line: #dbe4f2;
   /* Tailwind v4 derives font utilities from the --font-* namespace, so these
      must be named --font-heading / --font-body for `font-heading` / `font-body`
      to exist. (They were --font-family-*, so `font-heading` was silently dead

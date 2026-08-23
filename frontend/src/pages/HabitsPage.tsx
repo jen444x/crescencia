@@ -66,6 +66,11 @@ type HabitRow = {
   area: number | null;
   area_name: string | null;
   is_support: boolean;
+  // "TASK" = furniture: a fixed commitment ("Standup") that's on the plan only so
+  // the day's shape is visible and habits can be arranged around it. It is never
+  // completed — no tick circle, no streak, no versions — so most of the tracking
+  // UI below is suppressed for one. "HABIT" (the default) is the normal case.
+  kind: "HABIT" | "TASK";
   // The retirement date ("stopped" via the Edit page), or null if active. Only
   // populated when the list is fetched with ?include_ended=1 (Show ended on);
   // these rows are shown in their own "Stopped" section with a Resume button.
@@ -97,6 +102,9 @@ type HabitRoutine = {
 // Which tier row sits on top inside each habit's card (ROOTS first by default;
 // pick GROWTH to flip the order).
 type TierFocus = "ROOTS" | "GROWTH";
+// Which list the page is showing (see `view`): her practice, the furniture, or
+// both on labelled shelves.
+type HabitsView = "HABITS" | "TASKS" | "ALL";
 
 // Page-level info HabitCard reads without prop-drilling through the group and
 // sortable wrappers: whether "Expand all" is on, and aspiration id -> name for
@@ -292,11 +300,17 @@ function HabitTierRow({
   const skipped = !done && rowStatus === "SKIPPED";
   const missed = !done && rowStatus === "MISSED";
 
+  // Furniture, not a habit: never completed, so none of the status styling above
+  // means anything for it (the backend pins it to PENDING). It wears the sky edge
+  // instead of a tier edge and shows no tick circle at all.
+  const isTask = habit.kind === "TASK";
+
   // Tier edge: a thin right bar in the rung's tag color (Roots=clay, Growth=leaf)
   // that replaces the old right-side chip. Untagged/untiered rows keep a
-  // transparent bar so every row stays the same width.
-  const tierEdge =
-    tier?.label === 1
+  // transparent bar so every row stays the same width. A task wears sky.
+  const tierEdge = isTask
+    ? "border-sky"
+    : tier?.label === 1
       ? "border-clay"
       : tier?.label === 2
         ? "border-calm-600"
@@ -305,15 +319,22 @@ function HabitTierRow({
   return (
     <div
       className={`flex select-none items-center gap-3 border-r-[3px] px-4 py-3 transition-colors ${tierEdge} ${
-        done
-          ? "bg-whisper"
-          : skipped
-            ? "bg-stone-50"
-            : missed
-              ? "bg-rose-50"
-              : "bg-white"
+        isTask
+          ? "bg-sky-soft/40"
+          : done
+            ? "bg-whisper"
+            : skipped
+              ? "bg-stone-50"
+              : missed
+                ? "bg-rose-50"
+                : "bg-white"
       }`}
     >
+      {isTask && (
+        <span className="shrink-0 rounded-full border border-sky-line bg-sky-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-sky-deep">
+          task
+        </span>
+      )}
       {habit.is_support && (
         <span className="shrink-0 rounded-full border border-mist bg-whisper px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400">
           helper
@@ -322,14 +343,16 @@ function HabitTierRow({
       <div className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-x-1.5">
           <span
-            className={`wrap-break-word text-sm font-medium ${
-              done
-                ? "text-calm-400 line-through"
-                : skipped
-                  ? "text-stone-400"
-                  : missed
-                    ? "text-rose-400"
-                    : "text-ink"
+            className={`wrap-break-word text-sm ${
+              isTask
+                ? "font-normal text-stone-500"
+                : done
+                  ? "font-medium text-calm-400 line-through"
+                  : skipped
+                    ? "font-medium text-stone-400"
+                    : missed
+                      ? "font-medium text-rose-400"
+                      : "font-medium text-ink"
             }`}
           >
             {rungAmount(tier) && `${rungAmount(tier)} `}
@@ -375,7 +398,11 @@ function HabitTierRow({
       {expander}
 
       {/* Status dot: shows the slot's state (✓ done · – skipped · ✗ missed),
-        and a one-tap toggles Complete / undo. */}
+        and a one-tap toggles Complete / undo. A TASK has none — there is nothing
+        to complete — but it still reserves the width so every row lines up. */}
+      {isTask ? (
+        <span className="h-7 w-7 shrink-0" aria-hidden />
+      ) : (
       <button
         type="button"
         data-no-menu
@@ -398,6 +425,7 @@ function HabitTierRow({
       >
         {skipped ? <DashIcon /> : missed ? <XIcon /> : <CheckIcon />}
       </button>
+      )}
     </div>
   );
 }
@@ -431,11 +459,13 @@ function HabitRowWithMenu({
   return (
     <div
       onClick={(e) => {
+        // A task has no status to set, so tapping it opens nothing.
+        if (habit.kind === "TASK") return;
         // Let the grip (drag) and the dot (quick complete) do their own thing.
         if ((e.target as HTMLElement).closest("[data-no-menu]")) return;
         setMenuOpen(true);
       }}
-      className="cursor-pointer"
+      className={habit.kind === "TASK" ? "" : "cursor-pointer"}
     >
       <HabitTierRow
         habit={habit}
@@ -980,16 +1010,16 @@ function HabitsPage() {
   const [habits, setHabits] = useState<HabitRow[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  // "Show helpers" — off by default, so the page lists only the main habits she
-  // cares about (helper/support habits hidden, like her old app). On reveals the
-  // helpers too, each tagged "helper". Persisted, like the tier picker: it's a
-  // standing preference, not a per-visit choice. Same "1"/"0" codec as
-  // showStreak (and the Plan page's mainOnly), so the two read the same on disk.
-  const [showHelpers, setShowHelpers] = usePersistentState<boolean>(
-    "habitsShowHelpers",
-    false,
-    { parse: (raw) => raw === "1", serialize: (v) => (v ? "1" : "0") },
-  );
+  // Which list is on screen — one control, one question. HABITS (default) is her
+  // practice: main habits only, no helpers and no tasks. TASKS is where the
+  // furniture is managed. ALL shows everything on labelled shelves. This replaced
+  // the old Main/All helper toggle, which asked half of the same question.
+  // Persisted, like the tier picker: a standing preference, not a per-visit one.
+  const [view, setView] = usePersistentState<HabitsView>("habitsView", "HABITS", {
+    parse: (raw) =>
+      raw === "TASKS" ? "TASKS" : raw === "ALL" ? "ALL" : "HABITS",
+    serialize: (v) => v,
+  });
   // Which tier sits on top (both always show). Roots on top by default; pick
   // Growth to put Growth above Roots.
   const [focus, setFocus] = usePersistentState<TierFocus>("habitsFocus", "GROWTH", {
@@ -1228,9 +1258,11 @@ function HabitsPage() {
     // being swept into the new order (mirrors the Plan page's "reorder keeps
     // hidden rows in place" rule).
     const inSection = (h: HabitRow) =>
-      h.tiers.some((t) => t.level <= focusLevel) &&
+      inFocus(h) &&
+      inView(h) &&
       h.is_support === active.is_support &&
-      (showHelpers || !h.is_support);
+      // Tasks reorder among themselves — a card never crosses a shelf.
+      (h.kind === "TASK") === (active.kind === "TASK");
     const section = habits.filter(inSection);
     const from = section.findIndex((h) => h.id === activeId);
     const to = section.findIndex((h) => h.id === overId);
@@ -1273,18 +1305,26 @@ function HabitsPage() {
   // page. The Roots/Growth picker FILTERS at-or-below the picked level (the
   // Plan page's day-tier rule): Roots = just Roots versions; Growth = every
   // habit at its best version, so a Roots-only habit (brush teeth) still shows
-  // on Growth. Expand a card to see all its versions. Helpers hide behind the
-  // Main/All toggle as before.
+  // on Growth. Expand a card to see all its versions.
   const focusLevel = focus === "ROOTS" ? 1 : 2;
-  const visible = habits.filter(
-    (habit) =>
-      habit.tiers.some((t) => t.level <= focusLevel) &&
-      (showHelpers || !habit.is_support),
-  );
-  // The main list and the "Helpers" shelf below it (empty while helpers are
-  // hidden, so the shelf simply doesn't render).
-  const mains = visible.filter((habit) => !habit.is_support);
-  const helpers = visible.filter((habit) => habit.is_support);
+  // TASKS ARE EXEMPT from the tier rule. A task has no ladder at all, so the
+  // "must have a version at or below the focus" test would hide every one of
+  // them forever — the tier picker simply doesn't apply to furniture.
+  const isTask = (habit: HabitRow) => habit.kind === "TASK";
+  const inFocus = (habit: HabitRow) =>
+    isTask(habit) || habit.tiers.some((t) => t.level <= focusLevel);
+  const inView = (habit: HabitRow) =>
+    view === "TASKS"
+      ? isTask(habit)
+      : view === "ALL"
+        ? true
+        : !isTask(habit) && !habit.is_support;
+  const visible = habits.filter((habit) => inFocus(habit) && inView(habit));
+  // The main list, then the "Tasks" and "Helpers" shelves below it. A shelf with
+  // nothing in it simply doesn't render, so HABITS view still looks like today.
+  const mains = visible.filter((habit) => !isTask(habit) && !habit.is_support);
+  const tasks = visible.filter(isTask);
+  const helpers = visible.filter((habit) => !isTask(habit) && habit.is_support);
 
   return (
     <HabitsExpandContext.Provider
@@ -1373,15 +1413,25 @@ function HabitsPage() {
               </div>
 
               <div className={SEG}>
-                {([false, true] as const).map((withHelpers) => (
+                {(["HABITS", "TASKS", "ALL"] as const).map((option) => (
                   <button
-                    key={String(withHelpers)}
+                    key={option}
                     type="button"
-                    onClick={() => setShowHelpers(withHelpers)}
-                    aria-pressed={showHelpers === withHelpers}
-                    className={segOption(showHelpers === withHelpers)}
+                    onClick={() => setView(option)}
+                    aria-pressed={view === option}
+                    // Tasks wear the sky well when active, the way Roots/Growth
+                    // wear theirs — it's the same "which kind" signal.
+                    className={
+                      option === "TASKS" && view === option
+                        ? "rounded-full bg-sky-soft px-3 py-1 text-xs font-semibold text-sky-deep transition-colors"
+                        : segOption(view === option)
+                    }
                   >
-                    {withHelpers ? "All" : "Main"}
+                    {option === "HABITS"
+                      ? "Habits"
+                      : option === "TASKS"
+                        ? "Tasks"
+                        : "All"}
                   </button>
                 ))}
               </div>
@@ -1426,13 +1476,27 @@ function HabitsPage() {
               </button>
             </div>
 
-            {/* One card per habit (its tiers stack inside); helpers sit on
-                their own labeled shelf below the main list. Reorder is the
-                global catalog order, so it's only offered on today
+            {/* One card per habit (its tiers stack inside); tasks and helpers
+                sit on their own labeled shelves below the main list. Reorder is
+                the global catalog order, so it's only offered on today
                 (sortable=false elsewhere keeps tap-to-log). */}
             <HabitGroup
               label={null}
               habits={mains}
+              focus={focus}
+              onLog={logHabit}
+              sortable={isViewingToday}
+              sensors={sensors}
+              onReorder={handleReorder}
+              routines={routines}
+              routineMap={routineMap}
+              onSetRoutine={setHabitRoutine}
+            />
+            {/* The furniture. Unlabeled in the TASKS view, where it's the whole
+                list and a header would just repeat the filter. */}
+            <HabitGroup
+              label={view === "TASKS" ? null : "Tasks"}
+              habits={tasks}
               focus={focus}
               onLog={logHabit}
               sortable={isViewingToday}

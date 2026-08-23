@@ -909,7 +909,7 @@ class HabitsListTests(TestCase):
         row = self._by_id(data)[self.meditate.id]
         self.assertEqual(
             set(row.keys()),
-            {"id", "name", "area", "area_name", "is_support",
+            {"id", "name", "area", "area_name", "is_support", "kind",
              "ended_on", "tiers", "status", "aspirations", "streak"},
         )
         self.assertEqual(row["id"], self.meditate.id)
@@ -917,6 +917,7 @@ class HabitsListTests(TestCase):
         self.assertEqual(row["area"], self.mind.id)
         self.assertEqual(row["area_name"], "Mind")
         self.assertFalse(row["is_support"])  # a main habit, not a helper
+        self.assertEqual(row["kind"], Habit.Kind.HABIT)  # default: a real habit
 
     def test_streak_zero_when_never_completed(self):
         self.assertEqual(self._by_id(self._get())[self.run.id]["streak"], 0)
@@ -3417,3 +3418,134 @@ class TypedRungFieldTests(TestCase):
                 data=json.dumps({"rungs": [rung]}),
                 content_type="application/json")
             self.assertEqual(res.status_code, 400, rung)
+
+
+class TaskKindTests(TestCase):
+    """`kind=TASK` marks FURNITURE — a fixed commitment ("Standup") that's on the
+    plan only so the day's shape is visible and habits can be arranged around it.
+
+    The rule that matters: a task is never completed, so it never logs — and the
+    app derives MISSED from exactly that absence. Every check here exists to stop
+    a task quietly reading as missed, or as anything else it isn't.
+    """
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.chain = Chain.objects.create(start_time=time(9, 0), name="Work")
+        self.habit = Habit.objects.create(name="Drink water")
+        self.task = Habit.objects.create(name="Standup", kind=Habit.Kind.TASK)
+        for h in (self.habit, self.task):
+            Schedule.objects.create(habit=h, chain=self.chain)
+        # date_added is auto_now_add, so both rows would be "didn't exist yet" on
+        # the past days these tests look at. Back-date them so the past-day rules
+        # (MISSED for the habit, nothing for the task) actually apply.
+        Habit.objects.update(date_added=timezone.now() - timedelta(days=10))
+
+    def _create(self, **body):
+        res = self.client.post(
+            reverse("habits:create_habit"),
+            data=json.dumps({"name": "Log hours", **body}),
+            content_type="application/json",
+        )
+        return res, res.json()
+
+    # --- the model default ------------------------------------------------
+    def test_habits_default_to_kind_habit(self):
+        self.assertEqual(self.habit.kind, Habit.Kind.HABIT)
+
+    # --- creating ---------------------------------------------------------
+    def test_task_can_be_created_and_gets_no_rung(self):
+        res, data = self._create(kind="TASK")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(data["kind"], "TASK")
+        # No ladder: a task has no "how much" to grow.
+        self.assertFalse(Version.objects.filter(habit_id=data["id"]).exists())
+
+    def test_task_gets_no_rung_even_when_a_label_is_sent(self):
+        _, data = self._create(kind="TASK", label=2)
+        self.assertFalse(Version.objects.filter(habit_id=data["id"]).exists())
+
+    def test_bad_kind_is_rejected(self):
+        res, _ = self._create(kind="CHORE")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(Habit.objects.filter(name="Log hours").exists())
+
+    # --- editing ----------------------------------------------------------
+    def test_kind_can_be_changed_on_edit(self):
+        res = self.client.post(
+            reverse("habits:edit_habit", args=[self.habit.id]),
+            data=json.dumps({"kind": "TASK"}),
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.habit.refresh_from_db()
+        self.assertEqual(self.habit.kind, Habit.Kind.TASK)
+
+    def test_bad_kind_on_edit_is_rejected(self):
+        res = self.client.post(
+            reverse("habits:edit_habit", args=[self.habit.id]),
+            data=json.dumps({"kind": "nope"}),
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.habit.refresh_from_db()
+        self.assertEqual(self.habit.kind, Habit.Kind.HABIT)
+
+    # --- THE ONE THAT MATTERS: a task never derives MISSED ----------------
+    def _plan_rows(self, date):
+        res = self.client.get(reverse("habits:plan"), {"date": date.isoformat()})
+        self.assertEqual(res.status_code, 200)
+        rows = {}
+        for group in res.json():
+            for row in group["habits"]:
+                rows[row["name"]] = row
+        return rows
+
+    def test_task_is_not_missed_on_a_past_day(self):
+        past = self.today - timedelta(days=3)
+        rows = self._plan_rows(past)
+        # The real habit went untouched, so it derives MISSED — the behaviour a
+        # task must NOT inherit.
+        self.assertEqual(rows["Drink water"]["status"], "MISSED")
+        self.assertEqual(rows["Standup"]["status"], "PENDING")
+        self.assertFalse(rows["Standup"]["done_today"])
+
+    def test_task_is_not_missed_on_the_habits_page(self):
+        past = self.today - timedelta(days=3)
+        res = self.client.get(reverse("habits:habits_list"), {"date": past.isoformat()})
+        by_name = {row["name"]: row for row in res.json()}
+        self.assertEqual(by_name["Drink water"]["status"], "MISSED")
+        self.assertEqual(by_name["Standup"]["status"], "PENDING")
+
+    def test_task_month_history_never_reads_missed(self):
+        res = self.client.get(
+            reverse("habits:habit_history", args=[self.task.id]),
+            {"month": self.today.strftime("%Y-%m")},
+        )
+        self.assertEqual(res.status_code, 200)
+        states = {d["state"] for d in res.json()["days"]}
+        self.assertNotIn("MISSED", states)
+
+    # --- a task can't be logged -------------------------------------------
+    def test_completing_a_task_is_rejected(self):
+        res = self.client.post(
+            reverse("habits:log_habit", args=[self.task.id]),
+            data=json.dumps({"status": "COMPLETED"}),
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(HabitLog.objects.filter(habit=self.task).exists())
+
+    def test_a_note_on_a_task_is_still_allowed(self):
+        res = self.client.post(
+            reverse("habits:log_habit", args=[self.task.id]),
+            data=json.dumps({"notes": "moved to 9:30"}),
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 200)
+
+    # --- a task never streaks ---------------------------------------------
+    def test_task_streak_is_always_zero(self):
+        res = self.client.get(reverse("habits:habits_list"))
+        by_name = {row["name"]: row for row in res.json()}
+        self.assertEqual(by_name["Standup"]["streak"], 0)

@@ -8,14 +8,34 @@ import { useNavigate } from "react-router-dom";
 import {
   DndContext,
   DragOverlay,
+  closestCorners,
   pointerWithin,
   MouseSensor,
   TouchSensor,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { arrayMove } from "@dnd-kit/sortable";
+
+// Which drop target is the dragged habit over?
+//
+// pointerWithin FIRST, because it is the only one that reliably picks the ROW
+// under the finger rather than the chain box wrapping it. Reordering inside a
+// chain depends on `over` being a sibling row — that is what makes the other
+// rows slide apart to open a space. Ranking purely by distance (closestCorners
+// alone) let the chain container win, so a habit dragged up or down inside its
+// own chain moved nothing until it was dropped.
+//
+// closestCorners as the FALLBACK, for the gaps between chains where the pointer
+// is inside nothing at all. pointerWithin returns empty there, which used to
+// leave the drag with no target; falling back keeps the nearest chain named so
+// there are no dead zones.
+const planCollision: CollisionDetection = (args) => {
+  const within = pointerWithin(args);
+  return within.length > 0 ? within : closestCorners(args);
+};
 
 // Plan-page domain types and tier logic now live in ./plan/* so the toolbar and
 // (future) sub-components can share them. The tier helpers are unchanged — only
@@ -57,8 +77,8 @@ import {
 import { usePersistentState } from "../hooks/usePersistentState";
 import { fetchChains, fetchDayNotes } from "./plan/api";
 import { usePlanScroll } from "./plan/usePlanScroll";
-import { useDropRuler } from "./plan/useDropRuler";
-import { RetimeRuler } from "./plan/components/RetimeRuler";
+import { useTimeRail } from "./plan/useTimeRail";
+import { TimeRail, RAIL_WIDTH } from "./plan/components/TimeRail";
 import { avoidRetimeCollision } from "./plan/retime";
 import { useHabitStatus } from "./plan/useHabitStatus";
 import { useNotes } from "./plan/useNotes";
@@ -368,10 +388,11 @@ function PlanPage() {
     }),
   );
 
-  // Hold a dragged habit over empty space and the time ruler opens, so it can be
-  // given a time that has no block yet. The hook only watches the gesture;
-  // dropAtNewTime below is what a drop on the ruler actually does.
-  const dropRuler = useDropRuler();
+  // Drag a habit LEFT onto the time rail and the drag stops being about chains
+  // and starts being about time, so it can be given a time no chain has yet. The
+  // hook only watches the gesture; dropAtNewTime below is what a drop on the
+  // rail actually does.
+  const timeRail = useTimeRail();
 
   // The loose, movable rows of a block — the same subset PlanBoard makes
   // draggable: shown inline for the day, not main-only-hidden, not done, not
@@ -609,7 +630,7 @@ function PlanPage() {
     toast("Habit placed");
   }
 
-  // A habit released on the time ruler — i.e. dropped where no block exists.
+  // A habit released on the time rail — i.e. dropped at a time no block has yet.
   // Make the block at that minute, then reuse the ordinary placement path to put
   // the habit in it, so a habit given a brand-new time and one dragged into an
   // existing block travel exactly the same code.
@@ -654,15 +675,39 @@ function PlanPage() {
     setDragOverRid(null);
     const { active, over } = event;
 
-    // The ruler is up, so this drop is a time, not a block. Read the minute
-    // before resetting the hook — the teardown clears it.
-    if (dropRuler.isOpen) {
-      const minutes = dropRuler.previewMin;
-      dropRuler.reset();
+    // The drag ended on the rail, so this drop is about TIME, not about whatever
+    // block dnd-kit still reports under the pointer. Read the hook before
+    // resetting it, which clears both values.
+    if (timeRail.isTimeMode) {
+      const minutes = timeRail.previewMin;
+      const joinMin = timeRail.joinChainMin;
+      timeRail.reset();
+      // Scrubbed onto a time that already has a chain: put the habit IN that
+      // chain rather than making a second chain at the same minute. So the rail
+      // reaches the existing chains too, not just new times.
+      if (joinMin != null) {
+        const target = chains.find(
+          (p) => p.id != null && p.time && timeToMinutes(p.time) === joinMin,
+        );
+        if (target?.id != null) {
+          const { newHabitId, activeRid } = parseActiveId(String(active.id));
+          if (newHabitId != null) {
+            placeHabit(newHabitId, target.id, null);
+          } else if (activeRid != null) {
+            const source = chains.find(
+              (p) =>
+                p.id != null && p.habits.some((h) => h.row_id === activeRid),
+            );
+            if (source && source.id !== target.id)
+              moveAcrossBlocks(source, target, activeRid, null);
+          }
+        }
+        return;
+      }
       if (minutes != null) dropAtNewTime(String(active.id), minutes);
       return;
     }
-    dropRuler.reset();
+    timeRail.reset();
     if (!over) return;
 
     // The dragged row is either a numeric row_id (already on the timeline) or
@@ -742,6 +787,25 @@ function PlanPage() {
       },
     });
   }
+
+  // Each timed chain's label, keyed by its start minute — what the time rail
+  // prints beside its marks.
+  const chainNamesByMinute = useMemo(
+    () =>
+      new Map(
+        chains.flatMap((p) =>
+          p.id != null && p.time
+            ? [
+                [timeToMinutes(p.time), p.name || chainLabel(p.habits, p.time)] as [
+                  number,
+                  string,
+                ],
+              ]
+            : [],
+        ),
+      ),
+    [chains],
+  );
 
   // Has the user reordered anything away from the day's load-time order? Drives
   // whether the "Reset order" control shows. Recomputes with plans; the baseline
@@ -989,8 +1053,12 @@ function PlanPage() {
         : (chains.find(
             (p) => p.id != null && p.habits.some((h) => h.row_id === activeRid),
           )?.id ?? undefined);
+    // Suppressed while the drag is on the rail: closestCorners still names a
+    // nearest block, but the habit is headed for a new time, and a slot opening
+    // in a chain she isn't aiming at would contradict the rail.
     const dropPreview =
       dragId != null &&
+      !timeRail.isTimeMode &&
       dragOverPlanId != null &&
       dragOverPlanId !== dragFromPlanId
         ? { chainId: dragOverPlanId, overRid: dragOverRid }
@@ -1000,15 +1068,16 @@ function PlanPage() {
       <>
         <DndContext
           sensors={planSensors}
-          // pointerWithin, not closestCorners: closestCorners always snaps to the
-          // nearest block, so "the finger is over no block at all" could never
-          // happen — and that state is exactly what opens the time ruler.
-          collisionDetection={pointerWithin}
+          collisionDetection={planCollision}
+          // Auto-scroll is for reaching a chain that's off screen. On the rail
+          // it only does harm: the list slides while she's picking a time, which
+          // moves the ruler out from under her finger for no reason.
+          autoScroll={!timeRail.isTimeMode}
           onDragStart={(e) => {
             setDragId(String(e.active.id));
-            dropRuler.onDragStart(e);
+            timeRail.onDragStart(e);
           }}
-          onDragMove={dropRuler.onDragMove}
+          onDragMove={timeRail.onDragMove}
           onDragOver={(e) => {
             const target = e.over
               ? parseDropTarget(String(e.over.id), chains)
@@ -1020,13 +1089,39 @@ function PlanPage() {
             setDragId(null);
             setDragOverPlanId(undefined);
             setDragOverRid(null);
-            dropRuler.reset();
+            timeRail.reset();
           }}
           onDragEnd={handlePlanDragEnd}
         >
+          {/* data-plan-list: the rail lives in this box and is bounded by it, so
+            it can never draw over the plant, the quote, or the toolbar. The box
+            keeps a permanent left gutter for it — the rail is always on screen,
+            and on a phone the list is otherwise edge-to-edge, so a rail with no
+            gutter would lie on top of the cards. */}
           <div
-            className={`space-y-6 ${isLoading ? "opacity-60 transition-opacity" : ""}`}
+            data-plan-list
+            className="relative"
+            style={{ paddingLeft: RAIL_WIDTH }}
           >
+            <TimeRail
+              ruler={timeRail.ruler}
+              previewMin={timeRail.previewMin}
+              joinChainMin={timeRail.joinChainMin}
+              names={chainNamesByMinute}
+              habitName={draggingHabit?.name ?? null}
+            />
+
+            <div
+              className={`space-y-6 transition-opacity ${
+                // On the rail the drag is about time, so the list steps back and
+                // the rail becomes the thing being read.
+                timeRail.isTimeMode
+                  ? "opacity-40"
+                  : isLoading
+                    ? "opacity-60"
+                    : ""
+              }`}
+            >
             {shownChains.map((chain) => {
               const key = chain.id ?? "anytime";
               return (
@@ -1066,13 +1161,16 @@ function PlanPage() {
               onStatus={setHabitStatus}
               onOpenNote={setEditingNote}
             />
+            </div>
           </div>
           {/* Floating copy that follows the finger so the dragged habit stays
-            visible as it crosses between blocks. Hidden while the ruler is up —
-            the ruler draws its own chip at the live time, and two cards under
-            one finger is a mess. */}
+            visible as it crosses between chains. Hidden once the drag is on the
+            rail: it rides the finger at nearly the full width of the screen, so
+            it sat squarely on top of the ruler mark it was setting — the strip
+            looked frozen because its one moving part was underneath. The ruler
+            names the habit itself while it's up. */}
           <DragOverlay>
-            {draggingHabit && !dropRuler.isOpen ? (
+            {draggingHabit && !timeRail.isTimeMode ? (
               <DragOverlayCard
                 habit={draggingHabit}
                 dragOverPlanId={dragOverPlanId}
@@ -1080,31 +1178,6 @@ function PlanPage() {
               />
             ) : null}
           </DragOverlay>
-
-          {/* Held over empty space: the same ruler a whole block gets, so the
-            habit is given a time off a real hour grid instead of a suggested
-            time to correct. */}
-          {dropRuler.isOpen && draggingHabit && dropRuler.previewMin != null && (
-            <RetimeRuler
-              anchorY={dropRuler.anchorY}
-              startMin={dropRuler.seedMin}
-              previewMin={dropRuler.previewMin}
-              blockLabel={draggingHabit.name}
-              otherBlocks={visibleChains.flatMap((p) =>
-                p.id != null && p.time
-                  ? [
-                      {
-                        min: timeToMinutes(p.time),
-                        name: p.name || chainLabel(p.habits, p.time),
-                      },
-                    ]
-                  : [],
-              )}
-              hint="Drag to a time · release to give this habit a time"
-              // No original time to go back to — this habit is getting its first.
-              showOrigin={false}
-            />
-          )}
         </DndContext>
       </>
     );

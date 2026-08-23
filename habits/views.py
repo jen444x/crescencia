@@ -251,7 +251,7 @@ def _day_logs(target_date):
     return buckets
 
 
-def _version_status(specific, fallback, level, is_past):
+def _version_status(specific, fallback, level, is_past, is_task=False):
     """Display status for ONE version of a habit on a day, from that day's logs.
 
     `specific` = ``{tier_level: status}`` (tier-specific rows), `fallback` = the
@@ -270,6 +270,14 @@ def _version_status(specific, fallback, level, is_past):
     7:30am". Old base-level history can be retagged onto a rung instead
     (retag_history).
     """
+    # A TASK is furniture — it's never completed, so it never logs, and "no log"
+    # therefore means nothing about it. Without this short-circuit every task would
+    # silently read MISSED on every past day (the two `is_past` returns below) and
+    # pollute the day's picture. Its status is simply never meaningful: PENDING is
+    # the neutral value, and the frontend draws no tick circle for it at all.
+    if is_task:
+        return HabitLog.Status.PENDING
+
     completed = [lv for lv, st in specific.items()
                  if st == HabitLog.Status.COMPLETED]
     max_completed = max(completed) if completed else None
@@ -534,8 +542,10 @@ def plan(request):
             specific = bucket["specific"] if bucket else {}
             fallback = bucket["fallback"] if bucket else None
             tiers = _habit_tiers(habit)
+            is_task = habit.kind == Habit.Kind.TASK
             for t in tiers:
-                st = _version_status(specific, fallback, t["level"], is_past_day)
+                st = _version_status(specific, fallback, t["level"], is_past_day,
+                                     is_task)
                 t["status"] = st
                 t["done"] = st == HabitLog.Status.COMPLETED
             tiers_by_habit[habit.id] = tiers
@@ -553,7 +563,8 @@ def plan(request):
         # whole-habit view when the slot is untiered). Per-version & independent:
         # a lower one done never closes a higher one; a higher one done cascades
         # down. A still-pending slot on a past day derives missed. (_version_status)
-        status = _version_status(specific, fallback, tier_level, is_past_day)
+        status = _version_status(specific, fallback, tier_level, is_past_day,
+                                 habit.kind == Habit.Kind.TASK)
         done = status == HabitLog.Status.COMPLETED
 
         if tier_level is not None:
@@ -584,6 +595,7 @@ def plan(request):
             "done_today": done,
             "notes": notes,   # that day's note for this version ("" if none)
             "is_support": habit.is_support,  # True = helper/support habit
+            "kind": habit.kind,            # "HABIT" | "TASK" (task = furniture, never ticked)
             "tier": tier_level,            # this slot's tier level, or null (untiered/Case B)
             "tier_name": tier_name,        # "Roots"/"Growth", or null
             "tier_value": tier_value,      # Case A: this slot's tier value, else null
@@ -886,6 +898,14 @@ def log_habit(request, habit_id):
         return JsonResponse(
             {"error": f"'status' must be one of {HabitLog.Status.values}."},
             status=400,
+        )
+    # A task is furniture — there is nothing to complete, skip or miss (see
+    # Habit.Kind.TASK). The UI draws no tick circle for one, so this only ever
+    # fires on a stale client; it keeps the "a task never has logs" invariant that
+    # _version_status relies on. A NOTE is still fine ("standup moved to 9:30").
+    if has_status and habit.kind == Habit.Kind.TASK:
+        return JsonResponse(
+            {"error": "A task can't be completed — it isn't tracked."}, status=400
         )
     if has_notes and not isinstance(body["notes"], str):
         return JsonResponse({"error": "'notes' must be a string."}, status=400)
@@ -2416,6 +2436,7 @@ def _habit_detail(habit):
         "area": habit.area_id,
         "date_added": habit.date_added,
         "is_support": habit.is_support,
+        "kind": habit.kind,             # "HABIT" | "TASK"
         "ended_on": habit.ended_on,     # null = active; a date = retired (stopped)
         "tiers": _habit_tiers(habit),   # same shape as in /chains/
         # The aspirations this habit works toward (ids only, stable order so the
@@ -2450,7 +2471,7 @@ def habit(request, habit_id):
 @csrf_exempt
 @require_POST
 def create_habit(request):
-    """Create a habit. Body: {"name", "notes"?, "area"?, "is_support"?, "label"?}.
+    """Create a habit. Body: {"name", "notes"?, "area"?, "is_support"?, "kind"?, "label"?}.
 
     A new habit starts unscheduled (no chain/time), so it appears in the
     "unscheduled" group of /chains/ until it's placed on the timeline.
@@ -2486,9 +2507,21 @@ def create_habit(request):
     if not isinstance(is_support, bool):
         return JsonResponse({"error": "'is_support' must be true or false."}, status=400)
 
+    kind = body.get("kind", Habit.Kind.HABIT)
+    if kind not in Habit.Kind.values:
+        return JsonResponse(
+            {"error": "'kind' must be 'HABIT' or 'TASK'."}, status=400
+        )
+
     label = body.get("label", TierChoices.ROOTS)
     if label not in (None, 1, 2, 3):
         return JsonResponse({"error": "'label' must be 1, 2, 3, or null."}, status=400)
+
+    # A task has no ladder — there's no "how much" to grow, so it gets no starter
+    # rung whatever the client sent. It still lists fine: a habit with no versions
+    # renders as one plain row (tiers == [] -> a single untiered row).
+    if kind == Habit.Kind.TASK:
+        label = None
 
     # Optional typed fields for the starter rung — the Add form's By/For inputs.
     # Together with the name they ARE the habit at birth; more rungs come later.
@@ -2504,7 +2537,8 @@ def create_habit(request):
 
     with transaction.atomic():
         habit = Habit.objects.create(
-            name=name, notes=notes.strip(), area_id=area_id, is_support=is_support
+            name=name, notes=notes.strip(), area_id=area_id,
+            is_support=is_support, kind=kind,
         )
         if label is not None:
             Version.objects.create(
@@ -2555,6 +2589,13 @@ def edit_habit(request, habit_id):
         if not isinstance(body["is_support"], bool):
             return JsonResponse({"error": "'is_support' must be true or false."}, status=400)
         habit.is_support = body["is_support"]
+
+    if "kind" in body:
+        if body["kind"] not in Habit.Kind.values:
+            return JsonResponse(
+                {"error": "'kind' must be 'HABIT' or 'TASK'."}, status=400
+            )
+        habit.kind = body["kind"]
 
     # Aspirations this habit works toward. A present list REPLACES the whole set
     # (same M2M as the aspiration side's habit_ids, just written from the habit).
@@ -3254,9 +3295,10 @@ def habits_list(request):
         specific = bucket["specific"] if bucket else {}
         fallback = bucket["fallback"] if bucket else None
 
+        is_task = habit.kind == Habit.Kind.TASK
         tiers = _habit_tiers(habit)
         for t in tiers:
-            st = _version_status(specific, fallback, t["level"], is_past)
+            st = _version_status(specific, fallback, t["level"], is_past, is_task)
             t["status"] = st
             t["done"] = st == HabitLog.Status.COMPLETED
             # A completed rung reads its steps done even if they were never
@@ -3271,12 +3313,14 @@ def habits_list(request):
             "area": habit.area_id,
             "area_name": habit.area.name if habit.area_id else None,
             "is_support": habit.is_support,
+            "kind": habit.kind,                    # "HABIT" | "TASK"
             "ended_on": habit.ended_on,            # null = active; a date = retired
             "tiers": tiers,                        # per-version, [] if untiered
             # whole-habit status: done if any version done, else skip/missed/pending
-            "status": _version_status(specific, fallback, None, is_past),
+            "status": _version_status(specific, fallback, None, is_past, is_task),
             "aspirations": asp_map.get(habit.id, []),  # aspiration ids this habit serves
-            "streak": streaks.get(habit.id, 0),        # consecutive completed days
+            # A task never completes, so it never has a streak (see Habit.Kind).
+            "streak": 0 if is_task else streaks.get(habit.id, 0),
         })
 
     return JsonResponse(data, safe=False)
@@ -3364,7 +3408,10 @@ def habit_history(request, habit_id):
             start <= day and (end is None or day < end) for start, end in pauses
         )
         if applies:
-            state = _version_status(specific, fallback, None, day < today)
+            state = _version_status(
+                specific, fallback, None, day < today,
+                habit.kind == Habit.Kind.TASK,
+            )
         else:
             state = ABSENT_STATUS
 

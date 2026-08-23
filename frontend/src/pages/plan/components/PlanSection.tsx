@@ -63,6 +63,12 @@ export function PlanSection({
   const navigate = useNavigate();
   const isNow =
     isViewingToday && chain.id != null && chain.id === nowBlockId;
+  // A habit is in the air headed for this chain. The block itself stays quiet
+  // (PlanBoard just opens a slot where it lands); the header's time is what goes
+  // bolder, so a long chain whose slot has scrolled out of view still says which
+  // time is about to receive the habit.
+  const isDropTarget =
+    dropPreview != null && chain.id != null && dropPreview.chainId === chain.id;
   // Progress for the collapsed header — a member counts as handled when it's done
   // OR skipped (same rule RoutineBlock uses). Counts the shown habits, so the
   // header matches the cards (a Roots day excludes hidden Growth; "Main only"
@@ -118,9 +124,9 @@ export function PlanSection({
   return (
     <section
       ref={sectionRef}
-      // The block's time, readable from the DOM. useDropRuler needs to know
-      // which blocks sit above and below a drop point to seed the ruler, and a
-      // data attribute keeps that lookup out of the page's props.
+      // The block's time, readable from the DOM. The time rail reads these to
+      // place its stops against the real list and to seed a new time from the
+      // gap the finger is in; a data attribute keeps that lookup out of props.
       data-chain-time={chain.time ?? undefined}
       // Leave a little breathing room above the block when we scroll to it.
       className="scroll-mt-6"
@@ -164,8 +170,10 @@ export function PlanSection({
               </button>
               {/* Time label + a drag hint; the whole strip is grabbable. */}
               <span
-                className={`inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide ${
-                  isNow ? "text-calm-700" : "text-calm-600"
+                className={`inline-flex items-center gap-1 text-xs uppercase tracking-wide transition-colors ${
+                  isDropTarget
+                    ? "font-semibold text-calm-700"
+                    : `font-medium ${isNow ? "text-calm-700" : "text-calm-600"}`
                 }`}
               >
                 {formatTime(chain.time)}

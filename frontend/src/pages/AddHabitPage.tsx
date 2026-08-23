@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Header from "../components/layout/Header";
 import HabitForm, { type HabitValues } from "../components/HabitForm";
@@ -14,6 +15,9 @@ function todayYmd(): string {
 function AddHabitPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
+  // Mirrors the form's Habit/Task picker so the page header can retitle with it
+  // (the form owns the value; the header lives out here).
+  const [kind, setKind] = useState<"HABIT" | "TASK">("HABIT");
   // When opened from a cycle's "+ Add habit", these say which block to drop the
   // new habit into and at what position. Absent for a plain add (Habits page).
   const chainParam = params.get("chain");
@@ -55,9 +59,17 @@ function AddHabitPage() {
 
   return (
     <>
-      <Header title="Add habit" eyebrow="Your practice" />
+      <Header
+        title={kind === "TASK" ? "Add task" : "Add habit"}
+        eyebrow="Your practice"
+      />
       <div className="max-w-md mx-auto">
-        <HabitForm submitLabel="Add habit" onSubmit={createHabit} tierPicker />
+        <HabitForm
+          submitLabel="Add habit"
+          onSubmit={createHabit}
+          tierPicker
+          onKindChange={setKind}
+        />
       </div>
     </>
   );

@@ -6,6 +6,11 @@ export type HabitValues = {
   notes: string;
   area: number | null;
   is_support: boolean;
+  // What this row IS. "TASK" = furniture: a fixed commitment ("Standup") that
+  // sits on the plan so the day's shape is visible and habits can be arranged
+  // around it. It's never completed, so a task has no ladder, no aspirations and
+  // no helper flag — the form hides all of that when TASK is picked.
+  kind: "HABIT" | "TASK";
   // The aspirations this habit works toward (a habit can support several).
   // Empty on pages that don't offer the picker (the Add page passes no options).
   aspiration_ids: number[];
@@ -42,6 +47,7 @@ function HabitForm({
   aspirationOptions,
   tierPicker,
   ladder,
+  onKindChange,
 }: {
   initial?: HabitValues;
   submitLabel: string;
@@ -56,11 +62,16 @@ function HabitForm({
   // under the name — name + versions together are the habit; notes/area/
   // aspirations are details about it and live in their own card below.
   ladder?: ReactNode;
+  // Fired when the Habit/Task picker flips. The form owns `kind`, but the PAGE
+  // owns the <Header> above it, so this is how "Add habit" becomes "Add task".
+  onKindChange?: (kind: "HABIT" | "TASK") => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [area, setArea] = useState<number | null>(initial?.area ?? null);
   const [isSupport, setIsSupport] = useState(initial?.is_support ?? false);
+  const [kind, setKind] = useState<"HABIT" | "TASK">(initial?.kind ?? "HABIT");
+  const isTask = kind === "TASK";
   const [aspirationIds, setAspirationIds] = useState<number[]>(
     initial?.aspiration_ids ?? [],
   );
@@ -123,9 +134,14 @@ function HabitForm({
         name: name.trim(),
         notes: notes.trim(),
         area,
-        is_support: isSupport,
-        aspiration_ids: aspirationIds,
-        ...(tierPicker
+        // A task is never a helper and never serves an aspiration — send the
+        // empty values rather than whatever was set before the switch.
+        is_support: isTask ? false : isSupport,
+        kind,
+        aspiration_ids: isTask ? [] : aspirationIds,
+        // The rung fields only apply to a habit; a task has no ladder, and takes
+        // its time from the block it sits in on the plan.
+        ...(tierPicker && !isTask
           ? {
               label,
               target_time: targetTime || null,
@@ -148,8 +164,33 @@ function HabitForm({
           rows). Together these are what the habit IS; everything else is
           details about it and lives in the card below. */}
       <div className={`space-y-4 p-4 ${CARD}`}>
+        {/* What this row IS, above the name — it changes the whole shape of the
+            form, so it doesn't belong down with the details. */}
+        <div className={`${SEG} flex w-full`} role="group" aria-label="Kind">
+          {(["HABIT", "TASK"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => {
+                setKind(option);
+                onKindChange?.(option);
+              }}
+              aria-pressed={kind === option}
+              className={`flex-1 rounded-full px-4 py-2 text-[13px] transition-colors ${
+                kind === option
+                  ? option === "TASK"
+                    ? "bg-sky-soft font-semibold text-sky-deep"
+                    : "bg-mint font-semibold text-calm-700"
+                  : "font-medium text-stone-400 hover:text-stone-600"
+              }`}
+            >
+              {option === "TASK" ? "Task" : "Habit"}
+            </button>
+          ))}
+        </div>
+
         <div>
-          <label className={F_LABEL}>Habit</label>
+          <label className={F_LABEL}>{isTask ? "Task" : "Habit"}</label>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -160,10 +201,18 @@ function HabitForm({
           />
         </div>
 
+        {isTask && (
+          <p className="text-[11px] leading-relaxed text-stone-400">
+            A task just sits on your plan so you can see the shape of the day —
+            there's nothing to tick off. It takes its time from the block you put
+            it in.
+          </p>
+        )}
+
         {/* The starter rung's By / For + its Roots/Growth tag (Add page). A new
             habit gets exactly one rung carrying these; more versions come later
             on the habit's page. */}
-        {tierPicker && (
+        {tierPicker && !isTask && (
           <div>
             {/* A soft invitation between the name and the optional extras. */}
             <p className="mb-3 text-[11px] leading-relaxed text-stone-400">
@@ -214,8 +263,10 @@ function HabitForm({
           </div>
         )}
 
-        {/* Edit page: the version rows live here, right under the name. */}
-        {ladder}
+        {/* Edit page: the version rows live here, right under the name. A task
+            has no ladder — there's no "how much" to grow — so the editor is
+            hidden for one rather than inviting rungs it will never use. */}
+        {!isTask && ladder}
       </div>
 
       {/* Card 2 — DETAILS: notes, aspirations, area, helper flag. */}
@@ -234,7 +285,7 @@ function HabitForm({
         {/* Aspirations this habit works toward — shown only when the parent offers
           options (the Edit page) and the habit isn't a helper. Sits between
           Notes and Area. A checklist dropdown, so several can be picked. */}
-        {aspirationOptions && !isSupport && (
+        {aspirationOptions && !isSupport && !isTask && (
           <div className="relative" ref={aspRef}>
             <label className={F_LABEL}>Aspirations</label>
             <button
@@ -318,24 +369,34 @@ function HabitForm({
           </select>
         </div>
 
-        <label className="flex items-start gap-3 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={isSupport}
-            onChange={(e) => setIsSupport(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-mist accent-calm-600"
-          />
-          <span className="text-xs leading-relaxed text-calm-700">
-            Helper habit — a step that supports a main one (hidden from the
-            Habits list)
-          </span>
-        </label>
+        {/* A task is never a helper — "supports a main habit" says nothing about
+            a work commitment. */}
+        {!isTask && (
+          <label className="flex items-start gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={isSupport}
+              onChange={(e) => setIsSupport(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-mist accent-calm-600"
+            />
+            <span className="text-xs leading-relaxed text-calm-700">
+              Helper habit — a step that supports a main one (hidden from the
+              Habits list)
+            </span>
+          </label>
+        )}
       </div>
 
       {error && <p className="text-red-500 text-sm">{error}</p>}
 
       <button type="submit" disabled={isSaving} className={BTN_PRIMARY}>
-        {isSaving ? "Saving..." : submitLabel}
+        {/* "Add habit" / "Save habit" reads wrong once Task is picked. The
+            caller doesn't know the kind, so swap the noun here. */}
+        {isSaving
+          ? "Saving..."
+          : isTask
+            ? submitLabel.replace(/habit/gi, "task")
+            : submitLabel}
       </button>
     </form>
   );
