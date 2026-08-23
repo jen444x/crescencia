@@ -3988,6 +3988,40 @@ def recurring_schedule(request):
             ],
         })
 
+    # Habits that have NEVER been placed have no Schedule row at all, so the loop
+    # above cannot see them and they were simply missing from this page — there
+    # was no way to give a brand-new (or un-timed) habit a recurring time, even
+    # though /plan/ lists it under "Anytime". Surface them the same way /plan/
+    # does, so what this page can edit matches what the day actually shows.
+    # arrange_forward is keyed by habit id and UPSERTs, so dragging one straight
+    # into a chain already works without a pre-existing row.
+    placed_ids = {s.habit_id for s in schedules}
+    unscheduled = (
+        Habit.objects.filter(date_added__date__lte=target)
+        .exclude(id__in=placed_ids)
+        .exclude(id__in=_paused_habit_ids(target))   # drop habits retired by then
+        .order_by("order", "id")
+    )
+    extras = [
+        {
+            "schedule": None,       # no recurring row yet — this page creates one
+            "habit": h.id,
+            "name": h.name,
+            "tier": None,
+            "tier_name": None,
+            "routine": None,
+            "routine_name": None,
+            "order": None,
+        }
+        for h in unscheduled
+    ]
+    if extras:
+        anytime = next((b for b in blocks if b["chain"] is None), None)
+        if anytime is None:
+            anytime = {"chain": None, "name": "", "time": None, "habits": []}
+            blocks.append(anytime)
+        anytime["habits"].extend(extras)
+
     # Timed blocks first (by time), the Anytime block (no time) last.
     blocks.sort(key=lambda b: (b["time"] is None, b["time"] or ""))
     return JsonResponse({"blocks": blocks})
