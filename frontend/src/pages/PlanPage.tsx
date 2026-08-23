@@ -562,8 +562,16 @@ function PlanPage() {
     habitId: number,
     chainId: number,
     beforeRowId: number | null = null,
+    // The board to compute from. Defaults to current state, but a caller that
+    // JUST created the target chain has to pass it in: addTime's setChains only
+    // schedules a React update, and chainsRef is refreshed by an effect after
+    // the next render — so reading state here would not yet contain the new
+    // chain. It then found no target block, sent an EMPTY items list, and the
+    // habit silently stayed put while the freshly made (empty) time slot
+    // remained on the board.
+    baseChains?: Chain[],
   ) {
-    const snapshot = chainsRef.current;
+    const snapshot = baseChains ?? chainsRef.current;
     // The optimistic move: pull the habit out of Anytime and insert it into the
     // target chain at the drop position. Shared by both scopes (per-day below,
     // forward via the gate).
@@ -623,11 +631,78 @@ function PlanPage() {
           : { id: h.row_id, order: i + 1 };
       },
     );
+    // A placement that produced nothing to write means the target block wasn't
+    // on the board we computed from. Posting an empty list is a silent no-op, so
+    // fail loudly instead of pretending it worked.
+    if (items.length === 0) {
+      toast("Couldn't place that habit", { variant: "error" });
+      return;
+    }
     // The freeze assigns the new row its row_id; commitArrange re-fetches to
     // reconcile on success.
     const { ok } = await commitArrange(next, items, "Couldn't place that habit");
     if (!ok) return;
     toast("Habit placed");
+  }
+
+  // Drop a TIMED habit back into "Anytime" — take its time away for the viewed
+  // day, leaving it on the day but unscheduled. The per-day layer already
+  // supports this: /days/arrange/ treats `chain: null` as "no block", which is
+  // exactly what Anytime is. Optimistic, with an Undo that puts the time back.
+  async function clearHabitTime(sourceChain: Chain, rid: number) {
+    if (sourceChain.id == null) return;
+    const moved = sourceChain.habits.find((h) => h.row_id === rid);
+    if (!moved) return;
+
+    const origFrom = sourceChain.habits;
+    const newFrom = origFrom.filter((h) => h.row_id !== rid);
+
+    // Forward mode is about where a habit sits every day; "just untime it" has
+    // no forward equivalent yet, so keep this per-day only and say so.
+    if (applyToFuture && isViewingToday) {
+      toast("Removing a time works for this day only", { variant: "error" });
+      return;
+    }
+
+    const next = chainsRef.current.map((p) => {
+      if (p.id === sourceChain.id)
+        return { ...p, habits: newFrom.map((h, i) => ({ ...h, order: i + 1 })) };
+      if (p.id == null)
+        return { ...p, habits: [...p.habits, { ...moved, routine: null }] };
+      return p;
+    });
+
+    const items = [
+      { id: rid, order: 1, chain: null, routine: null },
+      ...newFrom.map((h, i) => ({ id: h.row_id ?? null, order: i + 1 })),
+    ];
+    const { ok, snapshot } = await commitArrange(
+      next,
+      items,
+      "Couldn't remove that time",
+    );
+    if (!ok) return;
+
+    toast("Time removed", {
+      action: {
+        label: "Undo",
+        onClick: () => {
+          setChains(snapshot);
+          persistItems(
+            origFrom.map((h, i): Record<string, number | null> =>
+              h.row_id === rid
+                ? {
+                    id: rid,
+                    order: i + 1,
+                    chain: sourceChain.id!,
+                    routine: h.routine ?? null,
+                  }
+                : { id: h.row_id ?? null, order: i + 1 },
+            ),
+          ).then(() => setReloadToken((token) => token + 1));
+        },
+      },
+    });
   }
 
   // A habit released on the time rail — i.e. dropped at a time no block has yet.
@@ -646,14 +721,28 @@ function PlanPage() {
 
     const { newHabitId, activeRid } = parseActiveId(rawActive);
 
+    // The board WITH the new chain on it. addTime has only scheduled its state
+    // update, so we splice it in ourselves rather than read state that hasn't
+    // caught up yet (see placeHabit's baseChains).
+    const withNew: Chain[] = chainsRef.current.some((p) => p.id === created.id)
+      ? chainsRef.current
+      : [
+          ...chainsRef.current.filter((p) => p.id != null),
+          { id: created.id, time: created.time, name: "", habits: [] },
+        ]
+          .sort(
+            (a, b) => timeToMinutes(a.time ?? "") - timeToMinutes(b.time ?? ""),
+          )
+          .concat(chainsRef.current.filter((p) => p.id == null));
+
     // An Anytime habit, which has no row yet: place it into the new block.
     if (newHabitId != null) {
-      await placeHabit(newHabitId, created.id, null);
+      await placeHabit(newHabitId, created.id, null, withNew);
       return;
     }
     // An already-timed row: move it out of its block into the new one.
     if (activeRid == null) return;
-    const sourcePlan = chains.find(
+    const sourcePlan = withNew.find(
       (p) => p.id != null && p.habits.some((h) => h.row_id === activeRid),
     );
     if (!sourcePlan) return;
@@ -723,14 +812,19 @@ function PlanPage() {
       return; // anytime -> anytime is a no-op
     }
 
-    // An existing timed row. Dragging it back to Anytime (removing its time)
-    // isn't built yet, so ignore that drop for now.
-    if (targetPlanId == null || activeRid == null) return;
+    if (activeRid == null) return;
 
     const sourcePlan = chains.find(
       (p) => p.id != null && p.habits.some((h) => h.row_id === activeRid),
     );
     if (!sourcePlan || sourcePlan.id == null) return;
+
+    // Dropped on the Anytime group: take the habit's time away for the day. It
+    // stays on the plan, just unscheduled.
+    if (targetPlanId == null) {
+      clearHabitTime(sourcePlan, activeRid);
+      return;
+    }
 
     if (sourcePlan.id === targetPlanId) {
       // Within-block reorder — rebuild the full list keeping non-active rows put.

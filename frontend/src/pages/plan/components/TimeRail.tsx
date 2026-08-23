@@ -26,6 +26,10 @@ import { RAIL_PX_PER_MIN, type Ruler } from "../useTimeRail";
 export const RAIL_WIDTH = 22;
 // Where the hairline sits inside that gutter.
 const SPINE_X = 15;
+// How far right of the tick the LIVE time is drawn. A fingertip covers roughly
+// 40px around the touch point, and the touch point is the rail — so the live
+// pill clears it instead of hiding under it.
+const FINGER_CLEARANCE = 46;
 
 // "6:30 AM" -> "6:30a". A ruler marked every 15 minutes is a lot of labels, and
 // the compact form keeps each one to a single short line.
@@ -158,9 +162,13 @@ export function TimeRail({
               />
               {/* The label, overflowing right over the dimmed list. The one under
                 the finger becomes a solid pill — it's the answer to "what time
-                is this?", so it has to be the loudest thing on the strip. */}
+                is this?", so it has to be the loudest thing on the strip.
+                It is also pushed clear to the RIGHT: the finger sits on the
+                rail itself, so a pill drawn at the tick was underneath it and
+                the one number she actually needed was the one she couldn't
+                see. */}
               <span
-                className={`ml-1.5 tabular-nums ${
+                className={`tabular-nums ${
                   here
                     ? "rounded-full bg-calm-600 px-2 py-0.5 text-[11px] font-semibold text-white shadow ring-2 ring-white"
                     : isChain
@@ -169,12 +177,13 @@ export function TimeRail({
                         ? "text-[10px] font-medium text-calm-500"
                         : "text-[10px] text-calm-400"
                 }`}
+                style={{ marginLeft: here ? FINGER_CLEARANCE : 6 }}
               >
                 {compactTime(m)}
               </span>
               {/* What's being placed, on the mark it would land on. */}
               {here && habitName && !isChain && (
-                <span className="ml-1.5 max-w-44 truncate rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-calm-700 shadow ring-1 ring-mist">
+                <span className="ml-2 max-w-40 truncate rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-calm-700 shadow ring-1 ring-mist">
                   {habitName}
                 </span>
               )}
